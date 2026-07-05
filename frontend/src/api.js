@@ -93,6 +93,40 @@ export function removeWatch(market, symbol) {
   return getJson(`/api/watchlist?${q.toString()}`, { method: 'DELETE' })
 }
 
+/* ===== 我的持仓 / 截图导入 ===== */
+export function fetchHoldings() {
+  return getJson('/api/holdings')
+}
+
+export function saveHoldings(items) {
+  return getJson('/api/holdings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ items }),
+  })
+}
+
+export function deleteHolding(id) {
+  return getJson(`/api/holdings/${id}`, { method: 'DELETE' })
+}
+
+export function parseHoldingsText(text) {
+  return getJson('/api/holdings/parse-text', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  })
+}
+
+export function uploadHoldingScreenshot(file) {
+  const form = new FormData()
+  form.append('file', file)
+  return getJson('/api/holdings/ocr-upload', {
+    method: 'POST',
+    body: form,
+  })
+}
+
 /* ===== 提醒(打分变化监控)===== */
 export function fetchAlerts(limit = 50) {
   return getJson(`/api/alerts?limit=${limit}`)

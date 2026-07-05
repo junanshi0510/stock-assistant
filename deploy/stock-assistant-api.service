@@ -7,6 +7,10 @@ Type=simple
 WorkingDirectory=/opt/stock-assistant/backend
 Environment="PYTHONUNBUFFERED=1"
 Environment="ALLOWED_ORIGINS=https://your-domain.com"
+# Enable screenshot OCR import only after creating an Alibaba Cloud OCR AccessKey.
+# Environment="ALIBABA_CLOUD_ACCESS_KEY_ID=your-access-key-id"
+# Environment="ALIBABA_CLOUD_ACCESS_KEY_SECRET=your-access-key-secret"
+# Environment="ALIYUN_OCR_ENDPOINT=ocr-api.cn-hangzhou.aliyuncs.com"
 ExecStart=/opt/stock-assistant/venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8000
 Restart=always
 RestartSec=5

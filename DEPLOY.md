@@ -193,6 +193,7 @@ sudo systemctl reload nginx
 - 真实数据源依赖服务器网络环境；如果服务器访问东方财富、天天基金、Tushare、海外源不稳定，需要在服务器网络或代理规则里处理。
 - 如果美股基本面/新闻要稳定使用，需要在 `backend/config.py` 配置 Alpha Vantage/Polygon 等真实数据源 Key。
 - 如果前端和后端拆成两个域名，需要设置后端环境变量 `ALLOWED_ORIGINS=https://前端域名`。
+- “我的持仓”截图导入功能需要真实 OCR 服务。默认支持阿里云 OCR，未配置 AccessKey 时可以先用“粘贴识别文本/手动添加”。
 
 ## 10. 云服务器部署建议
 
@@ -220,3 +221,42 @@ https://api.your-domain.com 后端
 - 后端服务设置 `ALLOWED_ORIGINS=https://www.your-domain.com`
 
 但第一版上线建议先用单域名同站部署，排障最少。
+
+## 11. 启用阿里云 OCR 截图识别
+
+“我的持仓”支持上传基金/股票持仓截图并识别文字。该功能不会使用假数据；如果没有配置真实 OCR，接口会明确提示需要配置 AccessKey。
+
+启用步骤：
+
+1. 在阿里云控制台开通文字识别 OCR。
+2. 创建 RAM 用户或使用已有 AccessKey，并授权 OCR 调用权限。
+3. 编辑后端 systemd 服务：
+
+```bash
+sudo nano /etc/systemd/system/stock-assistant-api.service
+```
+
+加入或取消注释：
+
+```ini
+Environment="ALIBABA_CLOUD_ACCESS_KEY_ID=你的AccessKeyId"
+Environment="ALIBABA_CLOUD_ACCESS_KEY_SECRET=你的AccessKeySecret"
+Environment="ALIYUN_OCR_ENDPOINT=ocr-api.cn-hangzhou.aliyuncs.com"
+```
+
+4. 更新依赖并重启：
+
+```bash
+cd /opt/stock-assistant
+source venv/bin/activate
+pip install -r backend/requirements.txt
+sudo systemctl daemon-reload
+sudo systemctl restart stock-assistant-api
+sudo systemctl status stock-assistant-api
+```
+
+隐私建议：
+
+- 上传截图前尽量打码姓名、手机号、账号和银行卡。
+- 第一版只保存用户确认后的持仓结果，不长期保存原图。
+- 后续接入登录系统后，应把持仓表从默认用户迁移到真实 `user_id`。

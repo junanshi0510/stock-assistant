@@ -21,7 +21,7 @@ import math
 import os
 from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -39,6 +39,7 @@ import monitor
 import hot_stocks
 import sectors as sectors_mod
 import funds as funds_mod
+import holdings as holdings_mod
 
 app = FastAPI(title="金融投资助手 API", version="2.0")
 
@@ -264,6 +265,28 @@ class FundCompareRequest(BaseModel):
     months: int = 36
 
 
+class HoldingRequest(BaseModel):
+    asset_type: str
+    market: str = ""
+    code: str
+    name: str = ""
+    amount: float | None = None
+    cost: float | None = None
+    profit: float | None = None
+    profit_rate: float | None = None
+    shares: float | None = None
+    source: str = "manual"
+    raw_text: str = ""
+
+
+class HoldingBulkRequest(BaseModel):
+    items: list[HoldingRequest]
+
+
+class HoldingTextRequest(BaseModel):
+    text: str
+
+
 @app.post("/api/scan")
 def scan(req: ScanRequest):
     if req.market not in data_fetch.MARKETS:
@@ -369,6 +392,51 @@ def add_watchlist(req: WatchRequest):
 def delete_watchlist(market: str = Query(...), symbol: str = Query(..., min_length=1)):
     removed = storage.remove_watch(market, symbol)
     return {"removed": removed}
+
+
+# ==================== 我的持仓 / 截图导入 ====================
+
+@app.get("/api/holdings")
+def get_holdings():
+    return holdings_mod.list_holdings()
+
+
+@app.post("/api/holdings")
+def save_holdings(req: HoldingBulkRequest):
+    try:
+        return holdings_mod.save_holdings([item.model_dump() for item in req.items])
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"持仓保存失败:{e}")
+
+
+@app.delete("/api/holdings/{holding_id}")
+def delete_holding(holding_id: int):
+    return {"ok": holdings_mod.delete_holding(holding_id)}
+
+
+@app.post("/api/holdings/parse-text")
+def parse_holdings_text(req: HoldingTextRequest):
+    return holdings_mod.parse_holdings_text(req.text)
+
+
+@app.post("/api/holdings/ocr-upload")
+async def upload_holding_screenshot(file: UploadFile = File(...)):
+    content_type = file.content_type or ""
+    if content_type and not content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="请上传图片文件")
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="图片为空")
+    if len(data) > 8 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="图片不能超过 8MB")
+    try:
+        return holdings_mod.recognize_image(data, content_type)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"真实 OCR 识别失败:{e}")
 
 
 # ==================== 提醒(打分变化监控)====================

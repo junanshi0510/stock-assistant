@@ -60,6 +60,28 @@ def _get_conn():
             )
             """
         )
+        _conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS holdings (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id     TEXT NOT NULL DEFAULT 'default',
+                asset_type  TEXT NOT NULL,
+                market      TEXT,
+                code        TEXT NOT NULL,
+                name        TEXT,
+                amount      REAL,
+                cost        REAL,
+                profit      REAL,
+                profit_rate REAL,
+                shares      REAL,
+                source      TEXT,
+                raw_text    TEXT,
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL,
+                UNIQUE(user_id, asset_type, market, code)
+            )
+            """
+        )
         _conn.commit()
     return _conn
 
@@ -144,3 +166,87 @@ def clear_alerts():
         conn = _get_conn()
         conn.execute("DELETE FROM alerts")
         conn.commit()
+
+
+# ==================== 我的持仓 ====================
+
+def list_holdings(user_id: str = "default") -> list[dict]:
+    with _lock:
+        rows = _get_conn().execute(
+            """
+            SELECT id, user_id, asset_type, market, code, name, amount, cost, profit,
+                   profit_rate, shares, source, created_at, updated_at
+            FROM holdings
+            WHERE user_id=?
+            ORDER BY updated_at DESC
+            """,
+            (user_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def upsert_holding(item: dict, user_id: str = "default") -> dict:
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    asset_type = str(item.get("asset_type") or "").strip()
+    market = str(item.get("market") or "").strip()
+    code = str(item.get("code") or "").strip()
+    name = str(item.get("name") or "").strip()
+    if not asset_type or not code:
+        raise ValueError("持仓类型和代码不能为空")
+    values = (
+        user_id,
+        asset_type,
+        market,
+        code,
+        name,
+        item.get("amount"),
+        item.get("cost"),
+        item.get("profit"),
+        item.get("profit_rate"),
+        item.get("shares"),
+        str(item.get("source") or "manual"),
+        str(item.get("raw_text") or ""),
+        now,
+        now,
+    )
+    with _lock:
+        conn = _get_conn()
+        conn.execute(
+            """
+            INSERT INTO holdings (
+                user_id, asset_type, market, code, name, amount, cost, profit,
+                profit_rate, shares, source, raw_text, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, asset_type, market, code) DO UPDATE SET
+                name=excluded.name,
+                amount=excluded.amount,
+                cost=excluded.cost,
+                profit=excluded.profit,
+                profit_rate=excluded.profit_rate,
+                shares=excluded.shares,
+                source=excluded.source,
+                raw_text=excluded.raw_text,
+                updated_at=excluded.updated_at
+            """,
+            values,
+        )
+        conn.commit()
+        row = conn.execute(
+            """
+            SELECT id, user_id, asset_type, market, code, name, amount, cost, profit,
+                   profit_rate, shares, source, created_at, updated_at
+            FROM holdings
+            WHERE user_id=? AND asset_type=? AND market=? AND code=?
+            """,
+            (user_id, asset_type, market, code),
+        ).fetchone()
+    return dict(row)
+
+
+def delete_holding(holding_id: int, user_id: str = "default") -> bool:
+    with _lock:
+        conn = _get_conn()
+        cur = conn.execute("DELETE FROM holdings WHERE id=? AND user_id=?", (holding_id, user_id))
+        conn.commit()
+        return cur.rowcount > 0

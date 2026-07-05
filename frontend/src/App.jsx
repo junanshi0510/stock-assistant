@@ -8,10 +8,12 @@ import DiscoverTab from './tabs/DiscoverTab'
 import MultiCompareTab from './tabs/MultiCompareTab'
 import SectorTab from './tabs/SectorTab'
 import FundTab from './tabs/FundTab'
+import HoldingsTab from './tabs/HoldingsTab'
 
 const TABS = [
   { id: 'analyze', label: '单股分析' },
   { id: 'watchlist', label: '⭐ 自选' },
+  { id: 'holdings', label: '我的持仓' },
   { id: 'discover', label: '🔍 发现' },
   { id: 'sectors', label: '板块热点' },
   { id: 'funds', label: '基金分析' },
@@ -74,6 +76,7 @@ export default function App() {
             runKey={runKey} requestRun={requestRun} />
         )}
         {tab === 'watchlist' && <WatchlistTab goAnalyze={goAnalyze} />}
+        {tab === 'holdings' && <HoldingsTab />}
         {tab === 'discover' && <DiscoverTab markets={markets} goAnalyze={goAnalyze} />}
         {tab === 'sectors' && <SectorTab goAnalyze={goAnalyze} />}
         {tab === 'funds' && <FundTab />}

@@ -255,6 +255,26 @@ tbody tr:hover { background: rgba(255,255,255,0.03); }
   color: var(--text); font-size: 12px; font-weight: 700;
 }
 .compact-table th, .compact-table td { padding: 9px 10px; }
+.holdings-table {
+  min-width: 920px;
+}
+.holdings-edit-table {
+  min-width: 1180px;
+}
+.holdings-table th,
+.holdings-table td,
+.holdings-edit-table th,
+.holdings-edit-table td {
+  white-space: nowrap;
+}
+.holdings-edit-table input,
+.holdings-edit-table select {
+  min-width: 96px;
+  padding: 7px 8px;
+}
+.holdings-edit-table input[type="number"] {
+  width: 110px;
+}
 .period-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
 .period-card {
   background: rgba(10,14,23,0.5);
