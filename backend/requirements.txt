@@ -1,0 +1,9 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+akshare>=1.16
+baostock>=0.8.8
+tushare>=1.4.6
+pandas>=2.2
+numpy>=1.26
+requests>=2.27
+scikit-learn>=1.4

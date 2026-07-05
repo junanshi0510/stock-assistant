@@ -1,0 +1,15 @@
+[Unit]
+Description=Stock Assistant FastAPI backend
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/stock-assistant/backend
+Environment="PYTHONUNBUFFERED=1"
+Environment="ALLOWED_ORIGINS=https://your-domain.com"
+ExecStart=/opt/stock-assistant/venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
