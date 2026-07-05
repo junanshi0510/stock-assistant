@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { deleteHolding, fetchHoldings, parseHoldingsText, saveHoldings, uploadHoldingScreenshot } from '../api'
+import { deleteHolding, fetchHoldings, fetchHoldingsInsights, parseHoldingsText, saveHoldings, uploadHoldingScreenshot } from '../api'
 
 function num(v, digits = 2) {
   if (v == null || Number.isNaN(Number(v))) return '-'
@@ -40,6 +40,8 @@ export default function HoldingsTab() {
   const [text, setText] = useState('')
   const [parsed, setParsed] = useState([])
   const [warnings, setWarnings] = useState([])
+  const [insights, setInsights] = useState(null)
+  const [insightsLoading, setInsightsLoading] = useState(false)
 
   async function load() {
     setLoading(true); setError('')
@@ -127,6 +129,17 @@ export default function HoldingsTab() {
     }
   }
 
+  async function loadInsights() {
+    setInsightsLoading(true); setError('')
+    try {
+      setInsights(await fetchHoldingsInsights(6))
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setInsightsLoading(false)
+    }
+  }
+
   return (
     <>
       <div className="panel">
@@ -144,6 +157,9 @@ export default function HoldingsTab() {
           </button>
           <button className="ghost" onClick={doAddBlank}>手动添加一行</button>
           <button className="ghost" onClick={load} disabled={loading}>{loading ? '刷新中' : '刷新持仓'}</button>
+          <button onClick={loadInsights} disabled={insightsLoading || items.length === 0}>
+            {insightsLoading ? <><span className="spinner" /> 组合体检中</> : '组合体检'}
+          </button>
         </div>
         {error && <div className="error">{error}</div>}
         {warnings.map((w, idx) => <div className="hint" key={idx} style={{ marginTop: 8 }}>{w}</div>)}
@@ -215,6 +231,105 @@ export default function HoldingsTab() {
           </div>
         )}
       </div>
+
+      {insights && (
+        <div className="panel fade-in">
+          <h3 className="section-title">
+            组合体检 <span className="hint">{insights.source}</span>
+          </h3>
+          <div className="bt-cards quality-cards">
+            <div className="bt-card"><div className="k">持仓数量</div><div className="v">{insights.summary.holding_count}</div></div>
+            <div className="bt-card"><div className="k">总金额</div><div className="v">{num(insights.summary.total_amount)}</div></div>
+            <div className="bt-card"><div className="k">累计收益率</div><div className={`v ${cls(insights.summary.weighted_profit_rate)}`}>{pct(insights.summary.weighted_profit_rate)}</div></div>
+            <div className="bt-card"><div className="k">第一大占比</div><div className="v">{pct(insights.summary.top1_ratio)}</div></div>
+            <div className="bt-card"><div className="k">前三大占比</div><div className="v">{pct(insights.summary.top3_ratio)}</div></div>
+            <div className="bt-card"><div className="k">集中度</div><div className="v">{insights.summary.concentration_level}</div></div>
+          </div>
+
+          {insights.notes?.length > 0 && (
+            <div className="fund-bond-list" style={{ marginTop: 12 }}>
+              {insights.notes.map((note, idx) => <span className="tag neutral" key={idx}>{note}</span>)}
+            </div>
+          )}
+
+          <div className="fund-holding-grid" style={{ marginTop: 16 }}>
+            <div>
+              <h4 className="fund-subhead">真实配置与收益贡献</h4>
+              <div className="corr-wrap">
+                <table className="compact-table holdings-insight-table">
+                  <thead>
+                    <tr>
+                      <th>代码</th><th>名称</th><th>金额</th><th>占比</th><th>持仓收益</th><th>收益率</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {insights.allocation.slice(0, 10).map((row) => (
+                      <tr key={`${row.asset_type}-${row.code}`}>
+                        <td style={{ fontWeight: 800 }}>{row.code}</td>
+                        <td>{row.name || '-'}</td>
+                        <td>{num(row.amount)}</td>
+                        <td>{pct(row.ratio)}</td>
+                        <td className={cls(row.profit)}>{num(row.profit)}</td>
+                        <td className={cls(row.profit_rate)}>{pct(row.profit_rate)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div>
+              <h4 className="fund-subhead">基金趋势体检</h4>
+              <div className="corr-wrap">
+                <table className="compact-table holdings-insight-table">
+                  <thead>
+                    <tr>
+                      <th>基金</th><th>趋势</th><th>近3月</th><th>近1年</th><th>最大回撤</th><th>定投分</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {insights.fund_trends.map((row) => (
+                      <tr key={row.code}>
+                        <td>{row.code}</td>
+                        <td>{row.trend_state || '-'}</td>
+                        <td className={cls(row.return_3m)}>{pct(row.return_3m)}</td>
+                        <td className={cls(row.return_1y)}>{pct(row.return_1y)}</td>
+                        <td className="delta-neg">{pct(row.max_drawdown)}</td>
+                        <td>{row.dca_score != null ? `${row.dca_score} · ${row.dca_label}` : '-'}</td>
+                      </tr>
+                    ))}
+                    {!insights.fund_trends.length && (
+                      <tr><td colSpan="6" className="hint">暂无可体检的基金持仓</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              {insights.fund_errors?.length > 0 && (
+                <div className="error" style={{ marginTop: 10 }}>
+                  {insights.fund_errors.slice(0, 3).map((e) => `${e.code || e.scope}: ${e.error}`).join('；')}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {insights.overlap && (
+            <div className="fund-overlap-block">
+              <div className="bt-cards quality-cards">
+                <div className="bt-card"><div className="k">平均个股重合</div><div className="v">{pct(insights.overlap.summary.avg_stock_overlap_weight)}</div></div>
+                <div className="bt-card"><div className="k">平均行业重合</div><div className="v">{pct(insights.overlap.summary.avg_industry_overlap_weight)}</div></div>
+                <div className="bt-card"><div className="k">高重合组合</div><div className="v">{`${insights.overlap.summary.high_overlap_pair_count}/${insights.overlap.summary.pair_count}`}</div></div>
+                <div className="bt-card"><div className="k">结论</div><div className="v">{insights.overlap.summary.conclusion}</div></div>
+              </div>
+              <div className="fund-bond-list" style={{ marginTop: 12 }}>
+                {insights.overlap.shared_stocks.slice(0, 10).map((r) => (
+                  <span className="tag neutral" key={r.code}>{r.name} · {r.fund_count}只</span>
+                ))}
+              </div>
+            </div>
+          )}
+          {insights.overlap_error && <div className="error">基金重合度真实数据获取失败: {insights.overlap_error}</div>}
+          <p className="hint" style={{ marginTop: 12 }}>{insights.method.overlap}</p>
+        </div>
+      )}
 
       {items.length > 0 ? (
         <div className="panel fade-in">

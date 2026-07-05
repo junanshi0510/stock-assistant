@@ -402,6 +402,14 @@ def get_holdings():
     return holdings_mod.list_holdings()
 
 
+@app.get("/api/holdings/insights")
+def get_holdings_insights(max_funds: int = Query(6, ge=2, le=10)):
+    try:
+        return holdings_mod.holdings_insights(max_funds=max_funds)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"真实持仓组合体检失败:{e}")
+
+
 @app.post("/api/holdings")
 def save_holdings(req: HoldingBulkRequest):
     try:

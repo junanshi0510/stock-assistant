@@ -258,11 +258,16 @@ tbody tr:hover { background: rgba(255,255,255,0.03); }
 .holdings-table {
   min-width: 920px;
 }
+.holdings-insight-table {
+  min-width: 720px;
+}
 .holdings-edit-table {
   min-width: 1180px;
 }
 .holdings-table th,
 .holdings-table td,
+.holdings-insight-table th,
+.holdings-insight-table td,
 .holdings-edit-table th,
 .holdings-edit-table td {
   white-space: nowrap;

@@ -98,6 +98,10 @@ export function fetchHoldings() {
   return getJson('/api/holdings')
 }
 
+export function fetchHoldingsInsights(maxFunds = 6) {
+  return getJson(`/api/holdings/insights?max_funds=${encodeURIComponent(maxFunds)}`)
+}
+
 export function saveHoldings(items) {
   return getJson('/api/holdings', {
     method: 'POST',

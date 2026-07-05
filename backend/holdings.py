@@ -553,6 +553,159 @@ def _risk_notes(items: list[dict], total_amount: float, concentration):
     return notes
 
 
+def _safe_round(value, digits: int = 2):
+    try:
+        if value is None:
+            return None
+        return round(float(value), digits)
+    except (TypeError, ValueError):
+        return None
+
+
+def _holding_amount(item: dict) -> float:
+    return float(item.get("amount") or 0)
+
+
+def _holding_profit(item: dict) -> float:
+    return float(item.get("profit") or 0)
+
+
+def _is_fund_holding(item: dict) -> bool:
+    return item.get("asset_type") == "fund" and bool(re.fullmatch(r"\d{6}", str(item.get("code") or "")))
+
+
+def holdings_insights(max_funds: int = 6) -> dict:
+    items = storage.list_holdings()
+    total_amount = sum(_holding_amount(item) for item in items)
+    total_profit = sum(_holding_profit(item) for item in items)
+    total_yesterday = sum(float(item.get("yesterday_profit") or 0) for item in items)
+    weighted_profit_rate = total_profit / total_amount * 100 if total_amount else None
+
+    allocation = []
+    for item in sorted(items, key=_holding_amount, reverse=True):
+        amount = _holding_amount(item)
+        profit = _holding_profit(item)
+        allocation.append({
+            "asset_type": item.get("asset_type"),
+            "market": item.get("market") or "",
+            "code": item.get("code"),
+            "name": item.get("name") or "",
+            "amount": _safe_round(amount),
+            "ratio": _safe_round(amount / total_amount * 100 if total_amount else None),
+            "yesterday_profit": _safe_round(item.get("yesterday_profit")),
+            "profit": _safe_round(profit),
+            "profit_rate": _safe_round(item.get("profit_rate")),
+            "profit_contribution": _safe_round(profit / total_profit * 100 if total_profit else None),
+        })
+
+    ratios = [(row["ratio"] or 0) for row in allocation]
+    top1 = ratios[0] if ratios else None
+    top3 = sum(ratios[:3]) if ratios else None
+    hhi = sum((r / 100) ** 2 for r in ratios) if ratios else None
+    concentration_level = (
+        "高集中" if top1 is not None and (top1 >= 40 or (top3 or 0) >= 75) else
+        "中等集中" if top1 is not None and (top1 >= 25 or (top3 or 0) >= 55) else
+        "相对分散" if top1 is not None else
+        "待补金额"
+    )
+
+    fund_items = [item for item in items if _is_fund_holding(item)]
+    fund_items.sort(key=_holding_amount, reverse=True)
+    selected_funds = fund_items[:max(2, min(10, int(max_funds or 6)))]
+    fund_codes = []
+    for item in selected_funds:
+        code = str(item.get("code"))
+        if code not in fund_codes:
+            fund_codes.append(code)
+
+    fund_trends = []
+    fund_errors = []
+    if fund_codes:
+        try:
+            import funds as funds_mod
+        except Exception as exc:
+            funds_mod = None
+            fund_errors.append({"scope": "fund_module", "error": str(exc)[:160]})
+        if funds_mod:
+            for item in selected_funds:
+                code = str(item.get("code"))
+                try:
+                    data = funds_mod.analyze_fund(code, months=36)
+                    metrics = data.get("metrics") or {}
+                    fund_trends.append({
+                        "code": code,
+                        "name": data.get("name") or item.get("name") or "",
+                        "amount": _safe_round(item.get("amount")),
+                        "holding_ratio": _safe_round(_holding_amount(item) / total_amount * 100 if total_amount else None),
+                        "as_of": data.get("as_of"),
+                        "trend_state": data.get("trend_state"),
+                        "style": data.get("style"),
+                        "return_1m": metrics.get("return_1m"),
+                        "return_3m": metrics.get("return_3m"),
+                        "return_1y": metrics.get("return_1y"),
+                        "annual_volatility": metrics.get("annual_volatility"),
+                        "max_drawdown": metrics.get("max_drawdown"),
+                        "current_drawdown": metrics.get("current_drawdown"),
+                        "dca_score": metrics.get("dca_score"),
+                        "dca_label": metrics.get("dca_label"),
+                        "daily_return": (data.get("latest") or {}).get("daily_return"),
+                        "source": data.get("source"),
+                    })
+                except Exception as exc:
+                    fund_errors.append({"code": code, "name": item.get("name") or "", "error": str(exc)[:160]})
+
+    overlap = None
+    overlap_error = None
+    if len(fund_codes) >= 2:
+        try:
+            import funds as funds_mod
+            overlap = funds_mod.analyze_fund_overlap(fund_codes)
+        except Exception as exc:
+            overlap_error = str(exc)[:200]
+
+    notes = []
+    if total_amount <= 0:
+        notes.append("持仓金额缺失，补全金额后才能计算真实配置比例。")
+    if top1 is not None and top1 >= 40:
+        notes.append(f"第一大持仓占比 {top1:.2f}%，组合对单只产品较敏感。")
+    if total_profit < 0:
+        losers = [row for row in allocation if (row.get("profit") or 0) < 0]
+        if losers:
+            notes.append(f"当前亏损主要来自 {losers[0]['name'] or losers[0]['code']}，建议结合其回撤和持仓风格判断是否继续持有。")
+    high_overlap_count = ((overlap or {}).get("summary") or {}).get("high_overlap_pair_count")
+    if high_overlap_count:
+        notes.append(f"披露持仓中存在 {high_overlap_count} 组中高重合基金，继续加仓前应确认是否承担相同角色。")
+    if fund_errors:
+        notes.append("部分基金真实净值或持仓数据暂时不可用，已在错误列表中标注，未使用模拟数据补齐。")
+
+    return {
+        "source": "本地保存持仓 / 东方财富基金净值 / 天天基金定期报告披露持仓",
+        "summary": {
+            "holding_count": len(items),
+            "fund_count": len(fund_items),
+            "total_amount": _safe_round(total_amount),
+            "total_yesterday_profit": _safe_round(total_yesterday),
+            "total_profit": _safe_round(total_profit),
+            "weighted_profit_rate": _safe_round(weighted_profit_rate),
+            "top1_ratio": _safe_round(top1),
+            "top3_ratio": _safe_round(top3),
+            "hhi": _safe_round(hhi, 4),
+            "concentration_level": concentration_level,
+        },
+        "allocation": allocation,
+        "fund_trends": fund_trends,
+        "fund_errors": fund_errors,
+        "overlap": overlap,
+        "overlap_error": overlap_error,
+        "notes": notes,
+        "method": {
+            "allocation": "配置比例只使用用户保存的真实持仓金额。",
+            "fund_trends": "基金趋势来自东方财富基金净值走势和天天基金历史净值。",
+            "overlap": "基金重合度来自基金定期报告披露持仓，通常滞后于实时净值。",
+        },
+    }
+
+
 def list_holdings() -> dict:
     items = storage.list_holdings()
     return {"items": items, "summary": holdings_summary(items)}
