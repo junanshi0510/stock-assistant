@@ -27,6 +27,7 @@ _NUM_RE = re.compile(r"[-+]?\d+(?:[,，]\d{3})*(?:\.\d+)?")
 _FUND_META_CACHE: dict[str, dict] = {}
 _FUND_SEARCH_ROWS: list[dict] | None = None
 _FUND_SEARCH_URL = "https://fund.eastmoney.com/js/fundcode_search.js"
+_INLINE_VALUE_RE = re.compile(r"[-+]?\d+(?:[,，]\d{3})*(?:\.\d+)?%?")
 
 
 def _num(text):
@@ -204,6 +205,10 @@ def _lookup_fund_meta(code: str) -> dict:
     return meta
 
 
+def _compact_name_for_compare(text: str) -> str:
+    return re.sub(r"[\s（）()\[\]【】<>《》·,，:：;；/\\_-]+", "", str(text or "")).upper()
+
+
 def _apply_verified_fund_name(candidate: dict, warnings: list[str]):
     if candidate.get("asset_type") != "fund" or not re.fullmatch(r"\d{6}", str(candidate.get("code") or "")):
         return
@@ -211,7 +216,7 @@ def _apply_verified_fund_name(candidate: dict, warnings: list[str]):
     verified_name = meta.get("name") or ""
     if verified_name:
         ocr_name = candidate.get("name") or ""
-        if ocr_name and ocr_name != verified_name:
+        if ocr_name and _compact_name_for_compare(ocr_name) != _compact_name_for_compare(verified_name):
             candidate["ocr_name"] = ocr_name
             warnings.append(f"{candidate['code']} OCR 名称已用真实基金代码库校正为: {verified_name}")
         candidate["name"] = verified_name
@@ -221,6 +226,77 @@ def _apply_verified_fund_name(candidate: dict, warnings: list[str]):
         candidate["source"] = f"{candidate.get('source') or 'ocr'}+fund_code_lookup"
     elif meta.get("error"):
         warnings.append(f"{candidate['code']} 基金名称反查失败: {meta['error']}")
+
+
+def _inline_name_from_prefix(prefix: str, code: str) -> str:
+    text = str(prefix or "")
+    text = re.sub(r"^.*(?:\d{2}-\d{2}|[-+]?\d+(?:[,，]\d{3})*(?:\.\d+)?%)\s+", "", text)
+    text = re.sub(r"^.*(?:提醒|定投|资产|昨日收益|持仓收益/率)\s+", "", text)
+    return _clean_name(text, code)
+
+
+def _inline_values_after_code(segment: str) -> tuple[float | None, float | None, float | None, float | None, bool]:
+    text = str(segment or "")
+    label_idx = text.find("持仓收益/率")
+    if label_idx >= 0:
+        value_text = text[label_idx + len("持仓收益/率"):]
+    else:
+        label_idx = text.find("资产")
+        value_text = text[label_idx + len("资产"):] if label_idx >= 0 else text
+    tokens = [m.group(0) for m in _INLINE_VALUE_RE.finditer(value_text)]
+    amount = _num(tokens[0]) if len(tokens) >= 1 else None
+    yesterday = _num(tokens[1]) if len(tokens) >= 2 else None
+    profit = _num(tokens[2]) if len(tokens) >= 3 else None
+    profit_rate = _num(tokens[3]) if len(tokens) >= 4 and "%" in tokens[3] else None
+    bad_rate_token = len(tokens) >= 4 and "%" not in tokens[3]
+    return amount, yesterday, profit, profit_rate, bad_rate_token
+
+
+def _parse_inline_card_text(raw_text: str) -> dict | None:
+    text = re.sub(r"\s+", " ", str(raw_text or "")).strip()
+    code_matches = list(_CODE_RE.finditer(text))
+    if len(code_matches) < 2:
+        return None
+    candidates = []
+    warnings = []
+    seen = set()
+    for idx, match in enumerate(code_matches):
+        code = match.group(1)
+        if code in seen:
+            continue
+        prev_end = code_matches[idx - 1].end() if idx > 0 else 0
+        next_start = code_matches[idx + 1].start() if idx + 1 < len(code_matches) else len(text)
+        prefix = text[prev_end:match.start()]
+        segment = text[match.end():next_start]
+        name = _inline_name_from_prefix(prefix, code)
+        amount, yesterday, profit, profit_rate, bad_rate_token = _inline_values_after_code(segment)
+        asset_type = _infer_asset_type(code, name)
+        candidate = {
+            "asset_type": asset_type,
+            "market": _infer_market(code, asset_type),
+            "code": code,
+            "name": name,
+            "amount": amount,
+            "cost": None,
+            "yesterday_profit": yesterday,
+            "profit": profit,
+            "profit_rate": profit_rate,
+            "shares": None,
+            "source": "ocr_inline_text",
+            "raw_text": (prefix + " " + code + " " + segment)[:1000],
+            "confidence_note": "基于单行 OCR 文本按代码切分解析，名称会用真实基金代码库校正，请保存前核对金额和收益。",
+        }
+        _apply_verified_fund_name(candidate, warnings)
+        if bad_rate_token and profit is not None:
+            warnings.append(f"{code} 的收益率未可靠识别，请手动核对。")
+        candidates.append(candidate)
+        seen.add(code)
+    return {
+        "raw_text": raw_text,
+        "candidates": candidates,
+        "warnings": warnings,
+        "layout_parser": "inline_card_text",
+    }
 
 
 def _parse_aliyun_words_payload(raw_text: str) -> dict | None:
@@ -384,6 +460,10 @@ def parse_holdings_text(text: str) -> dict:
     layout_result = _parse_aliyun_words_payload(raw_text)
     if layout_result:
         return layout_result
+
+    inline_result = _parse_inline_card_text(raw_text)
+    if inline_result:
+        return inline_result
 
     lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
     candidates = []
