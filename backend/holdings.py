@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import re
 from io import BytesIO
@@ -21,19 +22,139 @@ import storage
 
 
 _CODE_RE = re.compile(r"(?<![\d.])(\d{6}|\d{5})(?![\d.])")
-_NUM_RE = re.compile(r"[-+]?\d+(?:,\d{3})*(?:\.\d+)?")
+_NUM_RE = re.compile(r"[-+]?\d+(?:[,，]\d{3})*(?:\.\d+)?")
 
 
 def _num(text):
     if text is None:
         return None
     try:
-        raw = str(text).replace(",", "").replace("%", "").strip()
+        raw = str(text).replace("，", ",").replace(",", "").replace("%", "").strip()
         if not raw or raw in ("-", "--"):
             return None
         return float(raw)
     except ValueError:
         return None
+
+
+def _word_box(word: dict) -> dict:
+    pos = word.get("pos") or []
+    xs = [p.get("x", 0) for p in pos]
+    ys = [p.get("y", 0) for p in pos]
+    if not xs or not ys:
+        x = word.get("x") or 0
+        y = word.get("y") or 0
+        width = word.get("width") or 0
+        height = word.get("height") or 0
+        xs = [x, x + width]
+        ys = [y, y + height]
+    return {
+        "text": str(word.get("word") or "").strip(),
+        "minx": min(xs),
+        "maxx": max(xs),
+        "miny": min(ys),
+        "maxy": max(ys),
+        "cx": (min(xs) + max(xs)) / 2,
+        "cy": (min(ys) + max(ys)) / 2,
+    }
+
+
+def _is_number_word(text: str) -> bool:
+    cleaned = str(text or "").replace("，", ",").replace("%", "").strip()
+    return bool(re.fullmatch(r"[-+]?\d+(?:,\d{3})*(?:\.\d+)?", cleaned))
+
+
+def _first_number(words: list[dict], *, minx=None, maxx=None, contains_percent=None, signed=None):
+    rows = []
+    for word in words:
+        text = word["text"]
+        if contains_percent is True and "%" not in text:
+            continue
+        if contains_percent is False and "%" in text:
+            continue
+        if signed is True and not text.startswith(("+", "-")):
+            continue
+        if not _is_number_word(text):
+            continue
+        if minx is not None and word["minx"] < minx:
+            continue
+        if maxx is not None and word["minx"] > maxx:
+            continue
+        rows.append(word)
+    rows.sort(key=lambda w: (w["miny"], w["minx"]))
+    return _num(rows[0]["text"]) if rows else None
+
+
+def _parse_aliyun_words_payload(raw_text: str) -> dict | None:
+    try:
+        payload = json.loads(raw_text)
+    except Exception:
+        return None
+    words_raw = payload.get("prism_wordsInfo") or payload.get("wordsInfo") or []
+    if not isinstance(words_raw, list) or not words_raw:
+        return None
+    words = [_word_box(w) for w in words_raw if str(w.get("word") or "").strip()]
+    code_words = [w for w in words if re.fullmatch(r"\d{5,6}", w["text"])]
+    code_words.sort(key=lambda w: (w["miny"], w["minx"]))
+    candidates = []
+    warnings = []
+    seen = set()
+    for idx, code_word in enumerate(code_words):
+        code = code_word["text"]
+        if code in seen:
+            continue
+        block_start = code_word["miny"] - 30
+        block_end = code_words[idx + 1]["miny"] - 20 if idx + 1 < len(code_words) else 10**9
+        block = [w for w in words if block_start <= w["miny"] < block_end]
+
+        header_words = [
+            w for w in block
+            if abs(w["cy"] - code_word["cy"]) <= 65
+            and w["maxx"] <= code_word["minx"] + 30
+            and w["text"] != code
+            and not _is_number_word(w["text"])
+            and w["text"] not in (">", "定投", "资产", "昨日收益", "持仓收益/率")
+        ]
+        header_words.sort(key=lambda w: w["minx"])
+        name = " ".join(w["text"] for w in header_words).strip()
+        if not name:
+            name = _clean_name(" ".join(w["text"] for w in block[:3]), code)
+
+        value_words = [w for w in block if w["miny"] > code_word["miny"] + 90]
+        amount = _first_number(value_words, maxx=360, contains_percent=False)
+        profit = _first_number(value_words, minx=880, contains_percent=False, signed=True)
+        profit_rate = _first_number(value_words, minx=880, contains_percent=True)
+        yesterday = _first_number(value_words, minx=450, maxx=850, contains_percent=False)
+        asset_type = _infer_asset_type(code, name)
+        candidate = {
+            "asset_type": asset_type,
+            "market": _infer_market(code, asset_type),
+            "code": code,
+            "name": name,
+            "amount": amount,
+            "cost": None,
+            "profit": profit,
+            "profit_rate": profit_rate,
+            "shares": None,
+            "source": "aliyun_ocr_layout",
+            "raw_text": " ".join(w["text"] for w in block)[:1000],
+            "confidence_note": "基于阿里云 OCR 坐标分组解析，请保存前核对名称、金额和收益。",
+        }
+        if yesterday is not None:
+            candidate["yesterday_profit"] = yesterday
+        if profit_rate is None and profit is not None:
+            warnings.append(f"{code} 的收益率未可靠识别，请手动核对。")
+        candidates.append(candidate)
+        seen.add(code)
+
+    if not candidates:
+        return None
+    return {
+        "raw_text": payload.get("content") or raw_text,
+        "candidates": candidates,
+        "warnings": warnings,
+        "layout_parser": "aliyun_prism_wordsInfo",
+    }
 
 
 def _clean_name(line: str, code: str) -> str:
@@ -83,6 +204,10 @@ def parse_holdings_text(text: str) -> dict:
     raw_text = str(text or "").strip()
     if not raw_text:
         return {"raw_text": "", "candidates": [], "warnings": ["识别文本为空"]}
+
+    layout_result = _parse_aliyun_words_payload(raw_text)
+    if layout_result:
+        return layout_result
 
     lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
     candidates = []
@@ -211,7 +336,9 @@ def recognize_image_with_aliyun(image_bytes: bytes, content_type: str = "image/p
     body = getattr(response, "body", None)
     data = getattr(body, "data", None)
     if isinstance(data, dict):
-        return data.get("content") or ""
+        if data.get("prism_wordsInfo") or data.get("wordsInfo"):
+            return json.dumps(data, ensure_ascii=False)
+        return data.get("content") or json.dumps(data, ensure_ascii=False)
     content = getattr(data, "content", None)
     if content:
         return content
