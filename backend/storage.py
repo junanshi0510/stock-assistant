@@ -71,6 +71,7 @@ def _get_conn():
                 name        TEXT,
                 amount      REAL,
                 cost        REAL,
+                yesterday_profit REAL,
                 profit      REAL,
                 profit_rate REAL,
                 shares      REAL,
@@ -82,8 +83,15 @@ def _get_conn():
             )
             """
         )
+        _ensure_column(_conn, "holdings", "yesterday_profit", "REAL")
         _conn.commit()
     return _conn
+
+
+def _ensure_column(conn, table: str, column: str, column_type: str):
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    if column not in {row["name"] for row in rows}:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
 
 
 def list_watchlist() -> list[dict]:
@@ -174,8 +182,9 @@ def list_holdings(user_id: str = "default") -> list[dict]:
     with _lock:
         rows = _get_conn().execute(
             """
-            SELECT id, user_id, asset_type, market, code, name, amount, cost, profit,
-                   profit_rate, shares, source, created_at, updated_at
+            SELECT id, user_id, asset_type, market, code, name, amount, cost,
+                   yesterday_profit, profit, profit_rate, shares, source,
+                   created_at, updated_at
             FROM holdings
             WHERE user_id=?
             ORDER BY updated_at DESC
@@ -201,6 +210,7 @@ def upsert_holding(item: dict, user_id: str = "default") -> dict:
         name,
         item.get("amount"),
         item.get("cost"),
+        item.get("yesterday_profit"),
         item.get("profit"),
         item.get("profit_rate"),
         item.get("shares"),
@@ -214,14 +224,16 @@ def upsert_holding(item: dict, user_id: str = "default") -> dict:
         conn.execute(
             """
             INSERT INTO holdings (
-                user_id, asset_type, market, code, name, amount, cost, profit,
-                profit_rate, shares, source, raw_text, created_at, updated_at
+                user_id, asset_type, market, code, name, amount, cost,
+                yesterday_profit, profit, profit_rate, shares, source, raw_text,
+                created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id, asset_type, market, code) DO UPDATE SET
                 name=excluded.name,
                 amount=excluded.amount,
                 cost=excluded.cost,
+                yesterday_profit=excluded.yesterday_profit,
                 profit=excluded.profit,
                 profit_rate=excluded.profit_rate,
                 shares=excluded.shares,
@@ -234,8 +246,9 @@ def upsert_holding(item: dict, user_id: str = "default") -> dict:
         conn.commit()
         row = conn.execute(
             """
-            SELECT id, user_id, asset_type, market, code, name, amount, cost, profit,
-                   profit_rate, shares, source, created_at, updated_at
+            SELECT id, user_id, asset_type, market, code, name, amount, cost,
+                   yesterday_profit, profit, profit_rate, shares, source,
+                   created_at, updated_at
             FROM holdings
             WHERE user_id=? AND asset_type=? AND market=? AND code=?
             """,

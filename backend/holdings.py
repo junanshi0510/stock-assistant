@@ -16,6 +16,7 @@ import base64
 import json
 import os
 import re
+import urllib.request
 from io import BytesIO
 
 import storage
@@ -23,6 +24,9 @@ import storage
 
 _CODE_RE = re.compile(r"(?<![\d.])(\d{6}|\d{5})(?![\d.])")
 _NUM_RE = re.compile(r"[-+]?\d+(?:[,，]\d{3})*(?:\.\d+)?")
+_FUND_META_CACHE: dict[str, dict] = {}
+_FUND_SEARCH_ROWS: list[dict] | None = None
+_FUND_SEARCH_URL = "https://fund.eastmoney.com/js/fundcode_search.js"
 
 
 def _num(text):
@@ -85,6 +89,140 @@ def _first_number(words: list[dict], *, minx=None, maxx=None, contains_percent=N
     return _num(rows[0]["text"]) if rows else None
 
 
+def _number_words(words: list[dict], *, minx=None, maxx=None, y_min=None, contains_percent=None, signed=None):
+    rows = []
+    for word in words:
+        text = word["text"]
+        if contains_percent is True and "%" not in text:
+            continue
+        if contains_percent is False and "%" in text:
+            continue
+        if signed is True and not text.startswith(("+", "-")):
+            continue
+        if not _is_number_word(text):
+            continue
+        if y_min is not None and word["miny"] < y_min:
+            continue
+        if minx is not None and word["cx"] < minx:
+            continue
+        if maxx is not None and word["cx"] > maxx:
+            continue
+        rows.append(word)
+    rows.sort(key=lambda w: (w["miny"], w["minx"]))
+    return rows
+
+
+def _pick_number(words: list[dict], *, minx=None, maxx=None, y_min=None, contains_percent=None, signed=None):
+    rows = _number_words(
+        words,
+        minx=minx,
+        maxx=maxx,
+        y_min=y_min,
+        contains_percent=contains_percent,
+        signed=signed,
+    )
+    return _num(rows[0]["text"]) if rows else None
+
+
+def _find_label(words: list[dict], labels: tuple[str, ...]):
+    hits = [w for w in words if any(label in w["text"] for label in labels)]
+    hits.sort(key=lambda w: (w["miny"], w["minx"]))
+    return hits[0] if hits else None
+
+
+def _layout_columns(block: list[dict]) -> dict:
+    asset = _find_label(block, ("资产", "市值", "金额"))
+    yesterday = _find_label(block, ("昨日收益", "日收益"))
+    profit = _find_label(block, ("持仓收益/率", "持仓收益", "收益/率", "收益率"))
+    if asset and yesterday and profit:
+        left_mid = (asset["cx"] + yesterday["cx"]) / 2
+        right_mid = (yesterday["cx"] + profit["cx"]) / 2
+        value_min_y = max(asset["maxy"], yesterday["maxy"], profit["maxy"]) + 8
+        return {
+            "amount": (-10**9, left_mid),
+            "yesterday_profit": (left_mid, right_mid),
+            "profit": (right_mid, 10**9),
+            "value_min_y": value_min_y,
+            "mode": "labels",
+        }
+    return {
+        "amount": (-10**9, 360),
+        "yesterday_profit": (450, 850),
+        "profit": (880, 10**9),
+        "value_min_y": None,
+        "mode": "fallback",
+    }
+
+
+def _lookup_fund_meta(code: str) -> dict:
+    code = str(code or "").strip()
+    if not re.fullmatch(r"\d{6}", code):
+        return {}
+    if code in _FUND_META_CACHE:
+        return _FUND_META_CACHE[code]
+    try:
+        global _FUND_SEARCH_ROWS
+        if _FUND_SEARCH_ROWS is None:
+            request = urllib.request.Request(
+                _FUND_SEARCH_URL,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+                    ),
+                    "Referer": "https://fund.eastmoney.com/",
+                },
+            )
+            with urllib.request.urlopen(request, timeout=12) as response:
+                text = response.read().decode("utf-8", errors="ignore")
+            match = re.search(r"var\s+r\s*=\s*(\[.*\]);?\s*$", text, re.S)
+            if not match:
+                raise RuntimeError("东方财富基金代码库返回格式异常")
+            raw_rows = json.loads(match.group(1))
+            _FUND_SEARCH_ROWS = [
+                {
+                    "code": str(row[0]),
+                    "abbr": str(row[1] or ""),
+                    "name": str(row[2] or ""),
+                    "type": str(row[3] or ""),
+                    "pinyin": str(row[4] or ""),
+                }
+                for row in raw_rows
+                if len(row) >= 5
+            ]
+        exact = next((item for item in _FUND_SEARCH_ROWS if item.get("code") == code), None)
+        meta = {
+            "code": code,
+            "name": (exact or {}).get("name") or "",
+            "type": (exact or {}).get("type") or "",
+            "source": "东方财富基金代码搜索库",
+            "source_url": _FUND_SEARCH_URL,
+        }
+    except Exception as exc:
+        meta = {"code": code, "name": "", "type": "", "error": str(exc)[:160]}
+    _FUND_META_CACHE[code] = meta
+    return meta
+
+
+def _apply_verified_fund_name(candidate: dict, warnings: list[str]):
+    if candidate.get("asset_type") != "fund" or not re.fullmatch(r"\d{6}", str(candidate.get("code") or "")):
+        return
+    meta = _lookup_fund_meta(candidate["code"])
+    verified_name = meta.get("name") or ""
+    if verified_name:
+        ocr_name = candidate.get("name") or ""
+        if ocr_name and ocr_name != verified_name:
+            candidate["ocr_name"] = ocr_name
+            warnings.append(f"{candidate['code']} OCR 名称已用真实基金代码库校正为: {verified_name}")
+        candidate["name"] = verified_name
+        candidate["fund_type"] = meta.get("type") or ""
+        candidate["name_source"] = meta.get("source") or ""
+        candidate["name_source_url"] = meta.get("source_url") or ""
+        candidate["source"] = f"{candidate.get('source') or 'ocr'}+fund_code_lookup"
+    elif meta.get("error"):
+        warnings.append(f"{candidate['code']} 基金名称反查失败: {meta['error']}")
+
+
 def _parse_aliyun_words_payload(raw_text: str) -> dict | None:
     try:
         payload = json.loads(raw_text)
@@ -120,11 +258,48 @@ def _parse_aliyun_words_payload(raw_text: str) -> dict | None:
         if not name:
             name = _clean_name(" ".join(w["text"] for w in block[:3]), code)
 
-        value_words = [w for w in block if w["miny"] > code_word["miny"] + 90]
-        amount = _first_number(value_words, maxx=360, contains_percent=False)
-        profit = _first_number(value_words, minx=880, contains_percent=False, signed=True)
-        profit_rate = _first_number(value_words, minx=880, contains_percent=True)
-        yesterday = _first_number(value_words, minx=450, maxx=850, contains_percent=False)
+        columns = _layout_columns(block)
+        value_min_y = columns["value_min_y"] or code_word["miny"] + 90
+        amount_minx, amount_maxx = columns["amount"]
+        yesterday_minx, yesterday_maxx = columns["yesterday_profit"]
+        profit_minx, profit_maxx = columns["profit"]
+        amount = _pick_number(
+            block,
+            minx=amount_minx,
+            maxx=amount_maxx,
+            y_min=value_min_y,
+            contains_percent=False,
+        )
+        profit = _pick_number(
+            block,
+            minx=profit_minx,
+            maxx=profit_maxx,
+            y_min=value_min_y,
+            contains_percent=False,
+            signed=True,
+        )
+        if profit is None:
+            profit = _pick_number(
+                block,
+                minx=profit_minx,
+                maxx=profit_maxx,
+                y_min=value_min_y,
+                contains_percent=False,
+            )
+        profit_rate = _pick_number(
+            block,
+            minx=profit_minx,
+            maxx=profit_maxx,
+            y_min=value_min_y,
+            contains_percent=True,
+        )
+        yesterday = _pick_number(
+            block,
+            minx=yesterday_minx,
+            maxx=yesterday_maxx,
+            y_min=value_min_y,
+            contains_percent=False,
+        )
         asset_type = _infer_asset_type(code, name)
         candidate = {
             "asset_type": asset_type,
@@ -138,10 +313,11 @@ def _parse_aliyun_words_payload(raw_text: str) -> dict | None:
             "shares": None,
             "source": "aliyun_ocr_layout",
             "raw_text": " ".join(w["text"] for w in block)[:1000],
-            "confidence_note": "基于阿里云 OCR 坐标分组解析，请保存前核对名称、金额和收益。",
+            "confidence_note": "基于阿里云 OCR 坐标和字段标题分组解析，名称用真实基金代码库校正，请保存前核对金额和收益。",
         }
         if yesterday is not None:
             candidate["yesterday_profit"] = yesterday
+        _apply_verified_fund_name(candidate, warnings)
         if profit_rate is None and profit is not None:
             warnings.append(f"{code} 的收益率未可靠识别，请手动核对。")
         candidates.append(candidate)
@@ -211,6 +387,7 @@ def parse_holdings_text(text: str) -> dict:
 
     lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
     candidates = []
+    warnings = []
     seen = set()
     for idx, line in enumerate(lines):
         for match in _CODE_RE.finditer(line):
@@ -228,7 +405,7 @@ def parse_holdings_text(text: str) -> dict:
             profit = _find_labeled_number(value_context, ["持有收益", "累计收益", "收益", "盈亏"])
             profit_rate = _find_labeled_number(value_context, ["收益率", "持有收益率", "盈亏率"])
             shares = _find_labeled_number(value_context, ["持有份额", "份额", "持仓份额"])
-            candidates.append({
+            candidate = {
                 "asset_type": asset_type,
                 "market": _infer_market(code, asset_type),
                 "code": code,
@@ -241,10 +418,11 @@ def parse_holdings_text(text: str) -> dict:
                 "source": "ocr_text",
                 "raw_text": context[:1000],
                 "confidence_note": "基于截图文字规则解析，请保存前核对名称、金额和收益。",
-            })
+            }
+            _apply_verified_fund_name(candidate, warnings)
+            candidates.append(candidate)
             seen.add(code)
 
-    warnings = []
     if not candidates:
         warnings.append("未识别到 6 位基金/股票代码或 5 位港股代码，请尝试更清晰截图或手动粘贴文字。")
     return {"raw_text": raw_text, "candidates": candidates, "warnings": warnings}

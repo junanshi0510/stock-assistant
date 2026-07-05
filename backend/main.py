@@ -272,6 +272,7 @@ class HoldingRequest(BaseModel):
     name: str = ""
     amount: float | None = None
     cost: float | None = None
+    yesterday_profit: float | None = None
     profit: float | None = None
     profit_rate: float | None = None
     shares: float | None = None
