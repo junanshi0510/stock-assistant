@@ -193,3 +193,52 @@ sudo systemctl reload nginx
 - 真实数据源依赖服务器网络环境；如果服务器访问东方财富、天天基金、Tushare、海外源不稳定，需要在服务器网络或代理规则里处理。
 - 如果美股基本面/新闻要稳定使用，需要在 `backend/config.py` 配置 Alpha Vantage/Polygon 等真实数据源 Key。
 - 如果前端和后端拆成两个域名，需要设置后端环境变量 `ALLOWED_ORIGINS=https://前端域名`。
+
+## 10. GitHub Pages + 自定义域名方案
+
+GitHub Pages 只能托管前端静态文件，不能运行本项目的 FastAPI 后端。因此可行架构是：
+
+```text
+用户 -> https://www.your-domain.com          -> GitHub Pages 前端
+前端 -> https://api.your-domain.com/api/...  -> 云服务器/Render/Railway 上的 FastAPI 后端
+```
+
+项目已包含 GitHub Pages 自动部署工作流：
+
+```text
+.github/workflows/deploy-pages.yml
+```
+
+使用步骤：
+
+1. 在 GitHub 仓库进入 `Settings -> Pages`。
+2. `Build and deployment` 选择 `GitHub Actions`。
+3. 在 `Settings -> Secrets and variables -> Actions -> Variables` 添加变量：
+
+```text
+VITE_API_BASE_URL=https://api.your-domain.com
+```
+
+4. 把后端部署到服务器或 PaaS，并设置后端环境变量：
+
+```text
+ALLOWED_ORIGINS=https://www.your-domain.com
+```
+
+5. 推送 `main` 分支后，GitHub Actions 会自动构建并发布前端。
+
+6. 如果要绑定自定义域名，在 `Settings -> Pages -> Custom domain` 填入：
+
+```text
+www.your-domain.com
+```
+
+然后按 GitHub 页面提示配置 DNS。常见配置：
+
+```text
+CNAME  www  junanshi0510.github.io
+```
+
+如果你想让根域名 `your-domain.com` 也能访问，需要在 DNS 里按 GitHub Pages 提示配置 A/AAAA 记录，或者把根域名 301 跳转到 `www.your-domain.com`。
+
+注意：如果用 GitHub Pages 的默认项目地址 `https://junanshi0510.github.io/stock-assistant/` 而不是自定义域名，Vite 还需要配置 `base: "/stock-assistant/"`。如果绑定独立自定义域名并部署在域名根路径，就不需要改 `base`。

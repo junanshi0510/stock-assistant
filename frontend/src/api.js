@@ -1,7 +1,10 @@
-// 与后端 FastAPI 通信的封装。开发时 vite 会把 /api 转发到 localhost:8000。
+// 与后端 FastAPI 通信的封装。
+// 默认请求同域 /api；部署到 GitHub Pages 等静态托管时，可用 VITE_API_BASE_URL 指向后端域名。
+
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
 
 async function getJson(url, options) {
-  const res = await fetch(url, options)
+  const res = await fetch(`${API_BASE}${url}`, options)
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
     throw new Error(data.detail || `请求失败 (${res.status})`)
