@@ -549,6 +549,19 @@ def get_fund_categories():
         raise HTTPException(status_code=502, detail=f"真实基金分类热度数据获取失败:{e}")
 
 
+@app.get("/api/funds/opportunities")
+def fund_opportunities(
+    risk: str = Query("balanced", regex="^(stable|balanced|aggressive)$"),
+    limit: int = Query(5, ge=3, le=10),
+):
+    try:
+        return funds_mod.get_fund_opportunities(risk=risk, limit=limit)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"真实基金机会数据获取失败:{e}")
+
+
 @app.get("/api/funds/search")
 def search_funds(
     keyword: str = Query(..., min_length=1),

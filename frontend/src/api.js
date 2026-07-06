@@ -170,6 +170,11 @@ export function fetchFundCategories() {
   return getJson('/api/funds/categories')
 }
 
+export function fetchFundOpportunities(risk = 'balanced', limit = 5) {
+  const q = new URLSearchParams({ risk, limit: String(limit) })
+  return getJson(`/api/funds/opportunities?${q.toString()}`)
+}
+
 export function searchFunds(keyword, limit = 20) {
   const q = new URLSearchParams({ keyword, limit: String(limit) })
   return getJson(`/api/funds/search?${q.toString()}`)

@@ -764,6 +764,17 @@ tbody tr:hover {
 .fund-leader-cards {
   margin-top: 16px;
 }
+.fund-opportunity-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+}
+.fund-opportunity-card {
+  padding-top: 4px;
+}
+.fund-opportunity-table {
+  min-width: 920px;
+}
 .fund-compare-table {
   min-width: 980px;
 }
@@ -795,6 +806,8 @@ tbody tr:hover {
 }
 .fund-compare-table th,
 .fund-compare-table td,
+.fund-opportunity-table th,
+.fund-opportunity-table td,
 .fund-overlap-table th,
 .fund-overlap-table td,
 .fund-peer-table th,

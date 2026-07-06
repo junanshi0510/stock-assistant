@@ -638,6 +638,176 @@ def get_hot_funds(category: str = "all", limit: int = 30, sort: str = "1y", incl
     return rank
 
 
+_OPPORTUNITY_BUCKETS = [
+    {
+        "key": "core",
+        "name": "稳健底仓",
+        "category": "bond",
+        "sort": "1y",
+        "profile": "优先债券型基金，关注近 1 年正收益、近 1/3 月不明显转弱，适合作为低波动底仓候选。",
+    },
+    {
+        "key": "balanced",
+        "name": "均衡配置",
+        "category": "hybrid",
+        "sort": "1y",
+        "profile": "优先混合型基金，兼顾近 3/6 月趋势和近 1 年表现，适合做权益中枢配置候选。",
+    },
+    {
+        "key": "growth",
+        "name": "进攻成长",
+        "category": "stock",
+        "sort": "6m",
+        "profile": "优先股票型基金，关注 3/6 月趋势和 1 年延续性，波动通常更高，只适合小比例进攻仓。",
+    },
+    {
+        "key": "index",
+        "name": "指数工具",
+        "category": "index",
+        "sort": "6m",
+        "profile": "优先指数型基金，适合作为行业或宽基工具，需结合估值和仓位控制使用。",
+    },
+    {
+        "key": "overseas",
+        "name": "海外分散",
+        "category": "qdii",
+        "sort": "1y",
+        "profile": "优先 QDII 基金，用于降低单一 A 股市场暴露，需注意汇率、额度和海外市场波动。",
+    },
+]
+
+
+def _score_opportunity(row: dict, bucket_key: str, risk: str) -> tuple[float, list[str], list[str]]:
+    r1m = row.get("return_1m")
+    r3m = row.get("return_3m")
+    r6m = row.get("return_6m")
+    r1y = row.get("return_1y")
+    ytd = row.get("return_ytd")
+    scale = row.get("scale_yi")
+    score = 50.0
+    reasons = []
+    cautions = []
+
+    if r1y is not None:
+        score += 14 if r1y > 8 else 6 if r1y > 0 else -12
+        reasons.append(f"近1年{_round(r1y)}%")
+    if r6m is not None:
+        score += 12 if r6m > 6 else 4 if r6m > 0 else -8
+    if r3m is not None:
+        score += 14 if r3m > 4 else 5 if r3m > 0 else -10
+        reasons.append(f"近3月{_round(r3m)}%")
+    if r1m is not None:
+        score += 8 if 0 <= r1m <= 8 else -8 if r1m < -3 else -5 if r1m > 18 else 2
+    if ytd is not None:
+        score += 5 if ytd > 0 else -4
+    if scale is not None:
+        score += 8 if 5 <= scale <= 200 else 2 if scale > 200 else -8 if scale < 1 else 0
+        if scale < 1:
+            cautions.append("规模偏小")
+    if r1m is not None and r1m > 18:
+        cautions.append("近1月涨幅过快，避免追高")
+    if r3m is not None and r1m is not None and r3m > 15 and r1m < 0:
+        cautions.append("短期开始降温")
+
+    if bucket_key == "core":
+        score += 10
+        if r1m is not None and r1m < -1:
+            score -= 12
+            cautions.append("债基短期回撤")
+    if bucket_key in ("growth", "index"):
+        score += 8 if risk == "aggressive" else -6 if risk == "stable" else 0
+    if bucket_key == "overseas":
+        score += 4 if risk != "stable" else -4
+        cautions.append("注意汇率和海外市场波动")
+
+    if not cautions:
+        cautions.append("仍需看具体持仓、费率和回撤")
+    label = "重点关注" if score >= 76 else "可以观察" if score >= 62 else "谨慎观察"
+    return max(0, min(100, score)), reasons[:3], cautions[:3] + [label]
+
+
+def _opportunity_candidate(row: dict, bucket: dict, risk: str) -> dict:
+    score, reasons, cautions = _score_opportunity(row, bucket["key"], risk)
+    return {
+        "bucket": bucket["key"],
+        "bucket_name": bucket["name"],
+        "code": row.get("code"),
+        "name": row.get("name"),
+        "category": row.get("category"),
+        "rank": row.get("rank"),
+        "date": row.get("date"),
+        "unit_nav": row.get("unit_nav"),
+        "daily_return": row.get("daily_return"),
+        "return_1m": row.get("return_1m"),
+        "return_3m": row.get("return_3m"),
+        "return_6m": row.get("return_6m"),
+        "return_1y": row.get("return_1y"),
+        "return_ytd": row.get("return_ytd"),
+        "scale_yi": row.get("scale_yi"),
+        "fee": row.get("fee"),
+        "trend": row.get("trend"),
+        "opportunity_score": _round(score),
+        "reasons": reasons,
+        "cautions": cautions,
+    }
+
+
+def get_fund_opportunities(risk: str = "balanced", limit: int = 5) -> dict:
+    risk = str(risk or "balanced").strip()
+    if risk not in ("stable", "balanced", "aggressive"):
+        raise ValueError(f"不支持的风险偏好:{risk}")
+    limit = max(3, min(10, int(limit)))
+    buckets = []
+    failed = []
+    seen = set()
+    for bucket in _OPPORTUNITY_BUCKETS:
+        try:
+            rank = _fetch_rank(bucket["category"], 80, bucket["sort"])
+            rows = []
+            for row in rank.get("items", []):
+                code = row.get("code")
+                if not code or code in seen:
+                    continue
+                candidate = _opportunity_candidate(row, bucket, risk)
+                if candidate["opportunity_score"] >= 52:
+                    rows.append(candidate)
+            rows.sort(key=lambda x: (x["opportunity_score"], x.get("scale_yi") or 0), reverse=True)
+            selected = rows[:limit]
+            for row in selected:
+                seen.add(row["code"])
+            buckets.append({
+                "key": bucket["key"],
+                "name": bucket["name"],
+                "profile": bucket["profile"],
+                "category": bucket["category"],
+                "sort": bucket["sort"],
+                "as_of": rank.get("as_of"),
+                "items": selected,
+            })
+        except Exception as exc:
+            failed.append({"bucket": bucket["key"], "name": bucket["name"], "error": str(exc)[:180]})
+    if not buckets:
+        raise RuntimeError("真实基金机会数据当前不可用")
+    all_items = [item for bucket in buckets for item in bucket["items"]]
+    all_items.sort(key=lambda x: x["opportunity_score"], reverse=True)
+    return {
+        "source": "东方财富基金排行",
+        "source_url": "https://fund.eastmoney.com/data/fundranking.html",
+        "risk": risk,
+        "limit": limit,
+        "as_of": next((b.get("as_of") for b in buckets if b.get("as_of")), ""),
+        "buckets": buckets,
+        "top_items": all_items[:min(12, len(all_items))],
+        "failed": failed,
+        "method": {
+            "screening": "只使用东方财富基金排行披露的收益窗口、分类、规模和费率字段，不生成模拟数据。",
+            "score": "机会分综合近1月、近3月、近6月、近1年、今年来、规模和风险偏好；高分代表更值得进一步研究，不代表买入建议。",
+            "next_step": "点进单只基金后，应继续查看真实净值回撤、波动、基金持仓和同类排名。",
+        },
+        "risk_note": "基金有波动和本金亏损风险；榜单收益代表历史表现，不保证未来收益。",
+    }
+
+
 def search_funds(keyword: str, limit: int = 20) -> dict:
     keyword = str(keyword or "").strip()
     if not keyword:
