@@ -1938,6 +1938,193 @@ def _analysis_text(metrics: dict, style: dict) -> list[dict]:
     return notes
 
 
+def _percentile_rank(values: list[float], current: float | None) -> float | None:
+    clean = [float(v) for v in values if v is not None and not math.isnan(float(v)) and not math.isinf(float(v))]
+    if not clean or current is None:
+        return None
+    return sum(1 for v in clean if v <= current) / len(clean) * 100
+
+
+def _rolling_return_profile(nav: list[float], windows: list[tuple[str, int]]) -> list[dict]:
+    rows = []
+    for label, days in windows:
+        if len(nav) <= days:
+            rows.append({
+                "label": label,
+                "days": days,
+                "current_return": None,
+                "historical_percentile": None,
+                "avg_return": None,
+                "positive_ratio": None,
+                "sample_count": 0,
+            })
+            continue
+        values = []
+        for idx in range(days, len(nav)):
+            base = nav[idx - days]
+            latest = nav[idx]
+            if base and base > 0:
+                values.append((latest / base - 1) * 100)
+        current = values[-1] if values else None
+        rows.append({
+            "label": label,
+            "days": days,
+            "current_return": _round(current),
+            "historical_percentile": _round(_percentile_rank(values, current)),
+            "avg_return": _round(statistics.fmean(values)) if values else None,
+            "positive_ratio": _round(sum(1 for v in values if v > 0) / len(values) * 100) if values else None,
+            "sample_count": len(values),
+        })
+    return rows
+
+
+def _fund_timing_profile(df: pd.DataFrame, metrics: dict, recovery_profile: dict) -> dict:
+    points = []
+    for _, row in df.iterrows():
+        value = _num(row["unit_nav"])
+        if value is not None:
+            points.append((str(row["date"]), value))
+    nav = [v for _, v in points]
+    if len(nav) < 60:
+        return {
+            "score": None,
+            "label": "样本不足",
+            "summary": "真实净值样本不足，暂不生成买入节奏分析。",
+            "signals": [],
+            "rolling_returns": [],
+            "zones": {},
+            "method": "仅使用真实披露单位净值计算；样本不足时不推断。",
+        }
+
+    latest_nav = nav[-1]
+    latest_date = points[-1][0]
+    high_nav = max(nav)
+    high_idx = max(idx for idx, value in enumerate(nav) if value == high_nav)
+    high_date = points[high_idx][0]
+    current_dd = (latest_nav / high_nav - 1) * 100 if high_nav > 0 else None
+
+    drawdown_depths = []
+    peak = nav[0]
+    for value in nav:
+        peak = max(peak, value)
+        if peak > 0:
+            drawdown_depths.append(max(0.0, (1 - value / peak) * 100))
+    current_depth = abs(current_dd) if current_dd is not None else None
+    drawdown_percentile = _percentile_rank(drawdown_depths, current_depth)
+
+    ma20 = statistics.fmean(nav[-20:]) if len(nav) >= 20 else None
+    ma60 = statistics.fmean(nav[-60:]) if len(nav) >= 60 else None
+    ma120 = statistics.fmean(nav[-120:]) if len(nav) >= 120 else None
+    ret_20 = _period_return(df, 30)
+    ret_60 = _period_return(df, 90)
+    ret_120 = _period_return(df, 180)
+    rolling_returns = _rolling_return_profile(nav, [("近1月", 20), ("近3月", 60), ("近6月", 120)])
+
+    score = 50
+    signals = []
+    if drawdown_percentile is not None:
+        if drawdown_percentile >= 75 and (current_dd or 0) > -30:
+            score += 18
+            signals.append({"name": "回撤位置", "level": "positive", "text": "当前回撤深度高于大多数历史样本，价格位置更适合分批观察。"})
+        elif drawdown_percentile <= 25 and (current_dd or 0) > -3:
+            score -= 14
+            signals.append({"name": "回撤位置", "level": "negative", "text": "当前接近阶段高位，追涨的容错率较低。"})
+        else:
+            signals.append({"name": "回撤位置", "level": "neutral", "text": "当前回撤处在历史中间区间，主要看趋势能否确认。"})
+
+    if latest_nav and ma20 and ma60:
+        if latest_nav > ma20 > ma60:
+            score += 14
+            signals.append({"name": "均线结构", "level": "positive", "text": "最新净值站上 20/60 日均值，短中期结构偏强。"})
+        elif latest_nav < ma20 < ma60:
+            score -= 16
+            signals.append({"name": "均线结构", "level": "negative", "text": "最新净值低于 20/60 日均值，短中期结构偏弱。"})
+        else:
+            signals.append({"name": "均线结构", "level": "neutral", "text": "均线结构尚未形成明确方向。"})
+
+    if ret_20 is not None and ret_60 is not None:
+        if ret_20 > 0 and ret_60 > 0:
+            score += 10
+            signals.append({"name": "动量", "level": "positive", "text": "近 1 月和近 3 月收益同时为正，短期资金反馈较好。"})
+        elif ret_20 < 0 and ret_60 < 0:
+            score -= 12
+            signals.append({"name": "动量", "level": "negative", "text": "近 1 月和近 3 月收益同时为负，仍在弱势释放阶段。"})
+
+    annual_vol = metrics.get("annual_volatility")
+    max_dd = metrics.get("max_drawdown")
+    if annual_vol is not None and annual_vol > 45:
+        score -= 10
+        signals.append({"name": "波动", "level": "negative", "text": "年化波动较高，仓位和买入节奏需要更保守。"})
+    elif annual_vol is not None and annual_vol < 15:
+        score += 5
+        signals.append({"name": "波动", "level": "positive", "text": "历史波动较低，更适合承担组合稳定器角色。"})
+    if max_dd is not None and max_dd < -40:
+        score -= 8
+        signals.append({"name": "极端风险", "level": "negative", "text": "历史最大回撤较深，需要预留更长持有周期。"})
+
+    if ret_20 is not None and ret_20 > 12 and (current_dd or 0) > -2:
+        score -= 14
+        signals.append({"name": "短期过热", "level": "negative", "text": "近 1 月涨幅较快且接近高位，立即重仓的性价比下降。"})
+
+    score = int(max(0, min(100, round(score))))
+    if score >= 75:
+        label = "适合分批关注"
+        summary = "位置和趋势条件较好，可以用分批节奏观察，不适合一次性重仓。"
+    elif score >= 60:
+        label = "小额定投观察"
+        summary = "部分条件成立，但仍需等待更多确认，适合小额或定投方式跟踪。"
+    elif score >= 45:
+        label = "等待确认"
+        summary = "当前没有明显优势，优先等待回撤、趋势或同类排名进一步改善。"
+    else:
+        label = "暂缓观察"
+        summary = "弱势或风险信号较多，当前更适合等待风险释放。"
+
+    zones = {
+        "latest_date": latest_date,
+        "latest_nav": _round(latest_nav, 4),
+        "high_date": high_date,
+        "high_nav": _round(high_nav, 4),
+        "current_drawdown": _round(current_dd),
+        "drawdown_percentile": _round(drawdown_percentile),
+        "near_high_nav": _round(high_nav * 0.98, 4),
+        "normal_pullback_nav": _round(high_nav * 0.92, 4),
+        "deep_pullback_nav": _round(high_nav * 0.85, 4),
+        "ma20": _round(ma20, 4),
+        "ma60": _round(ma60, 4),
+        "ma120": _round(ma120, 4),
+    }
+    actions = [
+        {"title": "现在", "text": summary},
+        {"title": "加仓观察条件", "text": "优先看净值重新站稳 20/60 日均值，同时近 1 月收益不再继续走弱。"},
+        {"title": "风险控制条件", "text": "若跌破 60 日均值且近 3 月收益转负，应降低买入频率或暂停新增。"},
+    ]
+    if current_dd is not None and current_dd > -3:
+        actions.append({"title": "追高约束", "text": "接近历史高位时，新增资金更适合等待普通回撤区再分批。"})
+    elif current_dd is not None and current_dd < -15:
+        actions.append({"title": "深回撤约束", "text": "深回撤不是自动买入信号，需要确认基金风格、持仓和同类排名没有同步恶化。"})
+
+    return {
+        "score": score,
+        "label": label,
+        "summary": summary,
+        "signals": signals,
+        "actions": actions,
+        "rolling_returns": rolling_returns,
+        "zones": zones,
+        "momentum": {
+            "return_1m": _round(ret_20),
+            "return_3m": _round(ret_60),
+            "return_6m": _round(ret_120),
+            "latest_above_ma20": bool(latest_nav > ma20) if ma20 else None,
+            "latest_above_ma60": bool(latest_nav > ma60) if ma60 else None,
+            "open_drawdown_days": recovery_profile.get("open_drawdown_days"),
+            "open_drawdown_depth": recovery_profile.get("open_drawdown_depth"),
+        },
+        "method": "买入节奏只使用真实披露单位净值、历史回撤、滚动收益和均线结构计算；不使用模拟行情，不保证未来收益。",
+    }
+
+
 def analyze_fund(code: str, months: int = 36) -> dict:
     months = max(6, min(120, int(months)))
     df = _fetch_nav_history(code, months)
@@ -2040,6 +2227,7 @@ def analyze_fund(code: str, months: int = 36) -> dict:
         "dca_score": dca_score,
         "dca_label": dca_label,
     }
+    timing = _fund_timing_profile(df, metrics, recovery_profile)
     return {
         "source": "东方财富基金净值走势 / 天天基金历史净值",
         "source_url": f"https://fund.eastmoney.com/{code}.html",
@@ -2061,6 +2249,7 @@ def analyze_fund(code: str, months: int = 36) -> dict:
         "trend_state": trend_state,
         "style": style,
         "metrics": metrics,
+        "timing": timing,
         "drawdown_recovery": recovery_profile,
         "calendar_returns": calendar_returns,
         "insights": _analysis_text(metrics, style),

@@ -656,6 +656,85 @@ export default function FundTab() {
             <FundLineChart data={fund.nav} />
           </div>
 
+          {fund.timing && (
+            <div className="panel fade-in">
+              <h3 className="section-title">
+                买入节奏 <span className="hint">基于真实净值历史计算回撤分位、均线结构和滚动收益，不做模拟预测</span>
+              </h3>
+              <div className="bt-cards quality-cards">
+                <MetricCard label="节奏评分" value={fund.timing.score != null ? `${fund.timing.score} · ${fund.timing.label}` : fund.timing.label} />
+                <MetricCard label="当前回撤" value={pct(fund.timing.zones?.current_drawdown)} cls="delta-neg" />
+                <MetricCard label="回撤分位" value={pct(fund.timing.zones?.drawdown_percentile)} />
+                <MetricCard label="阶段高点" value={fund.timing.zones?.high_nav != null ? `${num(fund.timing.zones.high_nav, 4)} · ${fund.timing.zones.high_date}` : '-'} />
+                <MetricCard label="20日均值" value={fund.timing.zones?.ma20 != null ? num(fund.timing.zones.ma20, 4) : '-'} />
+                <MetricCard label="60日均值" value={fund.timing.zones?.ma60 != null ? num(fund.timing.zones.ma60, 4) : '-'} />
+              </div>
+              <div className="fund-timing-grid">
+                <div>
+                  <h4 className="fund-subhead">当前判断</h4>
+                  <p className="fund-timing-summary">{fund.timing.summary}</p>
+                  <div className="fund-timing-actions">
+                    {(fund.timing.actions || []).map((item) => (
+                      <div className="fund-timing-action" key={item.title}>
+                        <b>{item.title}</b>
+                        <span>{item.text}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <h4 className="fund-subhead">净值位置</h4>
+                  <div className="fund-zone-list">
+                    <div><span>最新净值</span><b>{fund.timing.zones?.latest_nav != null ? num(fund.timing.zones.latest_nav, 4) : '-'}</b></div>
+                    <div><span>接近高位线</span><b>{fund.timing.zones?.near_high_nav != null ? num(fund.timing.zones.near_high_nav, 4) : '-'}</b></div>
+                    <div><span>普通回撤线</span><b>{fund.timing.zones?.normal_pullback_nav != null ? num(fund.timing.zones.normal_pullback_nav, 4) : '-'}</b></div>
+                    <div><span>深度回撤线</span><b>{fund.timing.zones?.deep_pullback_nav != null ? num(fund.timing.zones.deep_pullback_nav, 4) : '-'}</b></div>
+                  </div>
+                  <p className="hint">这些阈值由真实阶段高点折算，用于控制买入节奏，不代表目标价。</p>
+                </div>
+              </div>
+              {(fund.timing.signals || []).length > 0 && (
+                <div className="fund-signal-grid">
+                  {fund.timing.signals.map((s, idx) => (
+                    <div className={`fund-signal ${s.level || 'neutral'}`} key={`${s.name}-${idx}`}>
+                      <b>{s.name}</b>
+                      <span>{s.text}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {(fund.timing.rolling_returns || []).length > 0 && (
+                <div className="corr-wrap" style={{ marginTop: 14 }}>
+                  <table className="compact-table fund-timing-table">
+                    <thead>
+                      <tr>
+                        <th>窗口</th>
+                        <th>当前收益</th>
+                        <th>历史分位</th>
+                        <th>平均收益</th>
+                        <th>正收益占比</th>
+                        <th>样本</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {fund.timing.rolling_returns.map((r) => (
+                        <tr key={r.label}>
+                          <td>{r.label}</td>
+                          <td className={deltaClass(r.current_return)}>{pct(r.current_return)}</td>
+                          <td>{pct(r.historical_percentile)}</td>
+                          <td className={deltaClass(r.avg_return)}>{pct(r.avg_return)}</td>
+                          <td>{pct(r.positive_ratio)}</td>
+                          <td>{r.sample_count}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              <p className="hint" style={{ marginTop: 12 }}>{fund.timing.method}</p>
+            </div>
+          )}
+
           <div className="panel fade-in">
             <h3 className="section-title">
               同类定位 <span className="hint">在同类型基金排行中查看当前基金的位置</span>

@@ -839,6 +839,104 @@ tbody tr:hover {
   margin-top: 14px;
 }
 
+.fund-timing-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(280px, 0.95fr);
+  gap: 18px;
+  margin-top: 14px;
+}
+
+.fund-timing-summary {
+  margin: 0 0 12px;
+  color: #dce7f5;
+  line-height: 1.7;
+}
+
+.fund-timing-actions {
+  display: grid;
+  gap: 10px;
+}
+
+.fund-timing-action {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  padding: 10px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.28);
+}
+
+.fund-timing-action b {
+  color: #e6edf7;
+}
+
+.fund-timing-action span {
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.fund-zone-list {
+  display: grid;
+  gap: 10px;
+}
+
+.fund-zone-list div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-radius: 8px;
+  background: rgba(2, 6, 23, 0.22);
+}
+
+.fund-zone-list span {
+  color: var(--muted);
+}
+
+.fund-zone-list b {
+  color: #e6edf7;
+}
+
+.fund-signal-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.fund-signal {
+  padding: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.28);
+}
+
+.fund-signal b {
+  display: block;
+  margin-bottom: 6px;
+  color: #e6edf7;
+}
+
+.fund-signal span {
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.fund-signal.positive {
+  border-color: rgba(32, 196, 134, 0.28);
+}
+
+.fund-signal.negative {
+  border-color: rgba(240, 93, 104, 0.32);
+}
+
+.fund-timing-table {
+  min-width: 720px;
+}
+
 .fund-holding-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
@@ -1098,6 +1196,7 @@ tbody tr:hover {
 @media (max-width: 900px) {
   .fund-recovery-grid,
   .fund-calendar-grid,
+  .fund-timing-grid,
   .fund-holding-grid {
     grid-template-columns: 1fr;
   }
