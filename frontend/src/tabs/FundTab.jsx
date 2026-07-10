@@ -38,6 +38,13 @@ function num(v, digits = 2) {
   return Number(v).toFixed(digits)
 }
 
+function metricText(metric) {
+  if (metric?.value == null) return '-'
+  if (metric.unit === '只' || metric.unit === '组') return `${Number(metric.value).toFixed(0)}${metric.unit}`
+  if (metric.unit === '%') return `${Number(metric.value).toFixed(2)}%`
+  return `${num(metric.value)}${metric.unit || ''}`
+}
+
 function deltaClass(v) {
   if (v > 0) return 'delta-pos'
   if (v < 0) return 'delta-neg'
@@ -734,6 +741,123 @@ export default function FundTab() {
               <MetricCard label="低波动" value={`${compareData.leaders.lowest_vol.code} ${pct(compareData.leaders.lowest_vol.annual_volatility)}`} />
               <MetricCard label="低回撤" value={`${compareData.leaders.shallowest_drawdown.code} ${pct(compareData.leaders.shallowest_drawdown.max_drawdown)}`} cls="delta-neg" />
             </div>
+            {compareData.portfolio_playbook && (
+              <div className="fund-playbook-panel fund-batch-playbook">
+                <h4 className="fund-subhead">批量投资经验手册</h4>
+                <div className="fund-playbook-hero">
+                  <div>
+                    <span className="tag neutral">{compareData.portfolio_playbook.label}</span>
+                    <h4>{compareData.portfolio_playbook.conclusion}</h4>
+                    <div className="daily-tags">
+                      {(compareData.portfolio_playbook.risk_flags || []).map((text) => (
+                        <span className="tag neutral" key={text}>{text}</span>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="playbook-review-grid">
+                    {(compareData.portfolio_playbook.metrics || []).map((m) => (
+                      <div className="playbook-review" key={m.name}>
+                        <span>{m.name}</span>
+                        <b className={m.unit === '%' ? deltaClass(m.value) : ''}>
+                          {metricText(m)}
+                        </b>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="playbook-grid">
+                  <div>
+                    <h4 className="fund-subhead">角色分布</h4>
+                    <div className="playbook-rule-list">
+                      {(compareData.portfolio_playbook.role_distribution || []).map((row) => (
+                        <div className="playbook-rule" key={row.name}>
+                          <b>{row.name} · {row.count}只</b>
+                          <span>组合占比 {num(row.ratio)}%</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <h4 className="fund-subhead">高相关提示</h4>
+                    <div className="playbook-rule-list">
+                      {(compareData.portfolio_playbook.high_corr_pairs || []).length > 0 ? (
+                        compareData.portfolio_playbook.high_corr_pairs.map((row) => (
+                          <div className="playbook-rule danger" key={`${row.a}-${row.b}`}>
+                            <b>{row.a} / {row.b}</b>
+                            <span>历史收益相关性 {num(row.correlation, 3)}，新增资金前先判断是否重复暴露。</span>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="playbook-rule">
+                          <b>未触发高相关红旗</b>
+                          <span>当前共同净值样本中未发现相关性高于 0.85 的基金组合。</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <h4 className="fund-subhead">单只基金批量动作</h4>
+                <div className="corr-wrap">
+                  <table className="compact-table batch-action-table">
+                    <thead>
+                      <tr>
+                        <th>基金</th>
+                        <th>角色</th>
+                        <th>动作</th>
+                        <th>依据</th>
+                        <th>注意</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(compareData.portfolio_playbook.fund_actions || []).map((row) => (
+                        <tr key={row.code}>
+                          <td><b>{row.code}</b><br />{row.name}</td>
+                          <td>{row.risk_band || row.role || '-'}</td>
+                          <td><span className="tag neutral">{row.action}</span></td>
+                          <td>{row.reason}</td>
+                          <td>{(row.cautions || []).join('；') || '-'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="playbook-grid">
+                  <div>
+                    <h4 className="fund-subhead">批量规则</h4>
+                    <div className="playbook-rule-list">
+                      {(compareData.portfolio_playbook.batch_rules || []).map((row) => (
+                        <div className="playbook-rule" key={row.title}>
+                          <b>{row.title}</b>
+                          <span>{row.text}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <h4 className="fund-subhead">执行步骤</h4>
+                    <div className="playbook-rule-list">
+                      {(compareData.portfolio_playbook.execution_steps || []).map((row) => (
+                        <div className="playbook-rule" key={row.step}>
+                          <b>{row.step}</b>
+                          <span>{row.action}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <h4 className="fund-subhead">复盘问题</h4>
+                <div className="fund-bond-list">
+                  {(compareData.portfolio_playbook.review_questions || []).map((text) => (
+                    <span className="tag neutral" key={text}>{text}</span>
+                  ))}
+                </div>
+                <p className="hint" style={{ marginTop: 12 }}>{compareData.portfolio_playbook.method?.note}</p>
+              </div>
+            )}
             <FundCompareChart data={compareData} />
             <div className="corr-wrap">
               <table className="compact-table fund-compare-table">

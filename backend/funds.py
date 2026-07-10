@@ -1457,6 +1457,184 @@ def get_fund_portfolio(code: str, year: str | None = None) -> dict:
     return result
 
 
+def _fund_batch_playbook(rows: list[dict], corr: pd.DataFrame, months: int) -> dict:
+    def avg(values, digits=2):
+        vals = [_num(v) for v in values]
+        vals = [v for v in vals if v is not None]
+        return _round(sum(vals) / len(vals), digits) if vals else None
+
+    def pct_text(value):
+        return f"{value}%" if value is not None else "暂无足够样本"
+
+    symbols = [r["code"] for r in rows]
+    pair_rows = []
+    for i, a in enumerate(symbols):
+        for b in symbols[i + 1:]:
+            value = None
+            if a in corr.index and b in corr.columns:
+                value = _num(corr.loc[a, b])
+            if value is not None:
+                pair_rows.append({
+                    "a": a,
+                    "b": b,
+                    "correlation": _round(value, 3),
+                    "abs_correlation": _round(abs(value), 3),
+                })
+    pair_rows.sort(key=lambda r: r["abs_correlation"], reverse=True)
+    avg_abs_corr = avg([r["abs_correlation"] for r in pair_rows], 3)
+    high_corr_pairs = [r for r in pair_rows if (r["abs_correlation"] or 0) >= 0.85]
+    medium_corr_pairs = [r for r in pair_rows if 0.65 <= (r["abs_correlation"] or 0) < 0.85]
+
+    avg_return_3m = avg([r.get("return_3m") for r in rows])
+    avg_return_1y = avg([r.get("return_1y") for r in rows])
+    avg_vol = avg([r.get("annual_volatility") for r in rows])
+    avg_drawdown = avg([r.get("max_drawdown") for r in rows])
+    avg_dca = avg([r.get("dca_score") for r in rows], 1)
+
+    risk_groups = {}
+    for row in rows:
+        band = row.get("risk_band") or "未分组"
+        risk_groups[band] = risk_groups.get(band, 0) + 1
+    role_distribution = [
+        {"name": k, "count": v, "ratio": _round(v / len(rows) * 100)}
+        for k, v in sorted(risk_groups.items(), key=lambda item: item[1], reverse=True)
+    ]
+
+    label = "分散观察组合"
+    conclusion = "这组基金需要按角色和相关性管理，新增资金先看是否真的增加分散度。"
+    if high_corr_pairs:
+        label = "高相关集中组合"
+        pair = high_corr_pairs[0]
+        conclusion = f"{pair['a']} 与 {pair['b']} 的收益相关性达到 {pair['correlation']}，经验上应先判断是否承担重复角色，再决定是否同时加仓。"
+    elif (avg_vol or 0) >= 35 or (avg_drawdown is not None and avg_drawdown <= -30):
+        label = "高波动进攻组合"
+        conclusion = "组合平均波动或回撤较高，更适合用小仓位、分批和明确止损预算管理。"
+    elif (avg_vol is not None and avg_vol <= 16) and (avg_drawdown is not None and avg_drawdown >= -12):
+        label = "偏稳健组合"
+        conclusion = "组合历史波动和回撤相对可控，但仍要关注低波动基金的信用、久期和规模变化。"
+
+    fund_actions = []
+    high_corr_codes = {p["a"] for p in high_corr_pairs} | {p["b"] for p in high_corr_pairs}
+    for row in rows:
+        ret3 = _num(row.get("return_3m"))
+        ret1 = _num(row.get("return_1y"))
+        vol = _num(row.get("annual_volatility"))
+        max_dd = _num(row.get("max_drawdown"))
+        current_dd = _num(row.get("current_drawdown"))
+        dca = _num(row.get("dca_score"))
+        action = "观察仓"
+        reason = "先保留在观察清单里，用同类排名、净值趋势和相关性继续验证。"
+        cautions = []
+        if dca is not None and dca >= 70 and (ret3 or 0) >= 0 and (ret1 or 0) >= 0 and (vol is None or vol <= 35):
+            action = "优先研究"
+            reason = "定投适配度、近端收益和波动约束相对更均衡，可作为新增资金候选继续核验。"
+        if vol is not None and vol >= 40:
+            action = "卫星限额"
+            cautions.append("年化波动较高，不适合承担组合底仓角色。")
+        if max_dd is not None and max_dd <= -35:
+            action = "卫星限额"
+            cautions.append("历史最大回撤较深，需要先写清楚可承受浮亏。")
+        if ret3 is not None and ret1 is not None and ret3 < 0 and ret1 < 0:
+            action = "暂停新增"
+            reason = "近3月和近1年同时走弱，新增前应先确认是风格逆风还是基金自身恶化。"
+        if current_dd is not None and current_dd > -3 and ret3 is not None and ret3 > 10:
+            cautions.append("短期涨幅较快且接近高位，避免一次性追入。")
+        if row["code"] in high_corr_codes:
+            cautions.append("与组合内其他基金相关性较高，新增前先判断是否重复暴露。")
+        fund_actions.append({
+            "code": row["code"],
+            "name": row.get("name") or "",
+            "role": row.get("role_label") or row.get("trend_state") or "",
+            "risk_band": row.get("risk_band") or "",
+            "action": action,
+            "reason": reason,
+            "cautions": cautions[:3],
+            "metrics": {
+                "return_3m": ret3,
+                "return_1y": ret1,
+                "annual_volatility": vol,
+                "max_drawdown": max_dd,
+                "dca_score": dca,
+            },
+        })
+
+    action_priority = {"优先研究": 0, "观察仓": 1, "卫星限额": 2, "暂停新增": 3}
+    fund_actions.sort(key=lambda r: (action_priority.get(r["action"], 9), -(r["metrics"].get("dca_score") or -1)))
+
+    risk_flags = []
+    if high_corr_pairs:
+        risk_flags.append(f"发现 {len(high_corr_pairs)} 组高相关基金，可能存在表面买了多只、实际押注同一风格的问题。")
+    if len([r for r in rows if (r.get("risk_band") or "").startswith("进攻")]) >= max(2, len(rows) // 2):
+        risk_flags.append("进攻型基金数量偏多，组合回撤可能由同一风险因子同时放大。")
+    if avg_drawdown is not None and avg_drawdown <= -30:
+        risk_flags.append(f"组合平均历史最大回撤约 {avg_drawdown}%，不适合用短期资金承受。")
+    if avg_vol is not None and avg_vol >= 35:
+        risk_flags.append(f"组合平均年化波动约 {avg_vol}%，持有体验会明显受市场情绪影响。")
+    if not risk_flags:
+        risk_flags.append("当前批量净值数据未触发明显组合层面红旗，但仍需定期核验持仓重合度和风格漂移。")
+
+    batch_rules = [
+        {
+            "title": "先去重，再加仓",
+            "text": "新增资金前先看相关性。相关性高于 0.85 的基金，经验上只保留 1-2 只承担同一角色，除非费用、跟踪误差或基金经理能力有清晰差异。",
+        },
+        {
+            "title": "同一风格设上限",
+            "text": "同一风险带或同一主题不要无限叠加。组合真正的分散来自低相关资产，而不是基金数量变多。",
+        },
+        {
+            "title": "强者不一定继续追",
+            "text": "近3月/近1年领先的基金只说明历史阶段占优；如果同时高波动、深回撤或接近高位，新钱应分批而不是一次性追入。",
+        },
+        {
+            "title": "弱者先诊断再替换",
+            "text": "落后基金先判断是市场风格问题、持仓重合问题，还是基金自身问题；只有连续复盘仍落后，才进入替代品对比。",
+        },
+    ]
+
+    execution_steps = [
+        {"step": "1. 标记角色", "action": "把每只基金标成底仓、权益中枢、卫星进攻、观察仓或暂停新增，不要让多只基金承担同一个模糊角色。"},
+        {"step": "2. 检查相关性", "action": f"本次共同净值样本期为 {months} 个月，平均绝对相关性为 {avg_abs_corr if avg_abs_corr is not None else '暂无足够样本'}；高相关组合先做去重。"},
+        {"step": "3. 排新增优先级", "action": "新增资金优先给“优先研究”且不与已有基金高度相关的品种；卫星限额和暂停新增基金不参与新钱分配。"},
+        {"step": "4. 设复盘节奏", "action": "每月看收益、回撤、波动和相关性；每季度再结合真实持仓披露做重合度复盘。"},
+        {"step": "5. 做替代品对比", "action": "当某只基金连续两个季度落后且没有分散化价值时，再用同类替代品对比，而不是只因为亏损卖出。"},
+    ]
+
+    return {
+        "source": "由多基金真实净值、共同日期收益率相关性和单基金真实风险指标派生",
+        "label": label,
+        "conclusion": conclusion,
+        "metrics": [
+            {"name": "基金数量", "value": len(rows), "unit": "只"},
+            {"name": "平均近3月", "value": avg_return_3m, "unit": "%"},
+            {"name": "平均近1年", "value": avg_return_1y, "unit": "%"},
+            {"name": "平均波动", "value": avg_vol, "unit": "%"},
+            {"name": "平均最大回撤", "value": avg_drawdown, "unit": "%"},
+            {"name": "平均定投分", "value": avg_dca, "unit": ""},
+            {"name": "平均相关性", "value": avg_abs_corr, "unit": ""},
+            {"name": "高相关组合", "value": len(high_corr_pairs), "unit": "组"},
+        ],
+        "role_distribution": role_distribution,
+        "high_corr_pairs": high_corr_pairs[:8],
+        "medium_corr_pairs": medium_corr_pairs[:8],
+        "fund_actions": fund_actions,
+        "risk_flags": risk_flags,
+        "batch_rules": batch_rules,
+        "execution_steps": execution_steps,
+        "review_questions": [
+            f"这组基金里是否有多只基金在承担同一个角色？平均相关性：{avg_abs_corr if avg_abs_corr is not None else '暂无足够样本'}。",
+            f"组合能否承受平均最大回撤 {pct_text(avg_drawdown)}？如果不能，应先降进攻型基金数量。",
+            "新增资金是否真的带来新的资产、行业、区域或风格暴露？如果没有，优先不加。",
+            "是否已经跑过持仓重合度？净值相关性高时，必须继续核验真实披露持仓。",
+            "是否有基金连续两个季度没有贡献收益，也没有降低组合波动？这类基金进入替代品对比。",
+        ],
+        "method": {
+            "note": "批量经验手册只使用真实净值和真实基金分析指标；没有用户实际持仓金额时，不假设当前仓位，只给新增资金和复盘规则。",
+            "correlation": "相关性来自共同净值日期的日收益率，代表历史同涨同跌程度，不代表未来必然关系。",
+        },
+    }
+
+
 def compare_funds(codes: list[str], months: int = 36) -> dict:
     clean_codes = []
     for code in codes:
@@ -1470,6 +1648,7 @@ def compare_funds(codes: list[str], months: int = 36) -> dict:
 
     def one(code):
         data = analyze_fund(code, months)
+        playbook_role = ((data.get("playbook") or {}).get("role") or {})
         return {
             "code": code,
             "name": data.get("name") or "",
@@ -1477,6 +1656,7 @@ def compare_funds(codes: list[str], months: int = 36) -> dict:
             "latest_nav": data.get("latest", {}).get("unit_nav"),
             "as_of": data.get("as_of"),
             "metrics": data.get("metrics", {}),
+            "playbook_role": playbook_role,
             "nav": data.get("nav", []),
         }
 
@@ -1526,6 +1706,10 @@ def compare_funds(codes: list[str], months: int = 36) -> dict:
             "max_drawdown": m.get("max_drawdown"),
             "current_drawdown": m.get("current_drawdown"),
             "dca_score": m.get("dca_score"),
+            "role_label": (item.get("playbook_role") or {}).get("label"),
+            "risk_band": (item.get("playbook_role") or {}).get("risk_band"),
+            "risk_score": (item.get("playbook_role") or {}).get("risk_score"),
+            "minimum_holding_period": (item.get("playbook_role") or {}).get("minimum_holding_period"),
         })
     leaders = {
         "best_3m": max(rows, key=lambda r: r["return_3m"] if r["return_3m"] is not None else -999),
@@ -1533,12 +1717,14 @@ def compare_funds(codes: list[str], months: int = 36) -> dict:
         "lowest_vol": min(rows, key=lambda r: r["annual_volatility"] if r["annual_volatility"] is not None else 999),
         "shallowest_drawdown": max(rows, key=lambda r: r["max_drawdown"] if r["max_drawdown"] is not None else -999),
     }
+    portfolio_playbook = _fund_batch_playbook(rows, corr, months)
     return {
         "source": "东方财富基金净值走势 / 天天基金历史净值",
         "codes": clean_codes,
         "months": months,
         "items": rows,
         "leaders": leaders,
+        "portfolio_playbook": portfolio_playbook,
         "rebased": rebased.tail(360).assign(date=lambda d: d["date"].dt.strftime("%Y-%m-%d")).to_dict(orient="records"),
         "correlation": {
             "symbols": list(corr.columns),
