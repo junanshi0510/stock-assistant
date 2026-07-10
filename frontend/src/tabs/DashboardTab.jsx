@@ -37,19 +37,22 @@ export default function DashboardTab({ goPortfolio, goFunds, goMarket }) {
   async function refresh(nextRisk = risk) {
     setLoading(true)
     setErrors({})
-    const [holdingsResult, insightsResult, dailyResult] = await Promise.allSettled([
-      fetchHoldings(),
-      fetchHoldingsInsights(6),
-      fetchMarketDaily(nextRisk, 4),
+    const loadBlock = async (key, request, setData) => {
+      const labels = { holdings: '持仓', insights: '组合体检', daily: '市场日报' }
+      try {
+        setData(await request)
+      } catch (error) {
+        setErrors((current) => ({
+          ...current,
+          [key]: error?.message || `真实${labels[key] || '数据'}获取失败`,
+        }))
+      }
+    }
+    await Promise.all([
+      loadBlock('holdings', fetchHoldings(), setHoldings),
+      loadBlock('insights', fetchHoldingsInsights(6), setInsights),
+      loadBlock('daily', fetchMarketDaily(nextRisk, 4), setDaily),
     ])
-    const nextErrors = {}
-    if (holdingsResult.status === 'fulfilled') setHoldings(holdingsResult.value)
-    else nextErrors.holdings = holdingsResult.reason?.message || '真实持仓数据获取失败'
-    if (insightsResult.status === 'fulfilled') setInsights(insightsResult.value)
-    else nextErrors.insights = insightsResult.reason?.message || '真实组合体检获取失败'
-    if (dailyResult.status === 'fulfilled') setDaily(dailyResult.value)
-    else nextErrors.daily = dailyResult.reason?.message || '真实市场日报获取失败'
-    setErrors(nextErrors)
     setLoading(false)
   }
 
