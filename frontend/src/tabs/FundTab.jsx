@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { createChart } from 'lightweight-charts'
 import { analyzeFund, analyzeFundOverlap, compareFunds, fetchFundAlternatives, fetchFundCategories, fetchFundDividends, fetchFundOpportunities, fetchFundPeers, fetchFundPortfolio, fetchHotFunds, searchFunds } from '../api'
 
-const COLORS = ['#48a6ff', '#20c486', '#f05d68', '#d8a833', '#9d7cff', '#26c6da', '#ff8a3d', '#a6e22e']
+const COLORS = ['#176f9c', '#087f70', '#c63b4a', '#9a6800', '#7256b4', '#287f9f', '#a45a1e', '#4f8a4c']
 
 const CATEGORIES = [
   ['all', '全部'],
@@ -67,18 +67,18 @@ function FundLineChart({ data }) {
   useEffect(() => {
     if (!ref.current || !data?.length) return
     const chart = createChart(ref.current, {
-      layout: { background: { color: 'transparent' }, textColor: '#8896a8', fontSize: 11 },
+      layout: { background: { color: 'transparent' }, textColor: '#667784', fontSize: 11 },
       grid: {
-        vertLines: { color: 'rgba(255,255,255,0.04)' },
-        horzLines: { color: 'rgba(255,255,255,0.05)' },
+        vertLines: { color: 'rgba(28,42,53,0.06)' },
+        horzLines: { color: 'rgba(28,42,53,0.08)' },
       },
-      rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)' },
-      timeScale: { borderColor: 'rgba(255,255,255,0.08)' },
+      rightPriceScale: { borderColor: 'rgba(28,42,53,0.14)' },
+      timeScale: { borderColor: 'rgba(28,42,53,0.14)' },
       crosshair: { mode: 1 },
       autoSize: true,
     })
     const navSeries = chart.addLineSeries({
-      color: '#5b8cff',
+      color: '#176f9c',
       lineWidth: 2,
       priceLineVisible: false,
       title: '单位净值',
@@ -97,13 +97,13 @@ function FundCompareChart({ data }) {
   useEffect(() => {
     if (!ref.current || !data?.rebased?.length) return
     const chart = createChart(ref.current, {
-      layout: { background: { color: 'transparent' }, textColor: '#8896a8', fontSize: 11 },
+      layout: { background: { color: 'transparent' }, textColor: '#667784', fontSize: 11 },
       grid: {
-        vertLines: { color: 'rgba(255,255,255,0.04)' },
-        horzLines: { color: 'rgba(255,255,255,0.05)' },
+        vertLines: { color: 'rgba(28,42,53,0.06)' },
+        horzLines: { color: 'rgba(28,42,53,0.08)' },
       },
-      rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)' },
-      timeScale: { borderColor: 'rgba(255,255,255,0.08)' },
+      rightPriceScale: { borderColor: 'rgba(28,42,53,0.14)' },
+      timeScale: { borderColor: 'rgba(28,42,53,0.14)' },
       crosshair: { mode: 1 },
       autoSize: true,
     })

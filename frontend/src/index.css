@@ -71,7 +71,7 @@ body {
 
 /* ===== 通用 ===== */
 .warning {
-  background: linear-gradient(135deg, rgba(245,185,66,0.10), rgba(245,185,66,0.04));
+  background: var(--neutral-soft);
   border: 1px solid rgba(245, 185, 66, 0.28);
   color: #f2cd82; border-radius: 12px; padding: 13px 16px;
   font-size: 12.5px; line-height: 1.65; margin-bottom: 22px;
@@ -598,10 +598,7 @@ a { color: var(--accent); }
 }
 
 body {
-  background:
-    linear-gradient(180deg, rgba(18, 27, 39, 0.98) 0%, rgba(9, 13, 18, 1) 48%, rgba(8, 11, 16, 1) 100%),
-    repeating-linear-gradient(90deg, rgba(255,255,255,0.025) 0 1px, transparent 1px 86px),
-    repeating-linear-gradient(0deg, rgba(255,255,255,0.018) 0 1px, transparent 1px 72px);
+  background: var(--bg-0);
   letter-spacing: 0;
 }
 
@@ -676,7 +673,7 @@ body {
 
 .panel {
   border-radius: 8px;
-  background: linear-gradient(180deg, rgba(18, 27, 39, 0.94), rgba(13, 19, 28, 0.92));
+  background: var(--panel);
   border: 1px solid rgba(148, 163, 184, 0.14);
   box-shadow: var(--shadow);
   padding: 18px;
@@ -1225,9 +1222,7 @@ tbody tr:hover {
 
 .fund-playbook-panel {
   border-color: rgba(96, 165, 250, 0.20);
-  background:
-    linear-gradient(135deg, rgba(37, 99, 235, 0.10), rgba(15, 23, 42, 0.20) 34%),
-    rgba(8, 13, 20, 0.62);
+  background: rgba(8, 13, 20, 0.62);
 }
 
 .fund-playbook-hero {
@@ -1394,7 +1389,7 @@ tbody tr:hover {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, rgba(72,166,255,0.95), rgba(32,196,134,0.88));
+  background: var(--accent);
 }
 .fund-bar-value {
   color: var(--muted);
@@ -1691,4 +1686,402 @@ tbody tr:hover {
   button {
     width: 100%;
   }
+}
+
+/* ===== Light research terminal ===== */
+:root {
+  --bg-0: #f3f6f8;
+  --bg-1: #ffffff;
+  --panel: #ffffff;
+  --panel-solid: #ffffff;
+  --border: #dce4e9;
+  --border-strong: #bcc9d2;
+  --text: #1c2a35;
+  --muted: #667784;
+  --faint: #8a99a5;
+  --up: #c63b4a;
+  --up-soft: #fbecef;
+  --down: #087f70;
+  --down-soft: #e5f4f1;
+  --neutral: #9a6800;
+  --neutral-soft: #fff4d9;
+  --accent: #11766d;
+  --accent-2: #176f9c;
+  --shadow: 0 1px 2px rgba(20, 38, 52, 0.05), 0 8px 24px rgba(20, 38, 52, 0.035);
+}
+
+body {
+  background: #f3f6f8;
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.container {
+  max-width: 1280px;
+  padding: 0 24px 80px;
+}
+
+.header {
+  background: rgba(255, 255, 255, 0.94);
+  border-bottom: 1px solid var(--border);
+  box-shadow: 0 1px 0 rgba(20, 38, 52, 0.03);
+  backdrop-filter: blur(12px);
+}
+.header-inner {
+  max-width: 1280px;
+  padding: 13px 24px;
+  gap: 28px;
+}
+.logo { min-width: 238px; }
+.logo .mark {
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 6px;
+  background: #11766d;
+  color: #ffffff;
+  box-shadow: none;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0;
+}
+.logo h1 {
+  color: #172630;
+  font-size: 17px;
+  font-weight: 800;
+}
+.logo .sub { color: #71828e; }
+
+.tabs {
+  flex: 1;
+  margin-left: 0;
+  padding: 0;
+  gap: 2px;
+  overflow-x: auto;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.tabs::-webkit-scrollbar { height: 0; }
+.tab {
+  min-height: 44px;
+  padding: 12px 13px 10px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  color: #687883;
+  font-size: 13px;
+  font-weight: 700;
+}
+.tab:hover {
+  background: #f0f5f5;
+  color: #1f4f52;
+}
+.tab.active {
+  background: transparent;
+  border-bottom-color: #11766d;
+  box-shadow: none;
+  color: #0b6159;
+}
+
+.risk-disclosure {
+  margin: 0 0 18px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--border);
+  color: #70808b;
+  font-size: 12px;
+}
+.warning {
+  border-color: #e8d7a5;
+  background: #fffaf0;
+  color: #7b620f;
+}
+
+.panel {
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: var(--shadow);
+  padding: 20px;
+}
+.panel:hover { border-color: #cbd6dc; }
+.section-title {
+  min-height: 0;
+  margin-bottom: 16px;
+  padding-bottom: 11px;
+  border-bottom: 1px solid #e8eef1;
+  color: #24343f;
+  font-size: 14px;
+}
+.section-title .hint,
+.hint { color: var(--muted); }
+
+select,
+input,
+textarea {
+  background: #ffffff;
+  border-color: #cbd7dd;
+  border-radius: 5px;
+  color: var(--text);
+}
+select:hover,
+input:hover,
+textarea:hover { border-color: #9caeb8; }
+select:focus,
+input:focus,
+textarea:focus {
+  border-color: #11766d;
+  box-shadow: 0 0 0 3px rgba(17, 118, 109, 0.12);
+}
+.field label { color: #667984; }
+
+button {
+  border-radius: 5px;
+  background: #11766d;
+  box-shadow: none;
+  font-weight: 750;
+}
+button:hover:not(:disabled) {
+  background: #0d665e;
+  box-shadow: none;
+  transform: translateY(-1px);
+}
+button.ghost {
+  background: #ffffff;
+  border-color: #cbd7dd;
+  color: #30424d;
+}
+button.ghost:hover:not(:disabled) {
+  background: #f2f6f7;
+  border-color: #aabac3;
+}
+button:focus-visible,
+.tab:focus-visible,
+select:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid rgba(17, 118, 109, 0.5);
+  outline-offset: 2px;
+}
+
+.workspace-header,
+.overview-hero {
+  margin-bottom: 20px;
+  padding: 24px;
+  border: 1px solid var(--border);
+  border-left: 4px solid #11766d;
+  border-radius: 6px;
+  background: #ffffff;
+}
+.workspace-header h2,
+.overview-hero h2 {
+  color: #1d303a;
+  font-size: 25px;
+  font-weight: 800;
+}
+.workspace-header p,
+.overview-hero p { color: #657681; }
+.eyebrow { color: #0d776c; }
+.workspace-nav {
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid #d8e2e5;
+  border-radius: 6px;
+  background: #f2f6f6;
+}
+.workspace-nav button {
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #647580;
+  box-shadow: none;
+}
+.workspace-nav button.active {
+  border: 0;
+  background: #ffffff;
+  color: #0a695f;
+  box-shadow: 0 1px 2px rgba(20, 38, 52, 0.08);
+}
+.workspace-nav button:hover:not(:disabled) {
+  background: #e4eeee;
+  color: #135f5a;
+}
+.research-layer-nav { border-bottom-color: #dde6e9; }
+.research-layer-nav button { color: #667784; }
+.research-layer-nav button.active {
+  border-bottom-color: #11766d;
+  color: #0a695f;
+}
+
+.overview-band {
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #ffffff;
+  box-shadow: var(--shadow);
+}
+.overview-grid { gap: 20px; }
+.overview-metric {
+  border-color: #e0e7eb;
+  border-radius: 5px;
+  background: #f8fafb;
+}
+.overview-metric span { color: #788895; }
+.overview-metric b { color: #233640; }
+.priority-item { border-top-color: #e7edf0; }
+.priority-item > span { color: #0f766e; }
+.priority-item p { color: #6e7e88; }
+.market-pulse-list { border-top-color: #e7edf0; }
+.market-pulse { border-bottom-color: #e7edf0; }
+.market-pulse:hover:not(:disabled) { color: #0d7067; }
+.market-pulse span { color: #768792; }
+.overview-empty { color: #75858f; }
+
+table { color: #2a3a44; }
+th,
+td { border-bottom-color: #e5ecef; }
+thead th {
+  background: #f5f8f9;
+  color: #667884;
+  font-weight: 750;
+}
+tbody tr,
+tbody tr:nth-child(even) { background: #ffffff; }
+tbody tr:hover { background: #f0f7f6; }
+.row-active { background: #e6f4f1 !important; }
+.delta-pos { color: var(--up); }
+.delta-neg { color: var(--down); }
+
+.stat,
+.risk-main,
+.ind,
+.period-card,
+.bt-card,
+.fund-category,
+.fund-insight,
+.fund-search-item,
+.daily-card,
+.fund-alt-card,
+.fund-timing-action,
+.fund-zone-list div,
+.fund-signal,
+.playbook-review,
+.playbook-rule,
+.fund-manager-card,
+.fund-manager-detail,
+.fund-evaluation-panel,
+.fund-flow-panel,
+.market-daily-hero {
+  border-color: #dce5e8;
+  background: #f8fafb;
+  box-shadow: none;
+}
+.stat .v,
+.ind .v,
+.bt-card .v,
+.fund-insight h4,
+.fund-search-item b,
+.daily-card-head b,
+.daily-risk b,
+.fund-alt-card h4,
+.fund-timing-action b,
+.fund-zone-list b,
+.fund-signal b,
+.playbook-rule b,
+.playbook-table td:first-child,
+.fund-playbook-hero h4,
+.playbook-review b,
+.fund-manager-metrics b {
+  color: #233640;
+}
+.stat .k,
+.ind .k,
+.bt-card .k,
+.fund-insight p,
+.daily-card p,
+.daily-risk span,
+.fund-timing-action span,
+.fund-signal span,
+.playbook-rule span,
+.fund-playbook-hero p,
+.playbook-review span,
+.fund-manager-card p,
+.fund-manager-detail span,
+.fund-flow-row span,
+.fund-flow-summary span {
+  color: #687984;
+}
+.bt-card { text-align: left; }
+.chart {
+  border-color: #dce5e8;
+  border-radius: 5px;
+  background: #fbfcfd;
+}
+.prob-bar,
+.rank-score .bar,
+.fund-bar-track,
+.fund-flow-track,
+.bucket-row .track { background: #e5ecef; }
+.fund-bar-track i { background: #11766d; }
+.tag.neutral,
+.daily-metrics span,
+.fund-manager-metrics span,
+.fund-flow-summary span {
+  background: #edf2f3;
+  color: #5f707b;
+}
+.chip,
+.toggle-line,
+.segmented { background: #f4f7f8; border-color: #d7e1e5; }
+.chip.on,
+.segmented button.active {
+  background: #e2f1ef;
+  border-color: #91c7c0;
+  color: #0a695f;
+}
+.fund-category:hover:not(:disabled),
+.fund-search-item:hover:not(:disabled) { background: #edf7f5; }
+.fund-category.active { background: #e2f1ef; border-color: #8bc3bb; }
+
+.fund-playbook-panel {
+  border-color: #c9e0dc;
+  background: #f4faf9;
+}
+.playbook-rule.danger {
+  border-color: #edc6cc;
+  background: #fff7f8;
+}
+.daily-risk { border-color: #ead8a4; background: #fffaf0; }
+.daily-risk.high { border-color: #edc5cb; background: #fff6f7; }
+.fund-signal.positive { border-color: #a6d9d2; background: #f1faf8; }
+.fund-signal.negative { border-color: #edc5cb; background: #fff7f8; }
+.placeholder {
+  border-color: #cad5da;
+  border-radius: 6px;
+  background: #fafcfc;
+}
+.error {
+  border-color: #e5b7bf;
+  border-radius: 6px;
+  background: #fff5f6;
+  color: #a72f40;
+}
+.ring svg circle:first-child { stroke: #dfe7ea; }
+
+@media (max-width: 760px) {
+  .container { padding: 0 14px 64px; }
+  .header-inner { padding: 11px 14px; }
+  .logo { min-width: 0; }
+  .tabs { flex: 0 0 100%; width: 100%; }
+  .workspace-header,
+  .overview-hero,
+  .overview-band,
+  .panel { padding: 16px; }
+}
+
+@media (max-width: 520px) {
+  .header { position: static; }
+  .tabs { background: #f3f6f7; border: 1px solid #dce5e8; border-radius: 6px; padding: 3px; }
+  .tab { min-height: 38px; border-radius: 4px; border-bottom: 0; }
+  .tab.active { background: #ffffff; box-shadow: 0 1px 2px rgba(20, 38, 52, 0.08); }
 }

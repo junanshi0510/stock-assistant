@@ -10,7 +10,7 @@ export default function ScoreRing({ score }) {
     <div className="ring-wrap">
       <div className="ring">
         <svg width="150" height="150">
-          <circle cx="75" cy="75" r={r} fill="none" stroke="rgba(255,255,255,0.07)" strokeWidth="11" />
+          <circle cx="75" cy="75" r={r} fill="none" stroke="#dfe7ea" strokeWidth="11" />
           <circle
             cx="75" cy="75" r={r} fill="none" stroke={color} strokeWidth="11"
             strokeLinecap="round" strokeDasharray={c}

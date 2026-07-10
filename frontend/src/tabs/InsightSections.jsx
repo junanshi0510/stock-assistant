@@ -284,19 +284,19 @@ function RebasedChart({ rebased }) {
   useEffect(() => {
     if (!containerRef.current || !rebased || rebased.length === 0) return
     const chart = createChart(containerRef.current, {
-      layout: { background: { color: 'transparent' }, textColor: '#8896a8', fontSize: 11 },
+      layout: { background: { color: 'transparent' }, textColor: '#667784', fontSize: 11 },
       grid: {
-        vertLines: { color: 'rgba(255,255,255,0.04)' },
-        horzLines: { color: 'rgba(255,255,255,0.05)' },
+        vertLines: { color: 'rgba(28,42,53,0.06)' },
+        horzLines: { color: 'rgba(28,42,53,0.08)' },
       },
-      rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)' },
-      timeScale: { borderColor: 'rgba(255,255,255,0.08)' },
+      rightPriceScale: { borderColor: 'rgba(28,42,53,0.14)' },
+      timeScale: { borderColor: 'rgba(28,42,53,0.14)' },
       crosshair: { mode: 1 },
       autoSize: true,
     })
-    const stock = chart.addLineSeries({ color: '#ff4d5e', lineWidth: 2, priceLineVisible: false })
+    const stock = chart.addLineSeries({ color: '#c63b4a', lineWidth: 2, priceLineVisible: false })
     stock.setData(rebased.map((r) => ({ time: r.date, value: r.stock })))
-    const index = chart.addLineSeries({ color: '#5b8cff', lineWidth: 2, priceLineVisible: false })
+    const index = chart.addLineSeries({ color: '#176f9c', lineWidth: 2, priceLineVisible: false })
     index.setData(rebased.map((r) => ({ time: r.date, value: r.index })))
     chart.timeScale().fitContent()
     return () => chart.remove()
@@ -349,8 +349,8 @@ export function CompareSection({ market, symbol, trigger }) {
             </table>
           )}
           <div style={{ display: 'flex', gap: 16, marginBottom: 8, flexWrap: 'wrap' }}>
-            <span className="hint"><span style={{ color: '#ff4d5e' }}>━</span> 个股</span>
-            <span className="hint"><span style={{ color: '#5b8cff' }}>━</span> {data.benchmark}</span>
+              <span className="hint"><span style={{ color: '#c63b4a' }}>━</span> 个股</span>
+              <span className="hint"><span style={{ color: '#176f9c' }}>━</span> {data.benchmark}</span>
             <span className="hint">(都从 100 起步,看谁走得更高)</span>
           </div>
           <RebasedChart rebased={data.rebased} />

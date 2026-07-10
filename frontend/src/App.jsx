@@ -43,7 +43,7 @@ export default function App() {
       <header className="header">
         <div className="header-inner">
           <div className="logo">
-            <div className="mark">📈</div>
+            <div className="mark" aria-hidden="true">IA</div>
             <div>
               <h1>金融投资助手</h1>
               <div className="sub">真实数据驱动的个人投资决策工作台</div>

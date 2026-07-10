@@ -9,13 +9,13 @@ export default function CandleChart({ candles }) {
     if (!containerRef.current || !candles || candles.length === 0) return
 
     const chart = createChart(containerRef.current, {
-      layout: { background: { color: 'transparent' }, textColor: '#8896a8', fontSize: 11 },
+      layout: { background: { color: 'transparent' }, textColor: '#667784', fontSize: 11 },
       grid: {
-        vertLines: { color: 'rgba(255,255,255,0.04)' },
-        horzLines: { color: 'rgba(255,255,255,0.05)' },
+        vertLines: { color: 'rgba(28,42,53,0.06)' },
+        horzLines: { color: 'rgba(28,42,53,0.08)' },
       },
-      rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)' },
-      timeScale: { borderColor: 'rgba(255,255,255,0.08)' },
+      rightPriceScale: { borderColor: 'rgba(28,42,53,0.14)' },
+      timeScale: { borderColor: 'rgba(28,42,53,0.14)' },
       crosshair: { mode: 1 },
       autoSize: true,
     })
@@ -26,28 +26,28 @@ export default function CandleChart({ candles }) {
     }
 
     // 布林带(淡色,先画在底层)
-    line('boll_up', 'rgba(157,107,255,0.45)')
-    line('boll_low', 'rgba(157,107,255,0.45)')
+    line('boll_up', 'rgba(110,86,180,0.42)')
+    line('boll_low', 'rgba(110,86,180,0.42)')
 
     const candleSeries = chart.addCandlestickSeries({
-      upColor: '#ff4d5e', downColor: '#1fd286',
-      borderUpColor: '#ff4d5e', borderDownColor: '#1fd286',
-      wickUpColor: '#ff4d5e', wickDownColor: '#1fd286',
+      upColor: '#c63b4a', downColor: '#087f70',
+      borderUpColor: '#c63b4a', borderDownColor: '#087f70',
+      wickUpColor: '#c63b4a', wickDownColor: '#087f70',
     })
     candleSeries.setData(
       candles.map((c) => ({ time: c.date, open: c.open, high: c.high, low: c.low, close: c.close }))
     )
 
-    line('ma5', '#f5b942')
-    line('ma20', '#5b8cff')
-    line('ma60', '#9d6bff')
+    line('ma5', '#aa7200')
+    line('ma20', '#176f9c')
+    line('ma60', '#7256b4')
 
     const vol = chart.addHistogramSeries({ priceFormat: { type: 'volume' }, priceScaleId: 'vol' })
     chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } })
     vol.setData(
       candles.map((c) => ({
         time: c.date, value: c.volume,
-        color: c.close >= c.open ? 'rgba(255,77,94,0.35)' : 'rgba(31,210,134,0.35)',
+        color: c.close >= c.open ? 'rgba(198,59,74,0.30)' : 'rgba(8,127,112,0.30)',
       }))
     )
 
