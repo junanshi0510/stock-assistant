@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { scan, fetchPresets } from '../api'
+import { scan, fetchPresets } from '../api/market'
 import { dirClass, scoreColor } from '../helpers'
 
 export default function ScanTab({ markets, goAnalyze }) {

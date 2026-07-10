@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createChart } from 'lightweight-charts'
-import { fetchPresets, multiCompare } from '../api'
+import { fetchPresets, multiCompare } from '../api/market'
 import { dirClass, scoreColor } from '../helpers'
 
 const COLORS = [

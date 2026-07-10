@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { createChart } from 'lightweight-charts'
-import { fetchFundamentals, fetchMl, fetchNews, fetchCompare, fetchQuote } from '../api'
+import { fetchFundamentals, fetchMl, fetchNews, fetchCompare, fetchQuote } from '../api/market'
 
 function useLazy(fetcher, market, symbol, trigger) {
   const [state, setState] = useState({ loading: false, error: '', data: null })

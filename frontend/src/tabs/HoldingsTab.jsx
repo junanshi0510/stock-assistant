@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { deleteHolding, fetchHoldings, fetchHoldingsInsights, parseHoldingsText, saveHoldings, uploadHoldingScreenshot } from '../api'
+import { deleteHolding, fetchHoldings, fetchHoldingsInsights, parseHoldingsText, saveHoldings, uploadHoldingScreenshot } from '../api/portfolio'
 
 function num(v, digits = 2) {
   if (v == null || Number.isNaN(Number(v))) return '-'

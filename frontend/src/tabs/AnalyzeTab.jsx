@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { analyze, searchUs, addWatch, removeWatch, fetchPresets } from '../api'
+import { analyze, fetchPresets, searchUs } from '../api/market'
+import { addWatch, removeWatch } from '../api/portfolio'
 import { dirClass, probColor } from '../helpers'
 import ScoreRing from '../ScoreRing'
 import CandleChart from '../CandleChart'

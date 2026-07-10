@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
-import { fetchMarkets } from './api'
+import { fetchMarkets } from './api/market'
 
 const BacktestTab = lazy(() => import('./tabs/BacktestTab'))
 const FundTab = lazy(() => import('./tabs/FundTab'))

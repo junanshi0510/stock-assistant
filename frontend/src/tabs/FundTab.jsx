@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import { createChart } from 'lightweight-charts'
-import { analyzeFund, analyzeFundOverlap, compareFunds, fetchFundAlternatives, fetchFundCategories, fetchFundDividends, fetchFundOpportunities, fetchFundPeers, fetchFundPortfolio, fetchHotFunds, searchFunds } from '../api'
+import WorkspaceHeader from '../components/WorkspaceHeader'
+import { useFundWorkspace } from '../features/funds/useFundWorkspace'
 
 const COLORS = ['#176f9c', '#087f70', '#c63b4a', '#9a6800', '#7256b4', '#287f9f', '#a45a1e', '#4f8a4c']
 
@@ -29,9 +30,9 @@ const RISK_OPTIONS = [
 ]
 
 const FUND_VIEWS = [
-  ['discover', '发现基金', '从真实榜单和分类热度中建立候选池'],
-  ['research', '研究基金', '将单只基金的数据转化为可复盘的决策框架'],
-  ['compare', '比较与替换', '比较多只基金的风险、相关性与重复暴露'],
+  { id: 'discover', label: '发现基金', description: '从真实榜单和分类热度中建立候选池' },
+  { id: 'research', label: '研究基金', description: '将单只基金的数据转化为可复盘的决策框架' },
+  { id: 'compare', label: '比较与替换', description: '比较多只基金的风险、相关性与重复暴露' },
 ]
 
 function pct(v) {
@@ -55,10 +56,6 @@ function deltaClass(v) {
   if (v > 0) return 'delta-pos'
   if (v < 0) return 'delta-neg'
   return 'delta-zero'
-}
-
-function parseCodes(text) {
-  return String(text || '').split(/[\s,，、;；]+/).map((s) => s.trim()).filter(Boolean)
 }
 
 function FundLineChart({ data }) {
@@ -135,222 +132,20 @@ function MetricCard({ label, value, cls = '' }) {
 }
 
 export default function FundTab() {
-  const [fundView, setFundView] = useState('discover')
-  const [researchLayer, setResearchLayer] = useState('decision')
-  const [category, setCategory] = useState('all')
-  const [sort, setSort] = useState('1y')
-  const [limit, setLimit] = useState(30)
-  const [months, setMonths] = useState(36)
-  const [code, setCode] = useState('')
-  const [hot, setHot] = useState(null)
-  const [categories, setCategories] = useState([])
-  const [fund, setFund] = useState(null)
-  const [portfolio, setPortfolio] = useState(null)
-  const [portfolioError, setPortfolioError] = useState('')
-  const [peers, setPeers] = useState(null)
-  const [peerSort, setPeerSort] = useState('1y')
-  const [dividends, setDividends] = useState(null)
-  const [searchKeyword, setSearchKeyword] = useState('')
-  const [searchResults, setSearchResults] = useState([])
-  const [compareInput, setCompareInput] = useState('110022 001480 006502')
-  const [compareData, setCompareData] = useState(null)
-  const [overlapData, setOverlapData] = useState(null)
-  const [opportunityRisk, setOpportunityRisk] = useState('balanced')
-  const [opportunities, setOpportunities] = useState(null)
-  const [alternatives, setAlternatives] = useState(null)
-  const [loadingHot, setLoadingHot] = useState(false)
-  const [loadingFund, setLoadingFund] = useState(false)
-  const [loadingPortfolio, setLoadingPortfolio] = useState(false)
-  const [loadingPeers, setLoadingPeers] = useState(false)
-  const [loadingDividends, setLoadingDividends] = useState(false)
-  const [loadingSearch, setLoadingSearch] = useState(false)
-  const [loadingCompare, setLoadingCompare] = useState(false)
-  const [loadingOverlap, setLoadingOverlap] = useState(false)
-  const [loadingOpportunities, setLoadingOpportunities] = useState(false)
-  const [loadingAlternatives, setLoadingAlternatives] = useState(false)
-  const [error, setError] = useState('')
-
-  async function loadHot(nextCategory = category, nextSort = sort) {
-    setLoadingHot(true); setError('')
-    try {
-      const data = await fetchHotFunds(nextCategory, limit, nextSort)
-      setHot(data)
-      const first = data.items?.[0]
-      if (first && !code) setCode(first.code)
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setLoadingHot(false)
-    }
-  }
-
-  async function loadFund(nextCode = code, nextMonths = months) {
-    const clean = String(nextCode || '').trim()
-    if (!/^\d{6}$/.test(clean)) {
-      setError('请输入 6 位基金代码')
-      return
-    }
-    setFundView('research'); setResearchLayer('decision')
-    setLoadingFund(true); setError('')
-    setPortfolio(null); setPortfolioError('')
-    setPeers(null)
-    setDividends(null)
-    setAlternatives(null)
-    try {
-      const data = await analyzeFund(clean, nextMonths)
-      setFund(data)
-      setCode(clean)
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setLoadingFund(false)
-    }
-  }
-
-  async function loadPortfolio(nextCode = code) {
-    const clean = String(nextCode || '').trim()
-    if (!/^\d{6}$/.test(clean)) return
-    setLoadingPortfolio(true); setPortfolioError('')
-    try {
-      const data = await fetchFundPortfolio(clean)
-      setPortfolio(data)
-    } catch (e) {
-      setPortfolioError(e.message)
-    } finally {
-      setLoadingPortfolio(false)
-    }
-  }
-
-  async function loadPeers(nextCode = code, nextSort = peerSort) {
-    const clean = String(nextCode || '').trim()
-    if (!/^\d{6}$/.test(clean)) return
-    setLoadingPeers(true)
-    try {
-      const data = await fetchFundPeers(clean, nextSort, 1000)
-      setPeers(data)
-    } catch (e) {
-      setPeers({ error: e.message })
-    } finally {
-      setLoadingPeers(false)
-    }
-  }
-
-  async function loadDividends(nextCode = code) {
-    const clean = String(nextCode || '').trim()
-    if (!/^\d{6}$/.test(clean)) return
-    setLoadingDividends(true)
-    try {
-      const data = await fetchFundDividends(clean)
-      setDividends(data)
-    } catch (e) {
-      setDividends({ error: e.message })
-    } finally {
-      setLoadingDividends(false)
-    }
-  }
-
-  async function runSearch() {
-    const kw = searchKeyword.trim()
-    if (!kw) return
-    setLoadingSearch(true); setError('')
-    try {
-      const data = await searchFunds(kw, 12)
-      setSearchResults(data.items || [])
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setLoadingSearch(false)
-    }
-  }
-
-  async function runCompare() {
-    const codes = parseCodes(compareInput)
-    if (codes.length < 2) {
-      setError('至少输入 2 只基金代码进行对比')
-      return
-    }
-    setLoadingCompare(true); setError('')
-    try {
-      const data = await compareFunds(codes, months)
-      setCompareData(data)
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setLoadingCompare(false)
-    }
-  }
-
-  async function runOverlap() {
-    const codes = parseCodes(compareInput)
-    if (codes.length < 2) {
-      setError('至少输入 2 只基金代码进行持仓重合度分析')
-      return
-    }
-    setLoadingOverlap(true); setError('')
-    try {
-      const data = await analyzeFundOverlap(codes)
-      setOverlapData(data)
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setLoadingOverlap(false)
-    }
-  }
-
-  async function loadOpportunities(nextRisk = opportunityRisk) {
-    setLoadingOpportunities(true); setError('')
-    try {
-      const data = await fetchFundOpportunities(nextRisk, 5)
-      setOpportunities(data)
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setLoadingOpportunities(false)
-    }
-  }
-
-  async function loadAlternatives(nextCode = code, nextSort = peerSort) {
-    const clean = String(nextCode || '').trim()
-    if (!/^\d{6}$/.test(clean)) {
-      setError('请输入 6 位基金代码')
-      return
-    }
-    setLoadingAlternatives(true); setError('')
-    try {
-      const data = await fetchFundAlternatives(clean, nextSort, 5, months)
-      setAlternatives(data)
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setLoadingAlternatives(false)
-    }
-  }
-
-  async function loadCategories() {
-    try {
-      const data = await fetchFundCategories()
-      setCategories(data.items || [])
-    } catch (e) {
-      setCategories([])
-    }
-  }
-
-  useEffect(() => {
-    loadHot()
-    loadCategories()
-    loadOpportunities('balanced')
-  }, [])
-
-  useEffect(() => {
-    if (fundView !== 'research' || researchLayer !== 'evidence' || !fund?.code) return
-    loadPortfolio(fund.code)
-    loadPeers(fund.code, peerSort)
-    loadDividends(fund.code)
-  }, [fundView, researchLayer, fund?.code])
+  const {
+    fundView, setFundView, researchLayer, setResearchLayer,
+    category, setCategory, sort, setSort, limit, setLimit, months, setMonths, code, setCode,
+    hot, categories, categoryError, fund, portfolio, portfolioError, peers, peerSort, setPeerSort,
+    dividends, searchKeyword, setSearchKeyword, searchResults, compareInput, setCompareInput,
+    compareData, overlapData, opportunityRisk, setOpportunityRisk, opportunities, alternatives,
+    loadingHot, loadingFund, loadingPortfolio, loadingPeers, loadingDividends, loadingSearch,
+    loadingCompare, loadingOverlap, loadingOpportunities, loadingAlternatives, error,
+    loadHot, loadFund, loadPeers, loadAlternatives, loadOpportunities, runSearch, runCompare, runOverlap,
+  } = useFundWorkspace()
 
   const rows = hot?.items || []
   const selectedName = fund?.name || rows.find((r) => r.code === code)?.name || ''
-  const categoryHeat = useMemo(() => categories || [], [categories])
+  const categoryHeat = categories || []
   const factSheet = fund?.fact_sheet || null
   const assetLatest = factSheet?.asset_latest || {}
   const manager = factSheet?.managers?.[0]
@@ -358,22 +153,19 @@ export default function FundTab() {
   const fundEvaluation = factSheet?.performance_evaluation || null
   const similarPercentile = factSheet?.similar_percentile || null
   const benchmarkComparison = factSheet?.benchmark_comparison || null
-  const currentView = FUND_VIEWS.find(([id]) => id === fundView) || FUND_VIEWS[0]
+  const currentView = FUND_VIEWS.find((item) => item.id === fundView) || FUND_VIEWS[0]
 
   return (
     <>
-      <section className="workspace-header">
-        <div>
-          <span className="eyebrow">基金中心</span>
-          <h2>{currentView[1]}</h2>
-          <p>{currentView[2]}。所有排序、净值和持仓披露均标注真实来源。</p>
-        </div>
-        <div className="workspace-nav" role="tablist" aria-label="基金中心功能">
-          {FUND_VIEWS.map(([id, label]) => (
-            <button key={id} className={fundView === id ? 'active' : ''} onClick={() => setFundView(id)}>{label}</button>
-          ))}
-        </div>
-      </section>
+      <WorkspaceHeader
+        eyebrow="基金中心"
+        title={currentView.label}
+        description={`${currentView.description}。所有排序、净值和持仓披露均标注真实来源。`}
+        views={FUND_VIEWS}
+        activeView={fundView}
+        onViewChange={setFundView}
+        ariaLabel="基金中心功能"
+      />
 
       <div className="panel">
         <div className="form-row">
@@ -527,6 +319,9 @@ export default function FundTab() {
             ))}
           </div>
         </div>
+      )}
+      {categoryError && (
+        <div className="error">真实基金分类热度数据获取失败: {categoryError}</div>
       )}
 
       {rows.length > 0 && (

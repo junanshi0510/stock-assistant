@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { runBacktest } from '../api'
+import { runBacktest } from '../api/market'
 
 const PLACEHOLDER = { 'A股': '如 600519', '港股': '如 00700', '美股': '如 AAPL' }
 

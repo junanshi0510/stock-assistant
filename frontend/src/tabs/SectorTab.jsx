@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { fetchSectors } from '../api'
+import { fetchSectors } from '../api/market'
 
 function pct(v) {
   if (v == null) return '—'

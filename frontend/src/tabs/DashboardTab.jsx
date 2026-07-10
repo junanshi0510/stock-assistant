@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
-import { fetchHoldings, fetchHoldingsInsights, fetchMarketDaily } from '../api'
+import { fetchMarketDaily } from '../api/market'
+import { fetchHoldings, fetchHoldingsInsights } from '../api/portfolio'
 
 function money(value) {
   if (value == null || Number.isNaN(Number(value))) return '-'

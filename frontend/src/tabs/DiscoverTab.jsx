@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { fetchHot } from '../api'
+import { fetchHot } from '../api/market'
 
 const TYPE_LABELS = {
   gainers: '📈 涨幅榜',

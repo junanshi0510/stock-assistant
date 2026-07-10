@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { fetchWatchlist, removeWatch, fetchAlerts, clearAlerts } from '../api'
+import { clearAlerts, fetchAlerts, fetchWatchlist, removeWatch } from '../api/portfolio'
 import { dirClass, scoreColor } from '../helpers'
 
 // 自选股:从本地数据库读取收藏的股票,并显示每只的当前打分。
