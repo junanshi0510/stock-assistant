@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createChart } from 'lightweight-charts'
-import { analyzeFund, analyzeFundOverlap, compareFunds, fetchFundCategories, fetchFundDividends, fetchFundOpportunities, fetchFundPeers, fetchFundPortfolio, fetchHotFunds, searchFunds } from '../api'
+import { analyzeFund, analyzeFundOverlap, compareFunds, fetchFundAlternatives, fetchFundCategories, fetchFundDividends, fetchFundOpportunities, fetchFundPeers, fetchFundPortfolio, fetchHotFunds, fetchMarketDaily, searchFunds } from '../api'
 
 const COLORS = ['#48a6ff', '#20c486', '#f05d68', '#d8a833', '#9d7cff', '#26c6da', '#ff8a3d', '#a6e22e']
 
@@ -142,6 +142,8 @@ export default function FundTab() {
   const [overlapData, setOverlapData] = useState(null)
   const [opportunityRisk, setOpportunityRisk] = useState('balanced')
   const [opportunities, setOpportunities] = useState(null)
+  const [marketDaily, setMarketDaily] = useState(null)
+  const [alternatives, setAlternatives] = useState(null)
   const [loadingHot, setLoadingHot] = useState(false)
   const [loadingFund, setLoadingFund] = useState(false)
   const [loadingPortfolio, setLoadingPortfolio] = useState(false)
@@ -151,6 +153,8 @@ export default function FundTab() {
   const [loadingCompare, setLoadingCompare] = useState(false)
   const [loadingOverlap, setLoadingOverlap] = useState(false)
   const [loadingOpportunities, setLoadingOpportunities] = useState(false)
+  const [loadingMarketDaily, setLoadingMarketDaily] = useState(false)
+  const [loadingAlternatives, setLoadingAlternatives] = useState(false)
   const [error, setError] = useState('')
 
   async function loadHot(nextCategory = category, nextSort = sort) {
@@ -180,6 +184,7 @@ export default function FundTab() {
     setPortfolio(null); setPortfolioError('')
     setPeers(null)
     setDividends(null)
+    setAlternatives(null)
     try {
       const data = await analyzeFund(clean, nextMonths)
       setFund(data)
@@ -296,6 +301,35 @@ export default function FundTab() {
     }
   }
 
+  async function loadMarketDaily(nextRisk = opportunityRisk) {
+    setLoadingMarketDaily(true); setError('')
+    try {
+      const data = await fetchMarketDaily(nextRisk, 4)
+      setMarketDaily(data)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoadingMarketDaily(false)
+    }
+  }
+
+  async function loadAlternatives(nextCode = code, nextSort = peerSort) {
+    const clean = String(nextCode || '').trim()
+    if (!/^\d{6}$/.test(clean)) {
+      setError('请输入 6 位基金代码')
+      return
+    }
+    setLoadingAlternatives(true); setError('')
+    try {
+      const data = await fetchFundAlternatives(clean, nextSort, 5, months)
+      setAlternatives(data)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoadingAlternatives(false)
+    }
+  }
+
   async function loadCategories() {
     try {
       const data = await fetchFundCategories()
@@ -309,6 +343,7 @@ export default function FundTab() {
     loadHot()
     loadCategories()
     loadOpportunities('balanced')
+    loadMarketDaily('balanced')
   }, [])
 
   const rows = hot?.items || []
@@ -387,6 +422,154 @@ export default function FundTab() {
         {error && <div className="error">{error}</div>}
       </div>
 
+      <div className="panel fade-in market-daily-panel">
+        <h3 className="section-title">
+          市场机会日报 <span className="hint">聚合真实板块、概念、热门股和基金榜单；源不可用时只显示失败项</span>
+        </h3>
+        <div className="form-row" style={{ marginBottom: 14 }}>
+          <div className="field">
+            <label>日报风险偏好</label>
+            <select value={opportunityRisk} onChange={(e) => {
+              setOpportunityRisk(e.target.value)
+              loadOpportunities(e.target.value)
+              loadMarketDaily(e.target.value)
+            }}>
+              {RISK_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            </select>
+          </div>
+          <button onClick={() => loadMarketDaily()} disabled={loadingMarketDaily}>
+            {loadingMarketDaily ? <><span className="spinner" /> 生成中</> : '刷新日报'}
+          </button>
+          {marketDaily && <span className="hint">截至 {marketDaily.as_of} · 数据源 {marketDaily.source}</span>}
+        </div>
+        {loadingMarketDaily && !marketDaily && <div className="placeholder"><div className="big">⌛</div>正在聚合真实市场机会</div>}
+        {marketDaily && (
+          <>
+            <div className="market-daily-hero">
+              <div>
+                <span className="tag neutral">{marketDaily.summary?.temperature || '中性'}</span>
+                <h4>{marketDaily.summary?.headline || '暂无可聚合机会'}</h4>
+                <p>{marketDaily.method?.aggregation}</p>
+              </div>
+              <div className="market-daily-stats">
+                <MetricCard label="机会数" value={marketDaily.summary?.opportunity_count ?? 0} />
+                <MetricCard label="风险提示" value={marketDaily.summary?.risk_count ?? 0} />
+                <MetricCard label="失败源" value={marketDaily.summary?.failed_count ?? 0} />
+              </div>
+            </div>
+
+            <div className="market-daily-grid">
+              <div>
+                <h4 className="fund-subhead">行业机会</h4>
+                <div className="daily-card-list">
+                  {(marketDaily.industries || []).slice(0, 4).map((item) => (
+                    <div className="daily-card" key={`industry-${item.name}`}>
+                      <div className="daily-card-head">
+                        <b>{item.name}</b>
+                        <span className="tag neutral">{item.label}</span>
+                      </div>
+                      <div className="daily-metrics">
+                        <span className={deltaClass(item.change_pct)}>均涨 {pct(item.change_pct)}</span>
+                        <span>上涨占比 {pct(item.up_ratio)}</span>
+                        <span>热度 {num(item.score, 1)}</span>
+                      </div>
+                      <p>{item.driver_note}</p>
+                      <div className="daily-tags">
+                        {(item.leaders || []).slice(0, 3).map((s) => (
+                          <span key={`${item.name}-${s.symbol}`} className="tag neutral">{s.name} {pct(s.change_pct)}</span>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                  {!(marketDaily.industries || []).length && <div className="placeholder">真实行业热度源当前无可展示数据</div>}
+                </div>
+              </div>
+
+              <div>
+                <h4 className="fund-subhead">概念与基金线索</h4>
+                <div className="daily-card-list">
+                  {(marketDaily.concepts || []).slice(0, 3).map((item) => (
+                    <div className="daily-card" key={`concept-${item.name}`}>
+                      <div className="daily-card-head">
+                        <b>{item.name}</b>
+                        <span className="tag neutral">{item.label}</span>
+                      </div>
+                      <div className="daily-metrics">
+                        <span className={deltaClass(item.change_pct)}>涨跌 {pct(item.change_pct)}</span>
+                        <span>{item.leader || item.date || '-'}</span>
+                      </div>
+                      <p>{item.evidence?.[0] || item.event || '来自真实概念源'}</p>
+                    </div>
+                  ))}
+                  {(marketDaily.fund_candidates || []).slice(0, 3).map((item) => (
+                    <div className="daily-card clickable" key={`fund-${item.code}`} onClick={() => loadFund(item.code, months)}>
+                      <div className="daily-card-head">
+                        <b>{item.code} {item.name}</b>
+                        <span className="tag neutral">{item.bucket || item.label}</span>
+                      </div>
+                      <div className="daily-metrics">
+                        <span>机会分 {num(item.score, 1)}</span>
+                        <span className={deltaClass(item.return_3m)}>近3月 {pct(item.return_3m)}</span>
+                        <span className={deltaClass(item.return_1y)}>近1年 {pct(item.return_1y)}</span>
+                      </div>
+                      <p>{item.evidence?.[0] || item.cautions?.[0] || '点击进入基金详情继续核验'}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {(marketDaily.risks || []).length > 0 && (
+              <div className="daily-risk-row">
+                {(marketDaily.risks || []).map((risk) => (
+                  <div className={`daily-risk ${risk.level}`} key={risk.title}>
+                    <b>{risk.title}</b>
+                    <span>{risk.text}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {(marketDaily.hot_stocks || []).length > 0 && (
+              <div className="corr-wrap" style={{ marginTop: 14 }}>
+                <table className="compact-table market-daily-table">
+                  <thead>
+                    <tr>
+                      <th>市场</th>
+                      <th>榜单</th>
+                      <th>范围</th>
+                      <th>前五</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {marketDaily.hot_stocks.map((block) => (
+                      <tr key={`${block.market}-${block.type}`}>
+                        <td>{block.market}</td>
+                        <td>{block.type === 'losers' ? '跌幅榜' : '涨幅榜'}</td>
+                        <td>{block.scope || '-'}</td>
+                        <td>
+                          {(block.items || []).slice(0, 5).map((s) => (
+                            <span className="daily-inline-stock" key={`${block.market}-${block.type}-${s.symbol}`}>
+                              {s.name || s.symbol} <i className={deltaClass(s.change_pct)}>{pct(s.change_pct)}</i>
+                            </span>
+                          ))}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {marketDaily.failed?.length > 0 && (
+              <div className="error" style={{ marginTop: 12 }}>
+                {marketDaily.failed.map((x) => `${x.source}: ${x.error}`).join('；')}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
       <div className="panel fade-in">
         <h3 className="section-title">
           基金机会雷达 <span className="hint">基于真实榜单筛选候选，高分只代表更值得进一步研究</span>
@@ -397,6 +580,7 @@ export default function FundTab() {
             <select value={opportunityRisk} onChange={(e) => {
               setOpportunityRisk(e.target.value)
               loadOpportunities(e.target.value)
+              loadMarketDaily(e.target.value)
             }}>
               {RISK_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
             </select>
@@ -824,6 +1008,91 @@ export default function FundTab() {
                   </div>
                 </div>
                 <p className="hint" style={{ marginTop: 12 }}>{peers.method?.ranking} {peers.method?.limit_note}</p>
+              </>
+            )}
+          </div>
+
+          <div className="panel fade-in">
+            <h3 className="section-title">
+              基金替代品对比 <span className="hint">从同类真实榜单里筛候选，再读取真实净值横向比较收益、波动、回撤和买入节奏</span>
+            </h3>
+            <div className="form-row" style={{ marginBottom: 14 }}>
+              <button onClick={() => loadAlternatives(fund.code, peerSort)} disabled={loadingAlternatives}>
+                {loadingAlternatives ? <><span className="spinner" /> 查找中</> : '查找替代基金'}
+              </button>
+              <button className="ghost" onClick={() => {
+                setCompareInput([fund.code, ...(alternatives?.alternatives || []).slice(0, 3).map((r) => r.code)].join(' '))
+              }} disabled={!alternatives?.alternatives?.length}>
+                加入多基金对比
+              </button>
+              {alternatives && <span className="hint">同类 {alternatives.selected?.category_name || '-'} · 排序 {alternatives.sort} · 截至 {alternatives.as_of || '-'}</span>}
+            </div>
+            {loadingAlternatives && !alternatives && <div className="placeholder"><div className="big">⌛</div>正在读取真实同类基金和净值指标</div>}
+            {alternatives && (
+              <>
+                <div className="bt-cards quality-cards">
+                  <MetricCard label="当前基金" value={`${alternatives.selected.code} ${alternatives.selected.name || ''}`} />
+                  <MetricCard label="当前同类排名" value={alternatives.selected.rank ? `${alternatives.selected.rank}/${alternatives.selected.sample_count}` : `未进前${alternatives.selected.sample_count}`} />
+                  <MetricCard label="评分最高候选" value={`${alternatives.summary.best_score.code} · ${alternatives.summary.best_score.score}`} />
+                  <MetricCard label="低波候选" value={`${alternatives.summary.lower_volatility.code} ${pct(alternatives.summary.lower_volatility.metrics.annual_volatility)}`} />
+                  <MetricCard label="一年收益候选" value={`${alternatives.summary.better_1y.code} ${pct(alternatives.summary.better_1y.metrics.return_1y)}`} cls={deltaClass(alternatives.summary.better_1y.metrics.return_1y)} />
+                  <MetricCard label="低回撤候选" value={`${alternatives.summary.shallower_drawdown.code} ${pct(alternatives.summary.shallower_drawdown.metrics.max_drawdown)}`} cls="delta-neg" />
+                </div>
+                <div className="corr-wrap">
+                  <table className="compact-table fund-alternative-table">
+                    <thead>
+                      <tr>
+                        <th>候选</th>
+                        <th>评分</th>
+                        <th>近3月</th>
+                        <th>近1年</th>
+                        <th>波动</th>
+                        <th>最大回撤</th>
+                        <th>相对优势</th>
+                        <th>风险点</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {alternatives.alternatives.map((row) => (
+                        <tr key={row.code} className="clickable" onClick={() => loadFund(row.code, months)}>
+                          <td>
+                            <b>{row.code}</b>
+                            <span className="table-sub">{row.name}</span>
+                          </td>
+                          <td>{row.score} · {row.label}</td>
+                          <td className={deltaClass(row.metrics.return_3m)}>{pct(row.metrics.return_3m)}</td>
+                          <td className={deltaClass(row.metrics.return_1y)}>{pct(row.metrics.return_1y)}</td>
+                          <td>{pct(row.metrics.annual_volatility)}</td>
+                          <td className="delta-neg">{pct(row.metrics.max_drawdown)}</td>
+                          <td>{row.advantages?.[0] || '-'}</td>
+                          <td>{row.cautions?.[0] || '-'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="fund-alt-card-grid">
+                  {alternatives.alternatives.slice(0, 4).map((row) => (
+                    <div className="fund-alt-card" key={`alt-card-${row.code}`}>
+                      <h4>{row.code} {row.name}</h4>
+                      <div className="daily-metrics">
+                        <span>评分 {row.score}</span>
+                        <span>{row.timing_label || '-'}</span>
+                        <span>规模 {row.scale_yi != null ? `${num(row.scale_yi)}亿` : '-'}</span>
+                      </div>
+                      <div className="fund-bond-list">
+                        {(row.advantages || []).slice(0, 3).map((text) => <span className="tag up" key={text}>{text}</span>)}
+                        {(row.cautions || []).slice(0, 2).map((text) => <span className="tag neutral" key={text}>{text}</span>)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                {alternatives.failed?.length > 0 && (
+                  <div className="error" style={{ marginTop: 12 }}>
+                    {alternatives.failed.map((x) => `${x.code || x.name}: ${x.error}`).join('；')}
+                  </div>
+                )}
+                <p className="hint" style={{ marginTop: 12 }}>{alternatives.method?.score} {alternatives.method?.note}</p>
               </>
             )}
           </div>

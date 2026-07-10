@@ -175,6 +175,11 @@ export function fetchFundOpportunities(risk = 'balanced', limit = 5) {
   return getJson(`/api/funds/opportunities?${q.toString()}`)
 }
 
+export function fetchMarketDaily(risk = 'balanced', fundLimit = 4) {
+  const q = new URLSearchParams({ risk, fund_limit: String(fundLimit) })
+  return getJson(`/api/market/daily?${q.toString()}`)
+}
+
 export function searchFunds(keyword, limit = 20) {
   const q = new URLSearchParams({ keyword, limit: String(limit) })
   return getJson(`/api/funds/search?${q.toString()}`)
@@ -194,6 +199,11 @@ export function fetchFundPortfolio(code, year = '') {
 export function fetchFundPeers(code, sort = '1y', limit = 1000) {
   const q = new URLSearchParams({ code, sort, limit: String(limit) })
   return getJson(`/api/funds/peers?${q.toString()}`)
+}
+
+export function fetchFundAlternatives(code, sort = '1y', limit = 5, months = 36) {
+  const q = new URLSearchParams({ code, sort, limit: String(limit), months: String(months) })
+  return getJson(`/api/funds/alternatives?${q.toString()}`)
 }
 
 export function fetchFundDividends(code) {

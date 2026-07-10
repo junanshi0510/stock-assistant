@@ -40,6 +40,7 @@ import hot_stocks
 import sectors as sectors_mod
 import funds as funds_mod
 import holdings as holdings_mod
+import market_daily as market_daily_mod
 
 app = FastAPI(title="金融投资助手 API", version="2.0")
 
@@ -562,6 +563,19 @@ def fund_opportunities(
         raise HTTPException(status_code=502, detail=f"真实基金机会数据获取失败:{e}")
 
 
+@app.get("/api/market/daily")
+def market_daily(
+    risk: str = Query("balanced", regex="^(stable|balanced|aggressive)$"),
+    fund_limit: int = Query(4, ge=3, le=8),
+):
+    try:
+        return market_daily_mod.get_market_daily(risk=risk, fund_limit=fund_limit)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"真实市场机会日报获取失败:{e}")
+
+
 @app.get("/api/funds/search")
 def search_funds(
     keyword: str = Query(..., min_length=1),
@@ -613,6 +627,21 @@ def fund_peers(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"真实基金同类排行数据获取失败:{e}")
+
+
+@app.get("/api/funds/alternatives")
+def fund_alternatives(
+    code: str = Query(..., min_length=6, max_length=6),
+    sort: str = Query("1y", regex="^(1y|ytd|6m|3m|1m|1w)$"),
+    limit: int = Query(5, ge=3, le=8),
+    months: int = Query(36, ge=6, le=120),
+):
+    try:
+        return funds_mod.get_fund_alternatives(code=code, sort=sort, limit=limit, months=months)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"真实基金替代品数据获取失败:{e}")
 
 
 @app.get("/api/funds/dividends")

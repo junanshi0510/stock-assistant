@@ -960,6 +960,254 @@ def get_fund_peers(code: str, sort: str = "1y", limit: int = 1000) -> dict:
     }
 
 
+def _metric_delta(candidate: dict, selected: dict, key: str) -> float | None:
+    c = candidate.get(key)
+    s = selected.get(key)
+    if c is None or s is None:
+        return None
+    return c - s
+
+
+def _alternative_row(code: str, rank_row: dict, selected_metrics: dict, selected_rank: int | None, months: int) -> dict:
+    data = analyze_fund(code, months)
+    metrics = data.get("metrics") or {}
+    timing = data.get("timing") or {}
+    rank = rank_row.get("rank")
+    score = 50
+    advantages = []
+    cautions = []
+
+    delta_1y = _metric_delta(metrics, selected_metrics, "return_1y")
+    delta_6m = _metric_delta(metrics, selected_metrics, "return_6m")
+    delta_3m = _metric_delta(metrics, selected_metrics, "return_3m")
+    delta_vol = _metric_delta(metrics, selected_metrics, "annual_volatility")
+    delta_dd = _metric_delta(metrics, selected_metrics, "max_drawdown")
+    delta_dca = _metric_delta(metrics, selected_metrics, "dca_score")
+
+    if delta_1y is not None:
+        if delta_1y >= 8:
+            score += 18
+            advantages.append(f"近1年收益高于原基金 {delta_1y:.2f} 个百分点")
+        elif delta_1y >= 3:
+            score += 10
+            advantages.append(f"近1年收益略强 {delta_1y:.2f} 个百分点")
+        elif delta_1y <= -8:
+            score -= 14
+            cautions.append(f"近1年收益低于原基金 {abs(delta_1y):.2f} 个百分点")
+    if delta_6m is not None:
+        if delta_6m >= 5:
+            score += 10
+            advantages.append(f"近6月趋势更强 {delta_6m:.2f} 个百分点")
+        elif delta_6m <= -6:
+            score -= 8
+            cautions.append(f"近6月趋势弱于原基金 {abs(delta_6m):.2f} 个百分点")
+    if delta_3m is not None:
+        if delta_3m >= 3:
+            score += 8
+            advantages.append(f"近3月动量更强 {delta_3m:.2f} 个百分点")
+        elif delta_3m <= -5:
+            score -= 6
+            cautions.append(f"近3月动量更弱 {abs(delta_3m):.2f} 个百分点")
+    if delta_vol is not None:
+        if delta_vol <= -5:
+            score += 10
+            advantages.append(f"年化波动低于原基金 {abs(delta_vol):.2f} 个百分点")
+        elif delta_vol >= 8:
+            score -= 8
+            cautions.append(f"年化波动高于原基金 {delta_vol:.2f} 个百分点")
+    if delta_dd is not None:
+        if delta_dd >= 5:
+            score += 12
+            advantages.append(f"历史最大回撤更浅 {delta_dd:.2f} 个百分点")
+        elif delta_dd <= -8:
+            score -= 10
+            cautions.append(f"历史最大回撤更深 {abs(delta_dd):.2f} 个百分点")
+    if delta_dca is not None:
+        if delta_dca >= 10:
+            score += 8
+            advantages.append(f"买入节奏评分高于原基金 {delta_dca:.0f} 分")
+        elif delta_dca <= -12:
+            score -= 6
+            cautions.append(f"买入节奏评分低于原基金 {abs(delta_dca):.0f} 分")
+
+    if rank is not None and selected_rank is not None:
+        if rank < selected_rank:
+            score += 10
+            advantages.append(f"同类榜单排名更靠前: {rank}/{selected_rank}")
+        elif rank > selected_rank + 50:
+            score -= 6
+            cautions.append(f"同类榜单排名明显靠后: {rank}")
+    elif rank is not None:
+        score += 4
+
+    scale = rank_row.get("scale_yi")
+    if scale is not None:
+        if 5 <= scale <= 200:
+            score += 5
+            advantages.append(f"规模处于较健康区间: {scale:.2f} 亿")
+        elif scale < 1:
+            score -= 10
+            cautions.append(f"基金规模偏小: {scale:.2f} 亿")
+        elif scale > 300:
+            cautions.append(f"规模较大，策略灵活性需核验: {scale:.2f} 亿")
+
+    if (metrics.get("return_1m") or 0) >= 15:
+        score -= 8
+        cautions.append("近1月涨幅较快，替换时避免一次性追入")
+    if (metrics.get("max_drawdown") or 0) <= -40:
+        cautions.append("历史最大回撤较深，需要确认持有周期")
+
+    if not advantages:
+        advantages.append("同类榜单中具备可比性，需结合持仓和费用继续核验")
+    if not cautions:
+        cautions.append("替代前仍需确认费率、持仓风格和基金经理稳定性")
+
+    score = int(max(0, min(100, round(score))))
+    if score >= 78:
+        label = "优先研究"
+    elif score >= 64:
+        label = "可对比观察"
+    elif score >= 50:
+        label = "谨慎观察"
+    else:
+        label = "不优先"
+
+    return {
+        "code": code,
+        "name": data.get("name") or rank_row.get("name") or "",
+        "rank": rank,
+        "date": rank_row.get("date"),
+        "category": rank_row.get("category"),
+        "unit_nav": data.get("latest", {}).get("unit_nav"),
+        "as_of": data.get("as_of"),
+        "scale_yi": scale,
+        "score": score,
+        "label": label,
+        "trend_state": data.get("trend_state"),
+        "timing_score": timing.get("score"),
+        "timing_label": timing.get("label"),
+        "metrics": {
+            "return_1m": metrics.get("return_1m"),
+            "return_3m": metrics.get("return_3m"),
+            "return_6m": metrics.get("return_6m"),
+            "return_1y": metrics.get("return_1y"),
+            "annual_volatility": metrics.get("annual_volatility"),
+            "max_drawdown": metrics.get("max_drawdown"),
+            "current_drawdown": metrics.get("current_drawdown"),
+            "dca_score": metrics.get("dca_score"),
+        },
+        "deltas": {
+            "return_1y": _round(delta_1y),
+            "return_6m": _round(delta_6m),
+            "return_3m": _round(delta_3m),
+            "annual_volatility": _round(delta_vol),
+            "max_drawdown": _round(delta_dd),
+            "dca_score": _round(delta_dca, 0),
+        },
+        "advantages": advantages[:4],
+        "cautions": cautions[:4],
+    }
+
+
+def get_fund_alternatives(code: str, sort: str = "1y", limit: int = 5, months: int = 36) -> dict:
+    code = str(code or "").strip()
+    if not re.fullmatch(r"\d{6}", code):
+        raise ValueError("基金代码需要是 6 位数字")
+    if sort not in _SORT_MAP:
+        raise ValueError(f"不支持的排序窗口:{sort}")
+    limit = max(3, min(8, int(limit)))
+    months = max(6, min(120, int(months)))
+
+    info = _fund_search_one(code) or {}
+    category = _category_from_fund_type(info.get("type") or "")
+    rank_limit = 300
+    rank = _fetch_rank(category, rank_limit, sort)
+    rank_items = rank.get("items") or []
+    selected_idx = next((idx for idx, row in enumerate(rank_items) if row.get("code") == code), None)
+    selected_rank_row = rank_items[selected_idx] if selected_idx is not None else None
+    selected_rank = selected_idx + 1 if selected_idx is not None else None
+    selected_analysis = analyze_fund(code, months)
+    selected_metrics = selected_analysis.get("metrics") or {}
+
+    pool_rows = [row for row in rank_items if row.get("code") and row.get("code") != code]
+    pool_rows = pool_rows[:max(12, limit * 4)]
+    failed = []
+
+    def one(row):
+        try:
+            return _alternative_row(row["code"], row, selected_metrics, selected_rank, months), None
+        except Exception as exc:
+            return None, {"code": row.get("code"), "name": row.get("name"), "error": str(exc)[:160]}
+
+    alternatives = []
+    batch_size = max(6, limit * 2)
+    for start in range(0, len(pool_rows), batch_size):
+        batch = pool_rows[start:start + batch_size]
+        with ThreadPoolExecutor(max_workers=min(4, len(batch) or 1)) as pool:
+            loaded = list(pool.map(one, batch))
+        for item, error in loaded:
+            if item:
+                alternatives.append(item)
+            elif error:
+                failed.append(error)
+        if len(alternatives) >= limit:
+            break
+
+    alternatives.sort(key=lambda row: (row.get("score") or 0, row.get("rank") is not None, -(row.get("rank") or 9999)), reverse=True)
+    alternatives = alternatives[:limit]
+    if not alternatives:
+        raise RuntimeError("真实同类基金替代品数据当前不可用")
+
+    selected = {
+        "code": code,
+        "name": selected_analysis.get("name") or info.get("name") or "",
+        "fund_type": info.get("type") or "",
+        "category": category,
+        "category_name": rank.get("category_name"),
+        "rank": selected_rank,
+        "sample_count": len(rank_items),
+        "as_of": selected_analysis.get("as_of"),
+        "trend_state": selected_analysis.get("trend_state"),
+        "timing_score": (selected_analysis.get("timing") or {}).get("score"),
+        "timing_label": (selected_analysis.get("timing") or {}).get("label"),
+        "metrics": {
+            "return_1m": selected_metrics.get("return_1m"),
+            "return_3m": selected_metrics.get("return_3m"),
+            "return_6m": selected_metrics.get("return_6m"),
+            "return_1y": selected_metrics.get("return_1y"),
+            "annual_volatility": selected_metrics.get("annual_volatility"),
+            "max_drawdown": selected_metrics.get("max_drawdown"),
+            "current_drawdown": selected_metrics.get("current_drawdown"),
+            "dca_score": selected_metrics.get("dca_score"),
+        },
+        "rank_row": selected_rank_row,
+    }
+    summary = {
+        "best_score": alternatives[0],
+        "lower_volatility": min(alternatives, key=lambda row: row["metrics"].get("annual_volatility") if row["metrics"].get("annual_volatility") is not None else 999),
+        "better_1y": max(alternatives, key=lambda row: row["metrics"].get("return_1y") if row["metrics"].get("return_1y") is not None else -999),
+        "shallower_drawdown": max(alternatives, key=lambda row: row["metrics"].get("max_drawdown") if row["metrics"].get("max_drawdown") is not None else -999),
+    }
+    return {
+        "source": "东方财富基金同类排行 + 东方财富/天天基金真实净值",
+        "source_url": "https://fund.eastmoney.com/data/fundranking.html",
+        "code": code,
+        "sort": sort,
+        "months": months,
+        "limit": limit,
+        "as_of": rank.get("as_of"),
+        "selected": selected,
+        "alternatives": alternatives,
+        "summary": summary,
+        "failed": failed[:8],
+        "method": {
+            "candidate_pool": f"先从同类榜单前 {len(pool_rows)} 只真实基金中筛选，再读取真实净值指标横向比较。",
+            "score": "替代评分综合同类排名、近3/6/12月收益、年化波动、最大回撤、买入节奏评分和基金规模。",
+            "note": "替代品不是自动换仓建议，只表示值得进一步研究；最终还要看费用、持仓重合度和个人风险承受能力。",
+        },
+    }
+
+
 def get_fund_dividends(code: str) -> dict:
     code = str(code or "").strip()
     if not re.fullmatch(r"\d{6}", code):

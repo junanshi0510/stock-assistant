@@ -775,8 +775,154 @@ tbody tr:hover {
 .fund-opportunity-table {
   min-width: 920px;
 }
+.market-daily-panel {
+  overflow: hidden;
+}
+.market-daily-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+  gap: 16px;
+  align-items: stretch;
+  padding: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 8px;
+  background: rgba(8, 13, 20, 0.42);
+}
+.market-daily-hero h4 {
+  margin: 10px 0 8px;
+  color: #edf4ff;
+  font-size: 18px;
+  line-height: 1.45;
+}
+.market-daily-hero p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.65;
+}
+.market-daily-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.market-daily-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 18px;
+  margin-top: 16px;
+}
+.daily-card-list {
+  display: grid;
+  gap: 12px;
+}
+.daily-card {
+  padding: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.13);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.30);
+}
+.daily-card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+.daily-card-head b {
+  color: #edf4ff;
+  line-height: 1.45;
+}
+.daily-card p {
+  margin: 8px 0 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+.daily-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 9px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.daily-metrics span {
+  padding: 5px 7px;
+  border-radius: 7px;
+  background: rgba(255,255,255,0.045);
+}
+.daily-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 10px;
+}
+.daily-risk-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+  margin-top: 16px;
+}
+.daily-risk {
+  padding: 10px 12px;
+  border: 1px solid rgba(216, 168, 51, 0.22);
+  border-radius: 8px;
+  background: rgba(216, 168, 51, 0.08);
+}
+.daily-risk.high {
+  border-color: rgba(240, 93, 104, 0.28);
+  background: rgba(240, 93, 104, 0.08);
+}
+.daily-risk b {
+  display: block;
+  margin-bottom: 5px;
+  color: #edf4ff;
+}
+.daily-risk span {
+  color: var(--muted);
+  line-height: 1.55;
+}
+.market-daily-table {
+  min-width: 860px;
+}
+.daily-inline-stock {
+  display: inline-flex;
+  gap: 4px;
+  margin: 2px 8px 2px 0;
+  color: #dce7f5;
+}
+.daily-inline-stock i {
+  font-style: normal;
+}
 .fund-compare-table {
   min-width: 980px;
+}
+.fund-alternative-table {
+  min-width: 1120px;
+}
+.table-sub {
+  display: block;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 12px;
+}
+.fund-alt-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+.fund-alt-card {
+  padding: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.13);
+  border-radius: 8px;
+  background: rgba(8, 13, 20, 0.36);
+}
+.fund-alt-card h4 {
+  margin: 0 0 8px;
+  color: #edf4ff;
+  font-size: 14px;
+  line-height: 1.45;
 }
 .fund-overlap-block {
   margin-top: 18px;
@@ -806,6 +952,10 @@ tbody tr:hover {
 }
 .fund-compare-table th,
 .fund-compare-table td,
+.fund-alternative-table th,
+.fund-alternative-table td,
+.market-daily-table th,
+.market-daily-table td,
 .fund-opportunity-table th,
 .fund-opportunity-table td,
 .fund-overlap-table th,
@@ -1194,6 +1344,8 @@ tbody tr:hover {
 }
 
 @media (max-width: 900px) {
+  .market-daily-hero,
+  .market-daily-grid,
   .fund-recovery-grid,
   .fund-calendar-grid,
   .fund-timing-grid,
