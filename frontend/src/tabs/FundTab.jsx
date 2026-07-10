@@ -1,19 +1,11 @@
-import { useEffect, useRef } from 'react'
-import { createChart } from 'lightweight-charts'
 import WorkspaceHeader from '../components/WorkspaceHeader'
 import { useFundWorkspace } from '../features/funds/useFundWorkspace'
-
-const COLORS = ['#176f9c', '#087f70', '#c63b4a', '#9a6800', '#7256b4', '#287f9f', '#a45a1e', '#4f8a4c']
-
-const CATEGORIES = [
-  ['all', '全部'],
-  ['stock', '股票型'],
-  ['hybrid', '混合型'],
-  ['bond', '债券型'],
-  ['index', '指数型'],
-  ['qdii', 'QDII'],
-  ['fof', 'FOF'],
-]
+import FundCompareView from '../features/funds/FundCompareView'
+import FundDiscoveryView from '../features/funds/FundDiscoveryView'
+import FundWorkspaceControls from '../features/funds/FundWorkspaceControls'
+import MetricCard from '../features/funds/FundMetricCard'
+import { FundLineChart } from '../features/funds/FundCharts'
+import { deltaClass, metricText, num, pct } from '../features/funds/fundFormatters'
 
 const SORTS = [
   ['1y', '近1年'],
@@ -23,113 +15,11 @@ const SORTS = [
   ['1m', '近1月'],
 ]
 
-const RISK_OPTIONS = [
-  ['stable', '稳健'],
-  ['balanced', '均衡'],
-  ['aggressive', '进取'],
-]
-
 const FUND_VIEWS = [
   { id: 'discover', label: '发现基金', description: '从真实榜单和分类热度中建立候选池' },
   { id: 'research', label: '研究基金', description: '将单只基金的数据转化为可复盘的决策框架' },
   { id: 'compare', label: '比较与替换', description: '比较多只基金的风险、相关性与重复暴露' },
 ]
-
-function pct(v) {
-  if (v == null) return '-'
-  return `${v > 0 ? '+' : ''}${Number(v).toFixed(2)}%`
-}
-
-function num(v, digits = 2) {
-  if (v == null) return '-'
-  return Number(v).toFixed(digits)
-}
-
-function metricText(metric) {
-  if (metric?.value == null) return '-'
-  if (metric.unit === '只' || metric.unit === '组') return `${Number(metric.value).toFixed(0)}${metric.unit}`
-  if (metric.unit === '%') return `${Number(metric.value).toFixed(2)}%`
-  return `${num(metric.value)}${metric.unit || ''}`
-}
-
-function deltaClass(v) {
-  if (v > 0) return 'delta-pos'
-  if (v < 0) return 'delta-neg'
-  return 'delta-zero'
-}
-
-function FundLineChart({ data }) {
-  const ref = useRef(null)
-
-  useEffect(() => {
-    if (!ref.current || !data?.length) return
-    const chart = createChart(ref.current, {
-      layout: { background: { color: 'transparent' }, textColor: '#667784', fontSize: 11 },
-      grid: {
-        vertLines: { color: 'rgba(28,42,53,0.06)' },
-        horzLines: { color: 'rgba(28,42,53,0.08)' },
-      },
-      rightPriceScale: { borderColor: 'rgba(28,42,53,0.14)' },
-      timeScale: { borderColor: 'rgba(28,42,53,0.14)' },
-      crosshair: { mode: 1 },
-      autoSize: true,
-    })
-    const navSeries = chart.addLineSeries({
-      color: '#176f9c',
-      lineWidth: 2,
-      priceLineVisible: false,
-      title: '单位净值',
-    })
-    navSeries.setData(data.map((r) => ({ time: r.date, value: Number(r.unit_nav) })))
-    chart.timeScale().fitContent()
-    return () => chart.remove()
-  }, [data])
-
-  return <div ref={ref} className="chart small" />
-}
-
-function FundCompareChart({ data }) {
-  const ref = useRef(null)
-
-  useEffect(() => {
-    if (!ref.current || !data?.rebased?.length) return
-    const chart = createChart(ref.current, {
-      layout: { background: { color: 'transparent' }, textColor: '#667784', fontSize: 11 },
-      grid: {
-        vertLines: { color: 'rgba(28,42,53,0.06)' },
-        horzLines: { color: 'rgba(28,42,53,0.08)' },
-      },
-      rightPriceScale: { borderColor: 'rgba(28,42,53,0.14)' },
-      timeScale: { borderColor: 'rgba(28,42,53,0.14)' },
-      crosshair: { mode: 1 },
-      autoSize: true,
-    })
-    data.codes.forEach((code, i) => {
-      const series = chart.addLineSeries({
-        color: COLORS[i % COLORS.length],
-        lineWidth: 2,
-        priceLineVisible: false,
-        title: code,
-      })
-      series.setData(data.rebased
-        .filter((r) => r[code] != null)
-        .map((r) => ({ time: r.date, value: Number(r[code]) })))
-    })
-    chart.timeScale().fitContent()
-    return () => chart.remove()
-  }, [data])
-
-  return <div ref={ref} className="chart small" />
-}
-
-function MetricCard({ label, value, cls = '' }) {
-  return (
-    <div className="bt-card">
-      <div className="k">{label}</div>
-      <div className={`v ${cls}`}>{value}</div>
-    </div>
-  )
-}
 
 export default function FundTab() {
   const {
@@ -167,444 +57,66 @@ export default function FundTab() {
         ariaLabel="基金中心功能"
       />
 
-      <div className="panel">
-        <div className="form-row">
-          {fundView === 'discover' && <>
-            <div className="field">
-              <label>基金分类</label>
-              <select value={category} onChange={(e) => { setCategory(e.target.value); loadHot(e.target.value, sort) }}>
-                {CATEGORIES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-              </select>
-            </div>
-            <div className="field">
-              <label>排序窗口</label>
-              <select value={sort} onChange={(e) => { setSort(e.target.value); loadHot(category, e.target.value) }}>
-                {SORTS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-              </select>
-            </div>
-            <div className="field">
-              <label>榜单数量</label>
-              <input type="number" min="5" max="100" value={limit} onChange={(e) => setLimit(Number(e.target.value))} />
-            </div>
-            <button onClick={() => loadHot()} disabled={loadingHot}>
-              {loadingHot ? <><span className="spinner" /> 加载中</> : '刷新基金榜'}
-            </button>
-          </>}
-          {fundView === 'research' && <>
-            <div className="field">
-              <label>基金代码</label>
-              <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="例如 110022" />
-            </div>
-            <div className="field">
-              <label>净值周期(月)</label>
-              <input type="number" min="6" max="120" value={months} onChange={(e) => setMonths(Number(e.target.value))} />
-            </div>
-            <button onClick={() => loadFund()} disabled={loadingFund}>
-              {loadingFund ? <><span className="spinner" /> 分析中</> : '研究基金'}
-            </button>
-            <div className="field">
-              <label>基金搜索</label>
-              <input value={searchKeyword} onChange={(e) => setSearchKeyword(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') runSearch() }}
-                placeholder="代码 / 名称 / 拼音" />
-            </div>
-            <button className="ghost" onClick={runSearch} disabled={loadingSearch}>
-              {loadingSearch ? <><span className="spinner" /> 搜索中</> : '搜索基金'}
-            </button>
-          </>}
-          {fundView === 'compare' && <span className="hint">输入两只或以上基金后，比较真实净值、波动、回撤和披露持仓重合。</span>}
-        </div>
-        {fundView === 'research' && searchResults.length > 0 && (
-          <div className="fund-search-results">
-            {searchResults.map((item) => (
-              <button key={item.code} className="fund-search-item" onClick={() => {
-                setCode(item.code)
-                loadFund(item.code, months)
-              }}>
-                <b>{item.code}</b>
-                <span>{item.name}</span>
-                <small>{item.type}</small>
-              </button>
-            ))}
-          </div>
-        )}
-        {fundView === 'discover' && hot && <p className="hint" style={{ marginTop: 12 }}>数据源: {hot.source}，截至 {hot.as_of}；高收益只代表历史表现，仍需继续研究回撤和持仓。</p>}
-        {error && <div className="error">{error}</div>}
-      </div>
+      <FundWorkspaceControls
+        fundView={fundView}
+        category={category}
+        setCategory={setCategory}
+        sort={sort}
+        setSort={setSort}
+        limit={limit}
+        setLimit={setLimit}
+        loadHot={loadHot}
+        loadingHot={loadingHot}
+        code={code}
+        setCode={setCode}
+        months={months}
+        setMonths={setMonths}
+        loadFund={loadFund}
+        loadingFund={loadingFund}
+        searchKeyword={searchKeyword}
+        setSearchKeyword={setSearchKeyword}
+        runSearch={runSearch}
+        loadingSearch={loadingSearch}
+        searchResults={searchResults}
+        hot={hot}
+        error={error}
+      />
 
-      {fundView === 'discover' && <>
-      <div className="panel fade-in">
-        <h3 className="section-title">
-          基金机会雷达 <span className="hint">基于真实榜单筛选候选，高分只代表更值得进一步研究</span>
-        </h3>
-        <div className="form-row" style={{ marginBottom: 14 }}>
-          <div className="field">
-            <label>风险偏好</label>
-            <select value={opportunityRisk} onChange={(e) => {
-              setOpportunityRisk(e.target.value)
-              loadOpportunities(e.target.value)
-            }}>
-              {RISK_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-            </select>
-          </div>
-          <button onClick={() => loadOpportunities()} disabled={loadingOpportunities}>
-            {loadingOpportunities ? <><span className="spinner" /> 筛选中</> : '刷新机会'}
-          </button>
-          {opportunities && <span className="hint">数据源: {opportunities.source} · 截至 {opportunities.as_of || '-'}</span>}
-        </div>
-
-        {opportunities && (
-          <>
-            <div className="fund-opportunity-grid">
-              {opportunities.buckets.map((bucket) => (
-                <div className="fund-opportunity-card" key={bucket.key}>
-                  <h4 className="fund-subhead">{bucket.name} <span className="hint">{bucket.profile}</span></h4>
-                  <div className="corr-wrap">
-                    <table className="compact-table fund-opportunity-table">
-                      <thead>
-                        <tr>
-                          <th>代码</th>
-                          <th>名称</th>
-                          <th>分数</th>
-                          <th>近3月</th>
-                          <th>近1年</th>
-                          <th>规模</th>
-                          <th>提示</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {bucket.items.map((row) => (
-                          <tr key={row.code} className="clickable" onClick={() => loadFund(row.code, months)}>
-                            <td style={{ fontWeight: 800 }}>{row.code}</td>
-                            <td>{row.name}</td>
-                            <td>{num(row.opportunity_score, 1)}</td>
-                            <td className={deltaClass(row.return_3m)}>{pct(row.return_3m)}</td>
-                            <td className={deltaClass(row.return_1y)}>{pct(row.return_1y)}</td>
-                            <td>{row.scale_yi != null ? `${num(row.scale_yi)}亿` : '-'}</td>
-                            <td>{row.cautions?.slice(-1)[0] || '-'}</td>
-                          </tr>
-                        ))}
-                        {!bucket.items.length && (
-                          <tr><td colSpan="7" className="hint">当前真实榜单下没有满足筛选条件的候选</td></tr>
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              ))}
-            </div>
-            {opportunities.failed?.length > 0 && (
-              <div className="error" style={{ marginTop: 12 }}>
-                {opportunities.failed.map((x) => `${x.name}: ${x.error}`).join('；')}
-              </div>
-            )}
-            <p className="hint" style={{ marginTop: 12 }}>
-              {opportunities.method.score} {opportunities.risk_note}
-            </p>
-          </>
-        )}
-      </div>
-
-      {categoryHeat.length > 0 && (
-        <div className="panel fade-in">
-          <h3 className="section-title">基金分类热度</h3>
-          <div className="fund-category-grid">
-            {categoryHeat.map((c) => (
-              <button key={c.category} className={`fund-category ${category === c.category ? 'active' : ''}`}
-                onClick={() => { setCategory(c.category); loadHot(c.category, sort) }}>
-                <span>{c.name}</span>
-                <b className={deltaClass(c.avg_3m)}>{pct(c.avg_3m)}</b>
-                <small>{c.heat} · 领涨 {c.leader_name || '-'}</small>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-      {categoryError && (
-        <div className="error">真实基金分类热度数据获取失败: {categoryError}</div>
+      {fundView === 'discover' && (
+        <FundDiscoveryView
+          opportunityRisk={opportunityRisk}
+          setOpportunityRisk={setOpportunityRisk}
+          loadOpportunities={loadOpportunities}
+          loadingOpportunities={loadingOpportunities}
+          opportunities={opportunities}
+          categoryHeat={categoryHeat}
+          category={category}
+          setCategory={setCategory}
+          sort={sort}
+          loadHot={loadHot}
+          categoryError={categoryError}
+          rows={rows}
+          hot={hot}
+          code={code}
+          months={months}
+          loadFund={loadFund}
+        />
       )}
 
-      {rows.length > 0 && (
-        <div className="panel fade-in">
-          <h3 className="section-title">热门基金榜 <span className="hint">{hot.category_name} · {hot.sort}</span></h3>
-          <div className="corr-wrap">
-            <table className="compact-table fund-table">
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>代码</th>
-                  <th>基金简称</th>
-                  <th>日期</th>
-                  <th>单位净值</th>
-                  <th>近1月</th>
-                  <th>近3月</th>
-                  <th>近6月</th>
-                  <th>近1年</th>
-                  <th>今年来</th>
-                  <th>趋势</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => (
-                  <tr key={r.code} className={`clickable ${r.code === code ? 'row-active' : ''}`}
-                    onClick={() => loadFund(r.code, months)}>
-                    <td className="rank-idx">{r.rank}</td>
-                    <td style={{ fontWeight: 800 }}>{r.code}</td>
-                    <td>{r.name}</td>
-                    <td>{r.date}</td>
-                    <td>{num(r.unit_nav, 4)}</td>
-                    <td className={deltaClass(r.return_1m)}>{pct(r.return_1m)}</td>
-                    <td className={deltaClass(r.return_3m)}>{pct(r.return_3m)}</td>
-                    <td className={deltaClass(r.return_6m)}>{pct(r.return_6m)}</td>
-                    <td className={deltaClass(r.return_1y)}>{pct(r.return_1y)}</td>
-                    <td className={deltaClass(r.return_ytd)}>{pct(r.return_ytd)}</td>
-                    <td><span className="tag neutral">{r.trend}</span></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
+      {fundView === 'compare' && (
+        <FundCompareView
+          compareInput={compareInput}
+          setCompareInput={setCompareInput}
+          runCompare={runCompare}
+          loadingCompare={loadingCompare}
+          runOverlap={runOverlap}
+          loadingOverlap={loadingOverlap}
+          compareData={compareData}
+          overlapData={overlapData}
+          loadFund={loadFund}
+          months={months}
+        />
       )}
-      </>}
-
-      {fundView === 'compare' && <div className="panel fade-in">
-        <h3 className="section-title">
-          多基金对比 <span className="hint">共同净值日期重算，首日=100，横向比较收益、回撤、波动和相关性</span>
-        </h3>
-        <div className="form-row">
-          <div className="field fund-compare-input">
-            <label>基金代码</label>
-            <textarea value={compareInput} onChange={(e) => setCompareInput(e.target.value)}
-              placeholder="例如: 110022 001480 006502" />
-          </div>
-          <button onClick={runCompare} disabled={loadingCompare}>
-            {loadingCompare ? <><span className="spinner" /> 对比中</> : '开始对比'}
-          </button>
-          <button className="ghost" onClick={runOverlap} disabled={loadingOverlap}>
-            {loadingOverlap ? <><span className="spinner" /> 分析中</> : '持仓重合度'}
-          </button>
-        </div>
-        {compareData && (
-          <>
-            <div className="bt-cards quality-cards fund-leader-cards">
-              <MetricCard label="近3月领先" value={`${compareData.leaders.best_3m.code} ${pct(compareData.leaders.best_3m.return_3m)}`} cls={deltaClass(compareData.leaders.best_3m.return_3m)} />
-              <MetricCard label="近1年领先" value={`${compareData.leaders.best_1y.code} ${pct(compareData.leaders.best_1y.return_1y)}`} cls={deltaClass(compareData.leaders.best_1y.return_1y)} />
-              <MetricCard label="低波动" value={`${compareData.leaders.lowest_vol.code} ${pct(compareData.leaders.lowest_vol.annual_volatility)}`} />
-              <MetricCard label="低回撤" value={`${compareData.leaders.shallowest_drawdown.code} ${pct(compareData.leaders.shallowest_drawdown.max_drawdown)}`} cls="delta-neg" />
-            </div>
-            {compareData.portfolio_playbook && (
-              <div className="fund-playbook-panel fund-batch-playbook">
-                <h4 className="fund-subhead">批量投资经验手册</h4>
-                <div className="fund-playbook-hero">
-                  <div>
-                    <span className="tag neutral">{compareData.portfolio_playbook.label}</span>
-                    <h4>{compareData.portfolio_playbook.conclusion}</h4>
-                    <div className="daily-tags">
-                      {(compareData.portfolio_playbook.risk_flags || []).map((text) => (
-                        <span className="tag neutral" key={text}>{text}</span>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="playbook-review-grid">
-                    {(compareData.portfolio_playbook.metrics || []).map((m) => (
-                      <div className="playbook-review" key={m.name}>
-                        <span>{m.name}</span>
-                        <b className={m.unit === '%' ? deltaClass(m.value) : ''}>
-                          {metricText(m)}
-                        </b>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="playbook-grid">
-                  <div>
-                    <h4 className="fund-subhead">角色分布</h4>
-                    <div className="playbook-rule-list">
-                      {(compareData.portfolio_playbook.role_distribution || []).map((row) => (
-                        <div className="playbook-rule" key={row.name}>
-                          <b>{row.name} · {row.count}只</b>
-                          <span>组合占比 {num(row.ratio)}%</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                  <div>
-                    <h4 className="fund-subhead">高相关提示</h4>
-                    <div className="playbook-rule-list">
-                      {(compareData.portfolio_playbook.high_corr_pairs || []).length > 0 ? (
-                        compareData.portfolio_playbook.high_corr_pairs.map((row) => (
-                          <div className="playbook-rule danger" key={`${row.a}-${row.b}`}>
-                            <b>{row.a} / {row.b}</b>
-                            <span>历史收益相关性 {num(row.correlation, 3)}，新增资金前先判断是否重复暴露。</span>
-                          </div>
-                        ))
-                      ) : (
-                        <div className="playbook-rule">
-                          <b>未触发高相关红旗</b>
-                          <span>当前共同净值样本中未发现相关性高于 0.85 的基金组合。</span>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                <h4 className="fund-subhead">单只基金批量动作</h4>
-                <div className="corr-wrap">
-                  <table className="compact-table batch-action-table">
-                    <thead>
-                      <tr>
-                        <th>基金</th>
-                        <th>角色</th>
-                        <th>动作</th>
-                        <th>依据</th>
-                        <th>注意</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(compareData.portfolio_playbook.fund_actions || []).map((row) => (
-                        <tr key={row.code}>
-                          <td><b>{row.code}</b><br />{row.name}</td>
-                          <td>{row.risk_band || row.role || '-'}</td>
-                          <td><span className="tag neutral">{row.action}</span></td>
-                          <td>{row.reason}</td>
-                          <td>{(row.cautions || []).join('；') || '-'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-
-                <div className="playbook-grid">
-                  <div>
-                    <h4 className="fund-subhead">批量规则</h4>
-                    <div className="playbook-rule-list">
-                      {(compareData.portfolio_playbook.batch_rules || []).map((row) => (
-                        <div className="playbook-rule" key={row.title}>
-                          <b>{row.title}</b>
-                          <span>{row.text}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                  <div>
-                    <h4 className="fund-subhead">执行步骤</h4>
-                    <div className="playbook-rule-list">
-                      {(compareData.portfolio_playbook.execution_steps || []).map((row) => (
-                        <div className="playbook-rule" key={row.step}>
-                          <b>{row.step}</b>
-                          <span>{row.action}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-
-                <h4 className="fund-subhead">复盘问题</h4>
-                <div className="fund-bond-list">
-                  {(compareData.portfolio_playbook.review_questions || []).map((text) => (
-                    <span className="tag neutral" key={text}>{text}</span>
-                  ))}
-                </div>
-                <p className="hint" style={{ marginTop: 12 }}>{compareData.portfolio_playbook.method?.note}</p>
-              </div>
-            )}
-            <FundCompareChart data={compareData} />
-            <div className="corr-wrap">
-              <table className="compact-table fund-compare-table">
-                <thead>
-                  <tr>
-                    <th>代码</th>
-                    <th>名称</th>
-                    <th>近1月</th>
-                    <th>近3月</th>
-                    <th>近6月</th>
-                    <th>近1年</th>
-                    <th>年化波动</th>
-                    <th>最大回撤</th>
-                    <th>定投分</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {compareData.items.map((r) => (
-                    <tr key={r.code} className="clickable" onClick={() => loadFund(r.code, months)}>
-                      <td style={{ fontWeight: 800 }}>{r.code}</td>
-                      <td>{r.name}</td>
-                      <td className={deltaClass(r.return_1m)}>{pct(r.return_1m)}</td>
-                      <td className={deltaClass(r.return_3m)}>{pct(r.return_3m)}</td>
-                      <td className={deltaClass(r.return_6m)}>{pct(r.return_6m)}</td>
-                      <td className={deltaClass(r.return_1y)}>{pct(r.return_1y)}</td>
-                      <td>{pct(r.annual_volatility)}</td>
-                      <td className="delta-neg">{pct(r.max_drawdown)}</td>
-                      <td>{r.dca_score}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </>
-        )}
-        {overlapData && (
-          <div className="fund-overlap-block">
-            <div className="bt-cards quality-cards">
-              <MetricCard label="平均个股重合" value={pct(overlapData.summary.avg_stock_overlap_weight)} />
-              <MetricCard label="平均行业重合" value={pct(overlapData.summary.avg_industry_overlap_weight)} />
-              <MetricCard label="高重合组合" value={`${overlapData.summary.high_overlap_pair_count}/${overlapData.summary.pair_count}`} />
-              <MetricCard label="结论" value={overlapData.summary.conclusion} />
-            </div>
-            <div className="fund-holding-grid">
-              <div>
-                <h4 className="fund-subhead">基金两两重合</h4>
-                <div className="corr-wrap">
-                  <table className="compact-table fund-overlap-table">
-                    <thead>
-                      <tr>
-                        <th>基金组合</th>
-                        <th>共同股数</th>
-                        <th>个股重合</th>
-                        <th>行业重合</th>
-                        <th>等级</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {overlapData.pairwise.map((r) => (
-                        <tr key={`${r.fund_a}-${r.fund_b}`}>
-                          <td>{r.fund_a} / {r.fund_b}</td>
-                          <td>{r.common_stock_count}</td>
-                          <td>{pct(r.stock_overlap_weight)}</td>
-                          <td>{pct(r.industry_overlap_weight)}</td>
-                          <td><span className="tag neutral">{r.level}</span></td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-              <div>
-                <h4 className="fund-subhead">共同重仓股</h4>
-                <div className="fund-bond-list">
-                  {overlapData.shared_stocks.slice(0, 12).map((r) => (
-                    <span className="tag neutral" key={r.code}>{r.name} {r.fund_count}只 · {pct(r.max_ratio)}</span>
-                  ))}
-                  {!overlapData.shared_stocks.length && <span className="hint">未发现披露重仓股重合</span>}
-                </div>
-                <h4 className="fund-subhead">共同暴露行业</h4>
-                <div className="fund-bar-list">
-                  {overlapData.shared_industries.slice(0, 8).map((r) => (
-                    <div className="fund-bar-row" key={r.name}>
-                      <div className="fund-bar-label">{r.name}</div>
-                      <div className="fund-bar-track"><i style={{ width: `${Math.min(100, Math.max(1, r.max_ratio || 0))}%` }} /></div>
-                      <div className="fund-bar-value">{pct(r.max_ratio)}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-            <p className="hint" style={{ marginTop: 12 }}>{overlapData.method.note} 数据源: {overlapData.source}。</p>
-          </div>
-        )}
-      </div>}
 
       {fundView === 'research' && fund && (
         <>
