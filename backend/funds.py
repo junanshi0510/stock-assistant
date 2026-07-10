@@ -2373,6 +2373,264 @@ def _fund_timing_profile(df: pd.DataFrame, metrics: dict, recovery_profile: dict
     }
 
 
+def _fund_risk_band(metrics: dict, fact_sheet: dict) -> dict:
+    vol = metrics.get("annual_volatility")
+    max_dd = metrics.get("max_drawdown")
+    asset = (fact_sheet or {}).get("asset_latest") or {}
+    stock_ratio = asset.get("stock_ratio")
+    bond_ratio = asset.get("bond_ratio")
+    labels = []
+    score = 0
+
+    if vol is not None:
+        if vol >= 35:
+            score += 35
+            labels.append("高波动")
+        elif vol >= 20:
+            score += 22
+            labels.append("中高波动")
+        elif vol >= 12:
+            score += 12
+            labels.append("中等波动")
+        else:
+            score += 4
+            labels.append("低波动")
+    if max_dd is not None:
+        if max_dd <= -40:
+            score += 35
+            labels.append("历史深回撤")
+        elif max_dd <= -25:
+            score += 24
+            labels.append("回撤较深")
+        elif max_dd <= -12:
+            score += 12
+            labels.append("回撤中等")
+        else:
+            score += 4
+            labels.append("回撤较浅")
+    if stock_ratio is not None:
+        if stock_ratio >= 80:
+            score += 20
+            labels.append("权益高暴露")
+        elif stock_ratio >= 45:
+            score += 12
+            labels.append("权益中等暴露")
+    if bond_ratio is not None and bond_ratio >= 70:
+        score -= 8
+        labels.append("债券底仓属性")
+
+    if score >= 65:
+        band = "进攻型"
+        holding_period = "至少 3-5 年，并接受较长时间浮亏"
+    elif score >= 38:
+        band = "均衡偏波动"
+        holding_period = "至少 2-3 年，用分批和再平衡降低择时压力"
+    else:
+        band = "稳健/低波动"
+        holding_period = "至少 1 年以上，重点看收益稳定性和信用/久期风险"
+    return {
+        "band": band,
+        "score": max(0, min(100, int(round(score)))),
+        "labels": list(dict.fromkeys(labels))[:5],
+        "holding_period": holding_period,
+    }
+
+
+def _position_ranges(risk_band: str) -> list[dict]:
+    if risk_band == "进攻型":
+        rows = [
+            ("稳健投资者", "0-3%", "只适合作为卫星仓或观察仓，避免单一高波动主题拖累组合。"),
+            ("均衡投资者", "3-8%", "分批参与，和债券/宽基/现金类资产配合使用。"),
+            ("进取投资者", "5-12%", "可作为进攻仓，但仍不建议成为组合核心。"),
+        ]
+    elif risk_band == "均衡偏波动":
+        rows = [
+            ("稳健投资者", "3-8%", "适合作为小比例增强，不承担组合主稳定器。"),
+            ("均衡投资者", "5-15%", "可作为权益中枢的一部分，定期再平衡。"),
+            ("进取投资者", "10-20%", "可提高权重，但需要明确最大回撤承受线。"),
+        ]
+    else:
+        rows = [
+            ("稳健投资者", "10-30%", "可承担组合底仓角色，但仍要看信用、久期和流动性。"),
+            ("均衡投资者", "8-25%", "可作为波动缓冲或资金等待区。"),
+            ("进取投资者", "5-15%", "更多承担现金管理/防守仓角色。"),
+        ]
+    return [{"investor": a, "range": b, "reason": c} for a, b, c in rows]
+
+
+def _fund_investment_playbook(metrics: dict, timing: dict, fact_sheet: dict, style: dict,
+                              calendar_returns: dict, recovery_profile: dict) -> dict:
+    risk = _fund_risk_band(metrics, fact_sheet)
+    asset = (fact_sheet or {}).get("asset_latest") or {}
+    managers = (fact_sheet or {}).get("managers") or []
+    manager = managers[0] if isinstance(managers, list) and managers else {}
+    flow = (fact_sheet or {}).get("flow_summary") or {}
+    timing_score = timing.get("score")
+    current_dd = metrics.get("current_drawdown")
+    return_3m = metrics.get("return_3m")
+    return_1y = metrics.get("return_1y")
+    vol = metrics.get("annual_volatility")
+    max_dd = metrics.get("max_drawdown")
+    positive_month_ratio = metrics.get("positive_month_ratio")
+    positive_year_ratio = metrics.get("positive_year_ratio")
+
+    role = "观察仓"
+    role_reason = "当前更适合先建立研究和跟踪框架，等趋势、回撤和同类排名进一步确认。"
+    if risk["band"] == "稳健/低波动":
+        role = "组合稳定器"
+        role_reason = "历史波动和回撤相对可控，更适合承担底仓、现金替代或防守仓的角色。"
+    elif risk["band"] == "均衡偏波动" and return_1y is not None and return_1y > 0:
+        role = "权益中枢"
+        role_reason = "收益弹性和波动都处在中间区间，适合放在组合的权益中枢而非短线交易。"
+    elif risk["band"] == "进攻型":
+        role = "卫星进攻仓"
+        role_reason = "波动和回撤更高，经验上更适合用小比例参与主题或风格机会。"
+
+    entry_rules = []
+    if timing_score is not None and timing_score >= 70:
+        entry_rules.append({"level": "可以研究分批", "rule": "节奏评分较高时，只考虑分 3-5 批进入，不一次性重仓。"})
+    elif timing_score is not None and timing_score >= 50:
+        entry_rules.append({"level": "小额观察", "rule": "节奏评分中等时，用小额定投或观察仓跟踪，等净值站稳 20/60 日均线再提高频率。"})
+    else:
+        entry_rules.append({"level": "等待", "rule": "节奏评分偏低时，先不急着新增，等待近 1/3 月动量或回撤修复出现改善。"})
+
+    if current_dd is not None:
+        if current_dd > -3:
+            entry_rules.append({"level": "避免追高", "rule": "当前接近阶段高位，新增资金优先等待普通回撤区或均线回踩。"})
+        elif current_dd <= -15:
+            entry_rules.append({"level": "深回撤核验", "rule": "深回撤不是自动买入理由，必须同时核验持仓风格、基金经理和同类排名没有恶化。"})
+        else:
+            entry_rules.append({"level": "分批区间", "rule": "当前有一定回撤但不极端，适合把每一笔买入和最大可承受回撤绑定。"})
+
+    hold_rules = [
+        {"title": "复盘频率", "text": "普通情况下每月复盘一次即可；如果单月跌幅超过历史月度常见波动，再做临时复盘。"},
+        {"title": "看净值，不看情绪", "text": "持有期重点看 60 日均线、最大回撤、同类排名和基金档案变化，不因为单日涨跌做决定。"},
+        {"title": "再平衡", "text": "当该基金仓位因上涨超过预设上限，优先再平衡；当下跌导致逻辑破坏，不用补仓摊低成本。"},
+    ]
+    if flow.get("pressure"):
+        hold_rules.append({"title": "申赎压力", "text": f"最新申赎画像为「{flow.get('pressure')}」，规模和份额变化需要纳入复盘。"})
+
+    exit_rules = [
+        {"title": "趋势破坏", "text": "净值跌破 60 日均线且近 3 月收益转负，暂停新增并检查是否降级为观察。"},
+        {"title": "风险超预算", "text": "实际回撤超过你为这只基金预设的最大亏损线，不用等反弹再处理，先把仓位降到能睡得着。"},
+        {"title": "同类持续落后", "text": "连续两个季度同类排名明显靠后，同时没有低波动或分散化优势，应启动替代品对比。"},
+        {"title": "风格漂移", "text": "定期报告显示持仓行业、权益比例或基金经理发生明显变化，要重新判断它在组合里的角色。"},
+    ]
+
+    red_flags = []
+    if vol is not None and vol >= 35:
+        red_flags.append("年化波动较高，持有体验会明显颠簸。")
+    if max_dd is not None and max_dd <= -35:
+        red_flags.append("历史最大回撤较深，必须先确认自己能承受类似波动。")
+    if positive_month_ratio is not None and positive_month_ratio < 45:
+        red_flags.append("月度胜率偏低，定投周期和心理预期要拉长。")
+    if current_dd is not None and current_dd > -2 and return_3m is not None and return_3m > 10:
+        red_flags.append("短期涨幅较快且接近高位，追涨风险较高。")
+    if manager and manager.get("work_time") in ("", None):
+        red_flags.append("基金经理任职信息不完整，需要到基金档案继续核验。")
+    if not red_flags:
+        red_flags.append("当前未触发明显红旗，但仍需要持续核验持仓、费率和规模变化。")
+
+    checklist = [
+        {"item": "我买它是为了什么角色？", "detail": f"当前系统角色定位为「{role}」。"},
+        {"item": "我能接受多大回撤？", "detail": f"历史最大回撤为 {max_dd if max_dd is not None else '-'}%，不要用超过承受力的钱。"},
+        {"item": "我准备持有多久？", "detail": risk["holding_period"]},
+        {"item": "我什么时候停止加仓？", "detail": "跌破 60 日均线、近 3 月转弱、同类排名恶化时停止新增。"},
+        {"item": "我什么时候换基金？", "detail": "同类替代品在收益、回撤和波动上连续占优时，再考虑替换。"},
+    ]
+
+    scenario_plan = [
+        {"scenario": "继续上涨", "watch": "净值站稳 20/60 日均线、近 1/3 月收益保持正数。", "action": "不追一次性重仓，按计划分批或等待回踩。"},
+        {"scenario": "横盘震荡", "watch": "月度胜率、同类排名和规模变化。", "action": "维持小额定投或观察，不因为无聊而频繁切换。"},
+        {"scenario": "快速下跌", "watch": "是否跌破 60 日均线、回撤是否接近历史深位。", "action": "先暂停新增，检查基金经理、持仓和同类是否同步恶化。"},
+        {"scenario": "长期落后", "watch": "连续季度同类排名、替代品评分和持仓重合。", "action": "启动替代品对比，而不是只凭亏损幅度做决定。"},
+    ]
+    max_dd_text = f"{max_dd}%" if max_dd is not None else "暂无足够样本"
+    current_dd_text = f"{current_dd}%" if current_dd is not None else "暂无足够样本"
+    vol_text = f"{vol}%" if vol is not None else "暂无足够样本"
+    stock_ratio_text = f"{asset.get('stock_ratio')}%" if asset.get("stock_ratio") is not None else "未披露"
+    bond_ratio_text = f"{asset.get('bond_ratio')}%" if asset.get("bond_ratio") is not None else "未披露"
+
+    execution_steps = [
+        {
+            "step": "1. 先定角色",
+            "action": f"先把它按「{role}」管理，而不是因为短期涨跌临时改变用途。当前风险带为「{risk['band']}」，建议持有周期：{risk['holding_period']}。",
+        },
+        {
+            "step": "2. 再定仓位",
+            "action": "首次买入从经验区间下沿开始，只有当净值、同类排名、持仓披露和基金经理稳定性都没有恶化时，再考虑提高到中位区间。",
+        },
+        {
+            "step": "3. 分批执行",
+            "action": "把计划拆成 3-5 批，至少跨越几个净值披露周期。上涨时减少追价冲动，下跌时先核验原因再补仓。",
+        },
+        {
+            "step": "4. 月度复盘",
+            "action": "每月固定看近 1/3/6 月收益、当前回撤、60 日均线、同类排名和规模/份额变化。没有触发规则时，不因为单日涨跌操作。",
+        },
+        {
+            "step": "5. 季度替代品对比",
+            "action": "每个季度用同类基金比较收益、最大回撤、波动、基金经理和持仓重合度；只有替代品持续占优时才考虑切换。",
+        },
+    ]
+
+    experience_notes = [
+        {
+            "title": "先写最大浮亏，再谈收益",
+            "text": f"这只基金样本内最大回撤为 {max_dd_text}，当前回撤为 {current_dd_text}。经验上先把可承受浮亏金额写出来，再倒推仓位，比先看收益率更稳。",
+        },
+        {
+            "title": "把波动当成持有成本",
+            "text": f"年化波动为 {vol_text}，它决定持有体验。波动越高，越需要小仓位、分批、长周期和明确的暂停规则。",
+        },
+        {
+            "title": "看资产暴露，不只看基金名",
+            "text": f"最新披露股票占比 {stock_ratio_text}，债券占比 {bond_ratio_text}。组合里已有同类资产时，要先看重合度，避免表面分散、实际集中。",
+        },
+        {
+            "title": "盈利不等于可以加仓",
+            "text": "已经盈利时，优先看仓位是否超过计划上限、估值和趋势是否透支；加仓应该来自新证据，而不是来自赚钱后的情绪确认。",
+        },
+        {
+            "title": "亏损不等于必须换掉",
+            "text": "亏损后先判断是全市场下跌、风格暂时逆风，还是基金自身能力恶化。只有同类持续落后、风格漂移或风险超预算时，才进入替代品流程。",
+        },
+    ]
+
+    return {
+        "source": "由真实净值、回撤、波动、基金档案和定期披露数据派生",
+        "role": {
+            "label": role,
+            "reason": role_reason,
+            "style_labels": style.get("labels") or [],
+            "risk_band": risk["band"],
+            "risk_score": risk["score"],
+            "risk_labels": risk["labels"],
+            "minimum_holding_period": risk["holding_period"],
+        },
+        "position_ranges": _position_ranges(risk["band"]),
+        "entry_rules": entry_rules,
+        "hold_rules": hold_rules,
+        "exit_rules": exit_rules,
+        "scenario_plan": scenario_plan,
+        "execution_steps": execution_steps,
+        "experience_notes": experience_notes,
+        "red_flags": red_flags,
+        "checklist": checklist,
+        "review_metrics": [
+            {"name": "近3月收益", "value": return_3m, "unit": "%"},
+            {"name": "近1年收益", "value": return_1y, "unit": "%"},
+            {"name": "当前回撤", "value": current_dd, "unit": "%"},
+            {"name": "年化波动", "value": vol, "unit": "%"},
+            {"name": "月度胜率", "value": positive_month_ratio, "unit": "%"},
+            {"name": "年度胜率", "value": positive_year_ratio, "unit": "%"},
+            {"name": "股票占比", "value": asset.get("stock_ratio"), "unit": "%"},
+            {"name": "债券占比", "value": asset.get("bond_ratio"), "unit": "%"},
+        ],
+        "disclaimer": "这是基于真实历史数据生成的投资流程和风控框架，不是收益承诺，也不是个性化买卖指令。",
+    }
+
+
 def analyze_fund(code: str, months: int = 36) -> dict:
     months = max(6, min(120, int(months)))
     df = _fetch_nav_history(code, months)
@@ -2476,6 +2734,7 @@ def analyze_fund(code: str, months: int = 36) -> dict:
         "dca_label": dca_label,
     }
     timing = _fund_timing_profile(df, metrics, recovery_profile)
+    playbook = _fund_investment_playbook(metrics, timing, fact_sheet, style, calendar_returns, recovery_profile)
     return {
         "source": "东方财富基金净值走势 / 天天基金历史净值",
         "source_url": f"https://fund.eastmoney.com/{code}.html",
@@ -2498,6 +2757,7 @@ def analyze_fund(code: str, months: int = 36) -> dict:
         "style": style,
         "metrics": metrics,
         "timing": timing,
+        "playbook": playbook,
         "drawdown_recovery": recovery_profile,
         "calendar_returns": calendar_returns,
         "insights": _analysis_text(metrics, style),

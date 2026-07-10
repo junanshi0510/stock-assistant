@@ -1087,6 +1087,119 @@ tbody tr:hover {
   min-width: 720px;
 }
 
+.fund-playbook-panel {
+  border-color: rgba(96, 165, 250, 0.20);
+  background:
+    linear-gradient(135deg, rgba(37, 99, 235, 0.10), rgba(15, 23, 42, 0.20) 34%),
+    rgba(8, 13, 20, 0.62);
+}
+
+.fund-playbook-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 0.95fr) minmax(320px, 1.05fr);
+  gap: 18px;
+  align-items: stretch;
+  margin-top: 14px;
+}
+
+.fund-playbook-hero > div {
+  min-width: 0;
+}
+
+.fund-playbook-hero h4 {
+  margin: 10px 0 8px;
+  color: #f8fafc;
+  font-size: 20px;
+  line-height: 1.35;
+}
+
+.fund-playbook-hero p {
+  margin: 0;
+  color: #d9e4f2;
+  line-height: 1.75;
+}
+
+.playbook-review-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.playbook-review {
+  min-height: 72px;
+  padding: 10px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.13);
+  border-radius: 8px;
+  background: rgba(2, 6, 23, 0.30);
+}
+
+.playbook-review span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.playbook-review b {
+  display: block;
+  margin-top: 8px;
+  color: #f8fafc;
+  font-size: 17px;
+  font-variant-numeric: tabular-nums;
+}
+
+.playbook-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.playbook-rule-list {
+  display: grid;
+  gap: 10px;
+}
+
+.playbook-rule {
+  padding: 11px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.13);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.30);
+}
+
+.playbook-rule b {
+  display: block;
+  margin-bottom: 6px;
+  color: #edf4ff;
+  line-height: 1.45;
+}
+
+.playbook-rule span {
+  display: block;
+  color: var(--muted);
+  line-height: 1.65;
+}
+
+.playbook-rule.danger {
+  border-color: rgba(240, 93, 104, 0.26);
+  background: rgba(240, 93, 104, 0.06);
+}
+
+.playbook-table {
+  min-width: 760px;
+}
+
+.playbook-table td {
+  white-space: normal;
+  min-width: 180px;
+  line-height: 1.55;
+}
+
+.playbook-table td:first-child {
+  min-width: 120px;
+  color: #edf4ff;
+  font-weight: 700;
+}
+
 .fund-holding-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
@@ -1341,6 +1454,9 @@ tbody tr:hover {
   .ind-grid {
     grid-template-columns: 1fr 1fr;
   }
+  .playbook-review-grid {
+    grid-template-columns: 1fr 1fr;
+  }
 }
 
 @media (max-width: 900px) {
@@ -1349,6 +1465,8 @@ tbody tr:hover {
   .fund-recovery-grid,
   .fund-calendar-grid,
   .fund-timing-grid,
+  .fund-playbook-hero,
+  .playbook-grid,
   .fund-holding-grid {
     grid-template-columns: 1fr;
   }
@@ -1384,7 +1502,8 @@ tbody tr:hover {
 @media (max-width: 520px) {
   .bt-cards,
   .stat-grid,
-  .ind-grid {
+  .ind-grid,
+  .playbook-review-grid {
     grid-template-columns: 1fr;
   }
   button {

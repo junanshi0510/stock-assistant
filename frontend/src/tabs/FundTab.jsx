@@ -501,20 +501,27 @@ export default function FundTab() {
                       <p>{item.evidence?.[0] || item.event || '来自真实概念源'}</p>
                     </div>
                   ))}
-                  {(marketDaily.fund_candidates || []).slice(0, 3).map((item) => (
-                    <div className="daily-card clickable" key={`fund-${item.code}`} onClick={() => loadFund(item.code, months)}>
-                      <div className="daily-card-head">
-                        <b>{item.code} {item.name}</b>
-                        <span className="tag neutral">{item.bucket || item.label}</span>
+                  {(marketDaily.fund_candidates || []).slice(0, 3).map((item, idx) => {
+                    const canOpen = Boolean(item.code)
+                    return (
+                      <div
+                        className={`daily-card ${canOpen ? 'clickable' : ''}`}
+                        key={`fund-${item.code || item.name || idx}`}
+                        onClick={canOpen ? () => loadFund(item.code, months) : undefined}
+                      >
+                        <div className="daily-card-head">
+                          <b>{item.code} {item.name}</b>
+                          <span className="tag neutral">{item.bucket || item.label}</span>
+                        </div>
+                        <div className="daily-metrics">
+                          <span>机会分 {num(item.score, 1)}</span>
+                          <span className={deltaClass(item.return_3m)}>近3月 {pct(item.return_3m)}</span>
+                          <span className={deltaClass(item.return_1y)}>近1年 {pct(item.return_1y)}</span>
+                        </div>
+                        <p>{item.evidence?.[0] || item.cautions?.[0] || '点击进入基金详情继续核验'}</p>
                       </div>
-                      <div className="daily-metrics">
-                        <span>机会分 {num(item.score, 1)}</span>
-                        <span className={deltaClass(item.return_3m)}>近3月 {pct(item.return_3m)}</span>
-                        <span className={deltaClass(item.return_1y)}>近1年 {pct(item.return_1y)}</span>
-                      </div>
-                      <p>{item.evidence?.[0] || item.cautions?.[0] || '点击进入基金详情继续核验'}</p>
-                    </div>
-                  ))}
+                    )
+                  })}
                 </div>
               </div>
             </div>
@@ -916,6 +923,151 @@ export default function FundTab() {
                 </div>
               )}
               <p className="hint" style={{ marginTop: 12 }}>{fund.timing.method}</p>
+            </div>
+          )}
+
+          {fund.playbook && (
+            <div className="panel fade-in fund-playbook-panel">
+              <h3 className="section-title">
+                投资经验手册 <span className="hint">把真实数据转成投前、买入、持有、退出的操作框架，不做收益承诺</span>
+              </h3>
+              <div className="fund-playbook-hero">
+                <div>
+                  <span className="tag neutral">{fund.playbook.role?.risk_band}</span>
+                  <h4>{fund.playbook.role?.label}</h4>
+                  <p>{fund.playbook.role?.reason}</p>
+                  <div className="daily-tags">
+                    {(fund.playbook.role?.risk_labels || []).map((x) => <span className="tag neutral" key={x}>{x}</span>)}
+                    {(fund.playbook.role?.style_labels || []).map((x) => <span className="tag neutral" key={`style-${x}`}>{x}</span>)}
+                  </div>
+                </div>
+                <div className="playbook-review-grid">
+                  {(fund.playbook.review_metrics || []).slice(0, 8).map((m) => (
+                    <div className="playbook-review" key={m.name}>
+                      <span>{m.name}</span>
+                      <b className={m.unit === '%' ? deltaClass(m.value) : ''}>{m.value == null ? '-' : `${num(m.value)}${m.unit || ''}`}</b>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="playbook-grid">
+                <div>
+                  <h4 className="fund-subhead">仓位经验区间</h4>
+                  <div className="playbook-rule-list">
+                    {(fund.playbook.position_ranges || []).map((row) => (
+                      <div className="playbook-rule" key={row.investor}>
+                        <b>{row.investor} · {row.range}</b>
+                        <span>{row.reason}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <h4 className="fund-subhead">建仓规则</h4>
+                  <div className="playbook-rule-list">
+                    {(fund.playbook.entry_rules || []).map((row) => (
+                      <div className="playbook-rule" key={row.level}>
+                        <b>{row.level}</b>
+                        <span>{row.rule}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="playbook-grid">
+                <div>
+                  <h4 className="fund-subhead">持有纪律</h4>
+                  <div className="playbook-rule-list">
+                    {(fund.playbook.hold_rules || []).map((row) => (
+                      <div className="playbook-rule" key={row.title}>
+                        <b>{row.title}</b>
+                        <span>{row.text}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <h4 className="fund-subhead">退出/降仓规则</h4>
+                  <div className="playbook-rule-list">
+                    {(fund.playbook.exit_rules || []).map((row) => (
+                      <div className="playbook-rule danger" key={row.title}>
+                        <b>{row.title}</b>
+                        <span>{row.text}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <h4 className="fund-subhead">情景预案</h4>
+              <div className="corr-wrap">
+                <table className="compact-table playbook-table">
+                  <thead>
+                    <tr>
+                      <th>情景</th>
+                      <th>观察什么</th>
+                      <th>怎么处理</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(fund.playbook.scenario_plan || []).map((row) => (
+                      <tr key={row.scenario}>
+                        <td>{row.scenario}</td>
+                        <td>{row.watch}</td>
+                        <td>{row.action}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="playbook-grid">
+                <div>
+                  <h4 className="fund-subhead">执行步骤</h4>
+                  <div className="playbook-rule-list">
+                    {(fund.playbook.execution_steps || []).map((row) => (
+                      <div className="playbook-rule" key={row.step}>
+                        <b>{row.step}</b>
+                        <span>{row.action}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <h4 className="fund-subhead">经验提醒</h4>
+                  <div className="playbook-rule-list">
+                    {(fund.playbook.experience_notes || []).map((row) => (
+                      <div className="playbook-rule" key={row.title}>
+                        <b>{row.title}</b>
+                        <span>{row.text}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="playbook-grid">
+                <div>
+                  <h4 className="fund-subhead">红旗清单</h4>
+                  <div className="fund-bond-list">
+                    {(fund.playbook.red_flags || []).map((text) => <span className="tag neutral" key={text}>{text}</span>)}
+                  </div>
+                </div>
+                <div>
+                  <h4 className="fund-subhead">买前五问</h4>
+                  <div className="playbook-rule-list">
+                    {(fund.playbook.checklist || []).map((row) => (
+                      <div className="playbook-rule" key={row.item}>
+                        <b>{row.item}</b>
+                        <span>{row.detail}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <p className="hint" style={{ marginTop: 12 }}>{fund.playbook.disclaimer}</p>
             </div>
           )}
 
