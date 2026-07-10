@@ -1,30 +1,24 @@
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { fetchMarkets } from './api'
-import AnalyzeTab from './tabs/AnalyzeTab'
-import ScanTab from './tabs/ScanTab'
-import BacktestTab from './tabs/BacktestTab'
-import WatchlistTab from './tabs/WatchlistTab'
-import DiscoverTab from './tabs/DiscoverTab'
-import MultiCompareTab from './tabs/MultiCompareTab'
-import SectorTab from './tabs/SectorTab'
-import FundTab from './tabs/FundTab'
-import HoldingsTab from './tabs/HoldingsTab'
+
+const BacktestTab = lazy(() => import('./tabs/BacktestTab'))
+const FundTab = lazy(() => import('./tabs/FundTab'))
+const DashboardTab = lazy(() => import('./tabs/DashboardTab'))
+const MarketTab = lazy(() => import('./tabs/MarketTab'))
+const PortfolioTab = lazy(() => import('./tabs/PortfolioTab'))
 
 const TABS = [
-  { id: 'analyze', label: '单股分析' },
-  { id: 'watchlist', label: '⭐ 自选' },
-  { id: 'holdings', label: '我的持仓' },
-  { id: 'discover', label: '🔍 发现' },
-  { id: 'sectors', label: '板块热点' },
-  { id: 'funds', label: '基金分析' },
-  { id: 'multi', label: '多股对比' },
-  { id: 'scan', label: '批量扫描' },
-  { id: 'backtest', label: '信号回测' },
+  { id: 'overview', label: '投资总览' },
+  { id: 'funds', label: '基金中心' },
+  { id: 'market', label: '股票与板块' },
+  { id: 'portfolio', label: '我的组合' },
+  { id: 'tools', label: '研究工具' },
 ]
 
 export default function App() {
   const [markets, setMarkets] = useState(['A股', '港股', '美股'])
-  const [tab, setTab] = useState('analyze')
+  const [tab, setTab] = useState('overview')
+  const [marketView, setMarketView] = useState('radar')
 
   // 单股分析的共享状态(供扫描页点击跳转使用)
   const [market, setMarket] = useState('A股')
@@ -38,8 +32,11 @@ export default function App() {
 
   const requestRun = () => setRunKey((k) => k + 1)
   const goAnalyze = (m, s) => {
-    setMarket(m); setSymbol(s); setTab('analyze'); setRunKey((k) => k + 1)
+    setMarket(m); setSymbol(s); setTab('market'); setMarketView('analyze'); setRunKey((k) => k + 1)
   }
+  const goPortfolio = () => setTab('portfolio')
+  const goFunds = () => setTab('funds')
+  const goMarket = () => { setTab('market'); setMarketView('radar') }
 
   return (
     <>
@@ -49,7 +46,7 @@ export default function App() {
             <div className="mark">📈</div>
             <div>
               <h1>金融投资助手</h1>
-              <div className="sub">A股 · 港股 · 美股　|　多因子量化信号</div>
+              <div className="sub">真实数据驱动的个人投资决策工作台</div>
             </div>
           </div>
           <div className="tabs">
@@ -62,27 +59,19 @@ export default function App() {
       </header>
 
       <div className="container">
-        <div className="warning">
-          ⚠️ <b>风险提示</b>:本工具基于历史价格计算<b>量化信号与估计概率</b>,
-          <b>不是涨跌预测,更不构成投资建议</b>。没有任何模型能准确预测股市;
-          请用「信号回测」查看历史命中率,理性参考,盈亏自负。
+        <div className="risk-disclosure">
+          风险提示：所有结论均来自已标注的数据源和历史计算，不代表未来涨跌，也不构成投资建议。
         </div>
 
-        {tab === 'analyze' && (
-          <AnalyzeTab markets={markets}
-            market={market} setMarket={setMarket}
-            symbol={symbol} setSymbol={setSymbol}
-            months={months} setMonths={setMonths}
-            runKey={runKey} requestRun={requestRun} />
-        )}
-        {tab === 'watchlist' && <WatchlistTab goAnalyze={goAnalyze} />}
-        {tab === 'holdings' && <HoldingsTab />}
-        {tab === 'discover' && <DiscoverTab markets={markets} goAnalyze={goAnalyze} />}
-        {tab === 'sectors' && <SectorTab goAnalyze={goAnalyze} />}
-        {tab === 'funds' && <FundTab />}
-        {tab === 'multi' && <MultiCompareTab markets={markets} goAnalyze={goAnalyze} />}
-        {tab === 'scan' && <ScanTab markets={markets} goAnalyze={goAnalyze} />}
-        {tab === 'backtest' && <BacktestTab markets={markets} />}
+        <Suspense fallback={<div className="page-loading"><span className="spinner" />正在加载工作区</div>}>
+          {tab === 'overview' && <DashboardTab goPortfolio={goPortfolio} goFunds={goFunds} goMarket={goMarket} />}
+          {tab === 'funds' && <FundTab />}
+          {tab === 'market' && <MarketTab activeView={marketView} setActiveView={setMarketView} markets={markets}
+            market={market} setMarket={setMarket} symbol={symbol} setSymbol={setSymbol}
+            months={months} setMonths={setMonths} runKey={runKey} requestRun={requestRun} goAnalyze={goAnalyze} />}
+          {tab === 'portfolio' && <PortfolioTab goAnalyze={goAnalyze} />}
+          {tab === 'tools' && <BacktestTab markets={markets} />}
+        </Suspense>
       </div>
     </>
   )

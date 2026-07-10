@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createChart } from 'lightweight-charts'
-import { analyzeFund, analyzeFundOverlap, compareFunds, fetchFundAlternatives, fetchFundCategories, fetchFundDividends, fetchFundOpportunities, fetchFundPeers, fetchFundPortfolio, fetchHotFunds, fetchMarketDaily, searchFunds } from '../api'
+import { analyzeFund, analyzeFundOverlap, compareFunds, fetchFundAlternatives, fetchFundCategories, fetchFundDividends, fetchFundOpportunities, fetchFundPeers, fetchFundPortfolio, fetchHotFunds, searchFunds } from '../api'
 
 const COLORS = ['#48a6ff', '#20c486', '#f05d68', '#d8a833', '#9d7cff', '#26c6da', '#ff8a3d', '#a6e22e']
 
@@ -26,6 +26,12 @@ const RISK_OPTIONS = [
   ['stable', '稳健'],
   ['balanced', '均衡'],
   ['aggressive', '进取'],
+]
+
+const FUND_VIEWS = [
+  ['discover', '发现基金', '从真实榜单和分类热度中建立候选池'],
+  ['research', '研究基金', '将单只基金的数据转化为可复盘的决策框架'],
+  ['compare', '比较与替换', '比较多只基金的风险、相关性与重复暴露'],
 ]
 
 function pct(v) {
@@ -129,6 +135,8 @@ function MetricCard({ label, value, cls = '' }) {
 }
 
 export default function FundTab() {
+  const [fundView, setFundView] = useState('discover')
+  const [researchLayer, setResearchLayer] = useState('decision')
   const [category, setCategory] = useState('all')
   const [sort, setSort] = useState('1y')
   const [limit, setLimit] = useState(30)
@@ -149,7 +157,6 @@ export default function FundTab() {
   const [overlapData, setOverlapData] = useState(null)
   const [opportunityRisk, setOpportunityRisk] = useState('balanced')
   const [opportunities, setOpportunities] = useState(null)
-  const [marketDaily, setMarketDaily] = useState(null)
   const [alternatives, setAlternatives] = useState(null)
   const [loadingHot, setLoadingHot] = useState(false)
   const [loadingFund, setLoadingFund] = useState(false)
@@ -160,7 +167,6 @@ export default function FundTab() {
   const [loadingCompare, setLoadingCompare] = useState(false)
   const [loadingOverlap, setLoadingOverlap] = useState(false)
   const [loadingOpportunities, setLoadingOpportunities] = useState(false)
-  const [loadingMarketDaily, setLoadingMarketDaily] = useState(false)
   const [loadingAlternatives, setLoadingAlternatives] = useState(false)
   const [error, setError] = useState('')
 
@@ -170,10 +176,7 @@ export default function FundTab() {
       const data = await fetchHotFunds(nextCategory, limit, nextSort)
       setHot(data)
       const first = data.items?.[0]
-      if (first && !code) {
-        setCode(first.code)
-        loadFund(first.code, months)
-      }
+      if (first && !code) setCode(first.code)
     } catch (e) {
       setError(e.message)
     } finally {
@@ -187,6 +190,7 @@ export default function FundTab() {
       setError('请输入 6 位基金代码')
       return
     }
+    setFundView('research'); setResearchLayer('decision')
     setLoadingFund(true); setError('')
     setPortfolio(null); setPortfolioError('')
     setPeers(null)
@@ -196,9 +200,6 @@ export default function FundTab() {
       const data = await analyzeFund(clean, nextMonths)
       setFund(data)
       setCode(clean)
-      loadPortfolio(clean)
-      loadPeers(clean, peerSort)
-      loadDividends(clean)
     } catch (e) {
       setError(e.message)
     } finally {
@@ -308,18 +309,6 @@ export default function FundTab() {
     }
   }
 
-  async function loadMarketDaily(nextRisk = opportunityRisk) {
-    setLoadingMarketDaily(true); setError('')
-    try {
-      const data = await fetchMarketDaily(nextRisk, 4)
-      setMarketDaily(data)
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setLoadingMarketDaily(false)
-    }
-  }
-
   async function loadAlternatives(nextCode = code, nextSort = peerSort) {
     const clean = String(nextCode || '').trim()
     if (!/^\d{6}$/.test(clean)) {
@@ -350,8 +339,14 @@ export default function FundTab() {
     loadHot()
     loadCategories()
     loadOpportunities('balanced')
-    loadMarketDaily('balanced')
   }, [])
+
+  useEffect(() => {
+    if (fundView !== 'research' || researchLayer !== 'evidence' || !fund?.code) return
+    loadPortfolio(fund.code)
+    loadPeers(fund.code, peerSort)
+    loadDividends(fund.code)
+  }, [fundView, researchLayer, fund?.code])
 
   const rows = hot?.items || []
   const selectedName = fund?.name || rows.find((r) => r.code === code)?.name || ''
@@ -363,55 +358,71 @@ export default function FundTab() {
   const fundEvaluation = factSheet?.performance_evaluation || null
   const similarPercentile = factSheet?.similar_percentile || null
   const benchmarkComparison = factSheet?.benchmark_comparison || null
+  const currentView = FUND_VIEWS.find(([id]) => id === fundView) || FUND_VIEWS[0]
 
   return (
     <>
-      <div className="panel">
-        <h3 className="section-title">
-          基金分析 <span className="hint">热门基金趋势、真实净值回撤、波动和分批投资适配度</span>
-        </h3>
-        <div className="form-row">
-          <div className="field">
-            <label>基金分类</label>
-            <select value={category} onChange={(e) => { setCategory(e.target.value); loadHot(e.target.value, sort) }}>
-              {CATEGORIES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-            </select>
-          </div>
-          <div className="field">
-            <label>排序窗口</label>
-            <select value={sort} onChange={(e) => { setSort(e.target.value); loadHot(category, e.target.value) }}>
-              {SORTS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-            </select>
-          </div>
-          <div className="field">
-            <label>榜单数量</label>
-            <input type="number" min="5" max="100" value={limit} onChange={(e) => setLimit(Number(e.target.value))} />
-          </div>
-          <button onClick={() => loadHot()} disabled={loadingHot}>
-            {loadingHot ? <><span className="spinner" /> 加载中</> : '刷新热门基金'}
-          </button>
-          <div className="field">
-            <label>基金代码</label>
-            <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="例如 110022" />
-          </div>
-          <div className="field">
-            <label>净值周期(月)</label>
-            <input type="number" min="6" max="120" value={months} onChange={(e) => setMonths(Number(e.target.value))} />
-          </div>
-          <button onClick={() => loadFund()} disabled={loadingFund}>
-            {loadingFund ? <><span className="spinner" /> 分析中</> : '分析基金'}
-          </button>
-          <div className="field">
-            <label>基金搜索</label>
-            <input value={searchKeyword} onChange={(e) => setSearchKeyword(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') runSearch() }}
-              placeholder="代码 / 名称 / 拼音" />
-          </div>
-          <button className="ghost" onClick={runSearch} disabled={loadingSearch}>
-            {loadingSearch ? <><span className="spinner" /> 搜索中</> : '搜索基金'}
-          </button>
+      <section className="workspace-header">
+        <div>
+          <span className="eyebrow">基金中心</span>
+          <h2>{currentView[1]}</h2>
+          <p>{currentView[2]}。所有排序、净值和持仓披露均标注真实来源。</p>
         </div>
-        {searchResults.length > 0 && (
+        <div className="workspace-nav" role="tablist" aria-label="基金中心功能">
+          {FUND_VIEWS.map(([id, label]) => (
+            <button key={id} className={fundView === id ? 'active' : ''} onClick={() => setFundView(id)}>{label}</button>
+          ))}
+        </div>
+      </section>
+
+      <div className="panel">
+        <div className="form-row">
+          {fundView === 'discover' && <>
+            <div className="field">
+              <label>基金分类</label>
+              <select value={category} onChange={(e) => { setCategory(e.target.value); loadHot(e.target.value, sort) }}>
+                {CATEGORIES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+              </select>
+            </div>
+            <div className="field">
+              <label>排序窗口</label>
+              <select value={sort} onChange={(e) => { setSort(e.target.value); loadHot(category, e.target.value) }}>
+                {SORTS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+              </select>
+            </div>
+            <div className="field">
+              <label>榜单数量</label>
+              <input type="number" min="5" max="100" value={limit} onChange={(e) => setLimit(Number(e.target.value))} />
+            </div>
+            <button onClick={() => loadHot()} disabled={loadingHot}>
+              {loadingHot ? <><span className="spinner" /> 加载中</> : '刷新基金榜'}
+            </button>
+          </>}
+          {fundView === 'research' && <>
+            <div className="field">
+              <label>基金代码</label>
+              <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="例如 110022" />
+            </div>
+            <div className="field">
+              <label>净值周期(月)</label>
+              <input type="number" min="6" max="120" value={months} onChange={(e) => setMonths(Number(e.target.value))} />
+            </div>
+            <button onClick={() => loadFund()} disabled={loadingFund}>
+              {loadingFund ? <><span className="spinner" /> 分析中</> : '研究基金'}
+            </button>
+            <div className="field">
+              <label>基金搜索</label>
+              <input value={searchKeyword} onChange={(e) => setSearchKeyword(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') runSearch() }}
+                placeholder="代码 / 名称 / 拼音" />
+            </div>
+            <button className="ghost" onClick={runSearch} disabled={loadingSearch}>
+              {loadingSearch ? <><span className="spinner" /> 搜索中</> : '搜索基金'}
+            </button>
+          </>}
+          {fundView === 'compare' && <span className="hint">输入两只或以上基金后，比较真实净值、波动、回撤和披露持仓重合。</span>}
+        </div>
+        {fundView === 'research' && searchResults.length > 0 && (
           <div className="fund-search-results">
             {searchResults.map((item) => (
               <button key={item.code} className="fund-search-item" onClick={() => {
@@ -425,165 +436,11 @@ export default function FundTab() {
             ))}
           </div>
         )}
-        {hot && <p className="hint" style={{ marginTop: 12 }}>数据源: {hot.source}，截至 {hot.as_of}；单基金趋势使用天天基金历史净值。</p>}
+        {fundView === 'discover' && hot && <p className="hint" style={{ marginTop: 12 }}>数据源: {hot.source}，截至 {hot.as_of}；高收益只代表历史表现，仍需继续研究回撤和持仓。</p>}
         {error && <div className="error">{error}</div>}
       </div>
 
-      <div className="panel fade-in market-daily-panel">
-        <h3 className="section-title">
-          市场机会日报 <span className="hint">聚合真实板块、概念、热门股和基金榜单；源不可用时只显示失败项</span>
-        </h3>
-        <div className="form-row" style={{ marginBottom: 14 }}>
-          <div className="field">
-            <label>日报风险偏好</label>
-            <select value={opportunityRisk} onChange={(e) => {
-              setOpportunityRisk(e.target.value)
-              loadOpportunities(e.target.value)
-              loadMarketDaily(e.target.value)
-            }}>
-              {RISK_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-            </select>
-          </div>
-          <button onClick={() => loadMarketDaily()} disabled={loadingMarketDaily}>
-            {loadingMarketDaily ? <><span className="spinner" /> 生成中</> : '刷新日报'}
-          </button>
-          {marketDaily && <span className="hint">截至 {marketDaily.as_of} · 数据源 {marketDaily.source}</span>}
-        </div>
-        {loadingMarketDaily && !marketDaily && <div className="placeholder"><div className="big">⌛</div>正在聚合真实市场机会</div>}
-        {marketDaily && (
-          <>
-            <div className="market-daily-hero">
-              <div>
-                <span className="tag neutral">{marketDaily.summary?.temperature || '中性'}</span>
-                <h4>{marketDaily.summary?.headline || '暂无可聚合机会'}</h4>
-                <p>{marketDaily.method?.aggregation}</p>
-              </div>
-              <div className="market-daily-stats">
-                <MetricCard label="机会数" value={marketDaily.summary?.opportunity_count ?? 0} />
-                <MetricCard label="风险提示" value={marketDaily.summary?.risk_count ?? 0} />
-                <MetricCard label="失败源" value={marketDaily.summary?.failed_count ?? 0} />
-              </div>
-            </div>
-
-            <div className="market-daily-grid">
-              <div>
-                <h4 className="fund-subhead">行业机会</h4>
-                <div className="daily-card-list">
-                  {(marketDaily.industries || []).slice(0, 4).map((item) => (
-                    <div className="daily-card" key={`industry-${item.name}`}>
-                      <div className="daily-card-head">
-                        <b>{item.name}</b>
-                        <span className="tag neutral">{item.label}</span>
-                      </div>
-                      <div className="daily-metrics">
-                        <span className={deltaClass(item.change_pct)}>均涨 {pct(item.change_pct)}</span>
-                        <span>上涨占比 {pct(item.up_ratio)}</span>
-                        <span>热度 {num(item.score, 1)}</span>
-                      </div>
-                      <p>{item.driver_note}</p>
-                      <div className="daily-tags">
-                        {(item.leaders || []).slice(0, 3).map((s) => (
-                          <span key={`${item.name}-${s.symbol}`} className="tag neutral">{s.name} {pct(s.change_pct)}</span>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                  {!(marketDaily.industries || []).length && <div className="placeholder">真实行业热度源当前无可展示数据</div>}
-                </div>
-              </div>
-
-              <div>
-                <h4 className="fund-subhead">概念与基金线索</h4>
-                <div className="daily-card-list">
-                  {(marketDaily.concepts || []).slice(0, 3).map((item) => (
-                    <div className="daily-card" key={`concept-${item.name}`}>
-                      <div className="daily-card-head">
-                        <b>{item.name}</b>
-                        <span className="tag neutral">{item.label}</span>
-                      </div>
-                      <div className="daily-metrics">
-                        <span className={deltaClass(item.change_pct)}>涨跌 {pct(item.change_pct)}</span>
-                        <span>{item.leader || item.date || '-'}</span>
-                      </div>
-                      <p>{item.evidence?.[0] || item.event || '来自真实概念源'}</p>
-                    </div>
-                  ))}
-                  {(marketDaily.fund_candidates || []).slice(0, 3).map((item, idx) => {
-                    const canOpen = Boolean(item.code)
-                    return (
-                      <div
-                        className={`daily-card ${canOpen ? 'clickable' : ''}`}
-                        key={`fund-${item.code || item.name || idx}`}
-                        onClick={canOpen ? () => loadFund(item.code, months) : undefined}
-                      >
-                        <div className="daily-card-head">
-                          <b>{item.code} {item.name}</b>
-                          <span className="tag neutral">{item.bucket || item.label}</span>
-                        </div>
-                        <div className="daily-metrics">
-                          <span>机会分 {num(item.score, 1)}</span>
-                          <span className={deltaClass(item.return_3m)}>近3月 {pct(item.return_3m)}</span>
-                          <span className={deltaClass(item.return_1y)}>近1年 {pct(item.return_1y)}</span>
-                        </div>
-                        <p>{item.evidence?.[0] || item.cautions?.[0] || '点击进入基金详情继续核验'}</p>
-                      </div>
-                    )
-                  })}
-                </div>
-              </div>
-            </div>
-
-            {(marketDaily.risks || []).length > 0 && (
-              <div className="daily-risk-row">
-                {(marketDaily.risks || []).map((risk) => (
-                  <div className={`daily-risk ${risk.level}`} key={risk.title}>
-                    <b>{risk.title}</b>
-                    <span>{risk.text}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {(marketDaily.hot_stocks || []).length > 0 && (
-              <div className="corr-wrap" style={{ marginTop: 14 }}>
-                <table className="compact-table market-daily-table">
-                  <thead>
-                    <tr>
-                      <th>市场</th>
-                      <th>榜单</th>
-                      <th>范围</th>
-                      <th>前五</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {marketDaily.hot_stocks.map((block) => (
-                      <tr key={`${block.market}-${block.type}`}>
-                        <td>{block.market}</td>
-                        <td>{block.type === 'losers' ? '跌幅榜' : '涨幅榜'}</td>
-                        <td>{block.scope || '-'}</td>
-                        <td>
-                          {(block.items || []).slice(0, 5).map((s) => (
-                            <span className="daily-inline-stock" key={`${block.market}-${block.type}-${s.symbol}`}>
-                              {s.name || s.symbol} <i className={deltaClass(s.change_pct)}>{pct(s.change_pct)}</i>
-                            </span>
-                          ))}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            {marketDaily.failed?.length > 0 && (
-              <div className="error" style={{ marginTop: 12 }}>
-                {marketDaily.failed.map((x) => `${x.source}: ${x.error}`).join('；')}
-              </div>
-            )}
-          </>
-        )}
-      </div>
-
+      {fundView === 'discover' && <>
       <div className="panel fade-in">
         <h3 className="section-title">
           基金机会雷达 <span className="hint">基于真实榜单筛选候选，高分只代表更值得进一步研究</span>
@@ -594,7 +451,6 @@ export default function FundTab() {
             <select value={opportunityRisk} onChange={(e) => {
               setOpportunityRisk(e.target.value)
               loadOpportunities(e.target.value)
-              loadMarketDaily(e.target.value)
             }}>
               {RISK_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
             </select>
@@ -715,8 +571,9 @@ export default function FundTab() {
           </div>
         </div>
       )}
+      </>}
 
-      <div className="panel fade-in">
+      {fundView === 'compare' && <div className="panel fade-in">
         <h3 className="section-title">
           多基金对比 <span className="hint">共同净值日期重算，首日=100，横向比较收益、回撤、波动和相关性</span>
         </h3>
@@ -952,9 +809,9 @@ export default function FundTab() {
             <p className="hint" style={{ marginTop: 12 }}>{overlapData.method.note} 数据源: {overlapData.source}。</p>
           </div>
         )}
-      </div>
+      </div>}
 
-      {fund && (
+      {fundView === 'research' && fund && (
         <>
           <div className="panel fade-in">
             <h3 className="section-title">
@@ -971,6 +828,12 @@ export default function FundTab() {
             <FundLineChart data={fund.nav} />
           </div>
 
+          <div className="research-layer-nav" role="tablist" aria-label="基金研究层级">
+            <button className={researchLayer === 'decision' ? 'active' : ''} onClick={() => setResearchLayer('decision')}>投资决策</button>
+            <button className={researchLayer === 'evidence' ? 'active' : ''} onClick={() => setResearchLayer('evidence')}>数据证据</button>
+          </div>
+
+          {researchLayer === 'decision' && <>
           {fund.timing && (
             <div className="panel fade-in">
               <h3 className="section-title">
@@ -1194,7 +1057,9 @@ export default function FundTab() {
               <p className="hint" style={{ marginTop: 12 }}>{fund.playbook.disclaimer}</p>
             </div>
           )}
+          </>}
 
+          {researchLayer === 'evidence' && <>
           <div className="panel fade-in">
             <h3 className="section-title">
               同类定位 <span className="hint">在同类型基金排行中查看当前基金的位置</span>
@@ -1821,6 +1686,7 @@ export default function FundTab() {
               </>
             )}
           </div>
+          </>}
 
           <div className="panel fade-in">
             <h3 className="section-title">投资分析</h3>
