@@ -58,6 +58,7 @@ class FundDisclosureChangesTests(unittest.TestCase):
                 {"code": "000001", "name": "平安银行", "nav_ratio": 5.0},
                 {"code": "000002", "name": "万科A", "nav_ratio": 10.0},
                 {"code": "000003", "name": "PT金田A", "nav_ratio": 7.0},
+                {"code": "000005", "name": "世纪星源", "nav_ratio": 0.0},
             ],
             [
                 {"name": "医药生物", "nav_ratio": 30.0},
@@ -74,6 +75,7 @@ class FundDisclosureChangesTests(unittest.TestCase):
         self.assertEqual(result["previous"]["stock_period"], "2025年4季度")
         self.assertEqual(result["added_stocks"][0]["code"], "000004")
         self.assertEqual(result["removed_stocks"][0]["code"], "000003")
+        self.assertNotIn("000005", [row["code"] for row in result["removed_stocks"]])
         self.assertEqual(result["stock_changes"][0]["code"], "000001")
         self.assertEqual(result["stock_changes"][0]["delta"], 5.0)
         self.assertEqual(result["summary"]["top10_stock_ratio_change"], 10.0)

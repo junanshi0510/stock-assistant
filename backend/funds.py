@@ -1478,7 +1478,7 @@ def _disclosed_ratio_rows(rows: list[dict], key_fields: tuple[str, ...]) -> dict
             "",
         )
         ratio = _num(raw.get("nav_ratio"))
-        if not identifier or ratio is None:
+        if not identifier or ratio is None or ratio <= 0:
             continue
         mapped[identifier] = {
             **raw,
