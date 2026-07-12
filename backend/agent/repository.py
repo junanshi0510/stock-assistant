@@ -420,6 +420,42 @@ class AgentRepository:
         run = self._run_from_row(row)
         return self.get_run(run["id"]) if run else None
 
+    def list_runs(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        limit: int,
+        before: tuple[str, str] | None = None,
+        status: str | None = None,
+        code: str | None = None,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        page_size = max(1, min(100, int(limit)))
+        conditions = ["tenant_id=?", "user_id=?"]
+        parameters: list[Any] = [tenant_id, user_id]
+        if before:
+            conditions.append("(created_at < ? OR (created_at = ? AND id < ?))")
+            parameters.extend([before[0], before[0], before[1]])
+        if status:
+            conditions.append("status=?")
+            parameters.append(status)
+        if code:
+            conditions.append("json_extract(input_json, '$.code')=?")
+            parameters.append(code)
+        parameters.append(page_size + 1)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT * FROM agent_runs
+                WHERE {' AND '.join(conditions)}
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                parameters,
+            ).fetchall()
+        has_more = len(rows) > page_size
+        return [self._run_from_row(row) for row in rows[:page_size]], has_more
+
     def count_active_runs(self) -> int:
         with self._connect() as connection:
             row = connection.execute(

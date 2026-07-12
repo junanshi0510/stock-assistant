@@ -214,8 +214,12 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(len(run["evidence"]), 0)
 
     def test_optional_tool_timeout_is_partial_and_cannot_write_late_evidence(self):
+        handler_started = threading.Event()
+        release_handler = threading.Event()
+
         def slow_estimate(_payload):
-            time.sleep(0.2)
+            handler_started.set()
+            release_handler.wait(timeout=2)
             return _estimate(_payload)
 
         started = time.monotonic()
@@ -229,14 +233,16 @@ class AgentRuntimeTests(unittest.TestCase):
         )
         elapsed = time.monotonic() - started
 
-        self.assertLess(elapsed, 0.15)
+        self.assertTrue(handler_started.is_set())
+        self.assertLess(elapsed, 0.5)
         self.assertEqual(run["status"], "partial")
         estimate_step = next(item for item in run["steps"] if item["step_key"] == "fund_estimate")
         self.assertEqual(estimate_step["status"], "failed")
         self.assertEqual(estimate_step["error_code"], "TOOL_TIMEOUT")
         self.assertEqual(len(run["evidence"]), 1)
 
-        time.sleep(0.22)
+        release_handler.set()
+        time.sleep(0.05)
         self.assertEqual(len(self.repository.get_run(run["id"])["evidence"]), 1)
 
     def test_running_tool_can_be_cancelled_without_becoming_a_failure(self):
@@ -354,6 +360,60 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertTrue(running_cancel["cancel_requested"])
         self.assertEqual(self.repository.recover_interrupted_runs(), 1)
         self.assertEqual(self.repository.get_run(claimed["id"])["status"], "cancelled")
+
+    def test_run_history_is_scoped_filtered_and_cursor_paginated(self):
+        created_ids = []
+        for code in ("000001", "000002", "000003"):
+            run, _ = self.repository.create_run(
+                "fund_deep_research",
+                {"code": code, "months": 36},
+                tenant_id="tenant-a",
+                user_id="user-a",
+            )
+            created_ids.append(run["id"])
+        foreign, _ = self.repository.create_run(
+            "fund_deep_research",
+            {"code": "999999", "months": 36},
+            tenant_id="tenant-b",
+            user_id="user-b",
+        )
+
+        first_page, has_more = self.repository.list_runs(
+            tenant_id="tenant-a",
+            user_id="user-a",
+            limit=2,
+        )
+        self.assertTrue(has_more)
+        self.assertEqual(len(first_page), 2)
+        self.assertNotIn(foreign["id"], {item["id"] for item in first_page})
+
+        last = first_page[-1]
+        second_page, second_has_more = self.repository.list_runs(
+            tenant_id="tenant-a",
+            user_id="user-a",
+            limit=2,
+            before=(last["created_at"], last["id"]),
+        )
+        self.assertFalse(second_has_more)
+        combined_ids = {item["id"] for item in first_page + second_page}
+        self.assertEqual(combined_ids, set(created_ids))
+
+        self.repository.request_cancel(created_ids[0], actor_id="user-a")
+        cancelled_page, _ = self.repository.list_runs(
+            tenant_id="tenant-a",
+            user_id="user-a",
+            limit=10,
+            status="cancelled",
+        )
+        self.assertEqual([item["id"] for item in cancelled_page], [created_ids[0]])
+
+        code_page, _ = self.repository.list_runs(
+            tenant_id="tenant-a",
+            user_id="user-a",
+            limit=10,
+            code="000002",
+        )
+        self.assertEqual([item["input"]["code"] for item in code_page], ["000002"])
 
 
 if __name__ == "__main__":

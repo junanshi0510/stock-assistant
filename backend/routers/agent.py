@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
+import json
 import os
 import re
 from typing import Literal
@@ -41,6 +44,53 @@ def _get_run_or_404(run_id: str) -> dict:
     return run
 
 
+def _encode_cursor(run: dict) -> str:
+    payload = json.dumps(
+        [str(run["created_at"]), str(run["id"])],
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def _decode_cursor(cursor: str) -> tuple[str, str]:
+    try:
+        padding = "=" * (-len(cursor) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(cursor + padding).decode("utf-8"))
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError, binascii.Error) as error:
+        raise HTTPException(status_code=400, detail="Agent 历史分页游标无效") from error
+    if (
+        not isinstance(payload, list)
+        or len(payload) != 2
+        or not all(isinstance(item, str) and item for item in payload)
+    ):
+        raise HTTPException(status_code=400, detail="Agent 历史分页游标无效")
+    return payload[0], payload[1]
+
+
+def _history_item(run: dict) -> dict:
+    result = run.get("result") or {}
+    fund = result.get("fund") or {}
+    conclusion = result.get("conclusion") or {}
+    return {
+        "id": run["id"],
+        "intent": run["intent"],
+        "status": run["status"],
+        "input": run.get("input") or {},
+        "summary": {
+            "code": fund.get("code") or (run.get("input") or {}).get("code"),
+            "name": fund.get("name"),
+            "as_of": fund.get("as_of"),
+            "headline": conclusion.get("headline"),
+        },
+        "error_code": run.get("error_code"),
+        "error_message": run.get("error_message"),
+        "created_at": run.get("created_at"),
+        "started_at": run.get("started_at"),
+        "completed_at": run.get("completed_at"),
+    }
+
+
 @router.get("/tools")
 def get_agent_tool_catalog():
     return {
@@ -75,6 +125,32 @@ def create_agent_run(
     )
     start_worker()
     return {"created": created, "run": repository.get_run(run["id"])}
+
+
+@router.get("/runs")
+def list_agent_runs(
+    limit: int = Query(default=8, ge=1, le=50),
+    cursor: str | None = Query(default=None, min_length=8, max_length=500),
+    run_status: Literal[
+        "queued", "running", "completed", "partial", "failed", "cancelled", "abstained"
+    ] | None = Query(default=None, alias="status"),
+    code: str | None = Query(default=None, pattern=r"^\d{6}$"),
+):
+    before = _decode_cursor(cursor) if cursor else None
+    runs, has_more = repository.list_runs(
+        tenant_id="public",
+        user_id="anonymous",
+        limit=limit,
+        before=before,
+        status=run_status,
+        code=code,
+    )
+    items = [_history_item(run) for run in runs]
+    return {
+        "items": items,
+        "next_cursor": _encode_cursor(runs[-1]) if has_more and runs else None,
+        "has_more": has_more,
+    }
 
 
 @router.get("/runs/{run_id}")

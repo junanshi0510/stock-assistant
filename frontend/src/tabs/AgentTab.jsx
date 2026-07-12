@@ -17,6 +17,7 @@ import {
   fetchAgentAudit,
   fetchAgentEvidence,
   fetchAgentRun,
+  fetchAgentRuns,
 } from '../api/agent'
 
 const TERMINAL = new Set(['completed', 'partial', 'failed', 'cancelled', 'abstained'])
@@ -104,6 +105,8 @@ export default function AgentTab() {
   const [includeAlternatives, setIncludeAlternatives] = useState(false)
   const [run, setRun] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [history, setHistory] = useState({ items: [], next_cursor: null, has_more: false })
+  const [loadingHistory, setLoadingHistory] = useState(false)
   const [error, setError] = useState('')
   const [selectedEvidence, setSelectedEvidence] = useState(null)
   const [loadingEvidence, setLoadingEvidence] = useState(false)
@@ -125,15 +128,35 @@ export default function AgentTab() {
     }
   }
 
+  async function loadHistory({ append = false, cursor = '' } = {}) {
+    setLoadingHistory(true)
+    try {
+      const data = await fetchAgentRuns({ limit: 6, cursor })
+      setHistory((current) => ({
+        ...data,
+        items: append ? [...current.items, ...(data.items || [])] : (data.items || []),
+      }))
+    } catch (requestError) {
+      setError(requestError.message || 'Agent 历史任务获取失败')
+    } finally {
+      setLoadingHistory(false)
+    }
+  }
+
   useEffect(() => {
     const savedRunId = localStorage.getItem('investment-agent-run-id')
     if (savedRunId) loadRun(savedRunId)
+    loadHistory()
   }, [])
 
   useEffect(() => {
     if (!run?.id || TERMINAL.has(run.status)) return undefined
     const timer = window.setInterval(() => loadRun(run.id, { quiet: true }), 1200)
     return () => window.clearInterval(timer)
+  }, [run?.id, run?.status])
+
+  useEffect(() => {
+    if (run?.id && TERMINAL.has(run.status)) loadHistory()
   }, [run?.id, run?.status])
 
   const progress = useMemo(() => {
@@ -167,6 +190,7 @@ export default function AgentTab() {
       })
       setRun(data.run)
       localStorage.setItem('investment-agent-run-id', data.run.id)
+      loadHistory()
     } catch (requestError) {
       setError(requestError.message || '基金研究任务创建失败')
     } finally {
@@ -247,6 +271,48 @@ export default function AgentTab() {
           <label><input type="checkbox" checked={includeDisclosure} onChange={(event) => setIncludeDisclosure(event.target.checked)} />披露变化</label>
           <label><input type="checkbox" checked={includeAlternatives} onChange={(event) => setIncludeAlternatives(event.target.checked)} />同类替代品</label>
         </div>
+      </section>
+
+      <section className="agent-history-panel" aria-label="Agent 运行历史">
+        <div className="agent-section-head">
+          <div><span className="eyebrow">Run History</span><h3>最近研究任务</h3></div>
+          <button className="ghost" onClick={() => loadHistory()} disabled={loadingHistory} title="刷新历史任务">
+            <RefreshCw size={15} className={loadingHistory ? 'spin-icon' : ''} aria-hidden="true" />
+            <span>{loadingHistory ? '刷新中' : '刷新'}</span>
+          </button>
+        </div>
+        <div className="agent-history-list">
+          {history.items.map((item) => {
+            const [label, tone] = statusMeta(item.status)
+            const selected = item.id === run?.id
+            return (
+              <button
+                key={item.id}
+                className={selected ? 'selected' : ''}
+                onClick={() => loadRun(item.id)}
+                aria-current={selected ? 'true' : undefined}
+              >
+                <span className="agent-history-main">
+                  <b>{item.summary?.code || item.input?.code || '-'} {item.summary?.name || '基金研究'}</b>
+                  <small>{timeText(item.completed_at || item.created_at)}</small>
+                </span>
+                <span className={`agent-status ${tone}`}>{label}</span>
+              </button>
+            )
+          })}
+          {!loadingHistory && history.items.length === 0 && (
+            <div className="agent-history-empty"><History size={16} aria-hidden="true" />还没有研究任务</div>
+          )}
+        </div>
+        {history.has_more && (
+          <button
+            className="ghost agent-history-more"
+            onClick={() => loadHistory({ append: true, cursor: history.next_cursor })}
+            disabled={loadingHistory}
+          >
+            <History size={14} aria-hidden="true" />加载更早任务
+          </button>
+        )}
       </section>
 
       {error && <div className="error">{error}</div>}

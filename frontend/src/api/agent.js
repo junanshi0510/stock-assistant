@@ -16,6 +16,14 @@ export function fetchAgentRun(runId) {
   return getJson(`/api/v1/agent/runs/${encodeURIComponent(runId)}`)
 }
 
+export function fetchAgentRuns({ limit = 8, cursor = '', status = '', code = '' } = {}) {
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (cursor) params.set('cursor', cursor)
+  if (status) params.set('status', status)
+  if (code) params.set('code', code)
+  return getJson(`/api/v1/agent/runs?${params.toString()}`)
+}
+
 export function cancelAgentRun(runId) {
   return getJson(`/api/v1/agent/runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST' })
 }
