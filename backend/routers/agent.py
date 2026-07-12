@@ -24,7 +24,7 @@ router = APIRouter(prefix="/api/v1/agent", tags=["投资 Agent"])
 class CreateAgentRunRequest(BaseModel):
     intent: Literal["fund_deep_research"] = "fund_deep_research"
     code: str
-    months: int = Field(default=36, ge=6, le=120)
+    months: int = Field(default=60, ge=6, le=120)
     include_estimate: bool = False
     include_disclosure_changes: bool = False
     include_alternatives: bool = False

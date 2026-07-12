@@ -123,7 +123,7 @@ class AgentWorkflowRunner:
 
     def _fund_steps(self, payload: dict[str, Any]) -> list[WorkflowStep]:
         code = str(payload["code"])
-        months = int(payload.get("months") or 36)
+        months = int(payload.get("months") or 60)
         steps = [WorkflowStep(
             key="fund_analysis",
             tool_name="fund.analysis.get",
@@ -321,6 +321,7 @@ class AgentWorkflowRunner:
         latest = analysis.get("latest") or {}
         metrics = analysis.get("metrics") or {}
         timing = analysis.get("timing") or {}
+        conditioned_forward = analysis.get("conditioned_forward") or {}
         playbook = analysis.get("playbook") or {}
         role = playbook.get("role") or {}
 
@@ -346,6 +347,48 @@ class AgentWorkflowRunner:
             )
             if item:
                 facts.append(item)
+
+        strategy_result = None
+        if conditioned_forward:
+            strategy_result = dict(conditioned_forward)
+            strategy_result["evidence_id"] = analysis_evidence["id"]
+            strategy_result["evidence_ids"] = [analysis_evidence["id"]]
+            primary_horizon = conditioned_forward.get("primary_horizon")
+            primary = next(
+                (
+                    item
+                    for item in (conditioned_forward.get("horizons") or [])
+                    if item.get("horizon") == primary_horizon and item.get("status") == "available"
+                ),
+                None,
+            )
+            if primary:
+                horizon_label = {"3m": "3 个月", "6m": "6 个月", "12m": "12 个月"}.get(
+                    str(primary_horizon), str(primary_horizon)
+                )
+                analog = primary.get("analog") or {}
+                for claim_key, label, value in (
+                    (
+                        f"conditioned_{primary_horizon}_positive_rate",
+                        f"历史相似条件后 {horizon_label}正收益比例",
+                        analog.get("positive_rate"),
+                    ),
+                    (
+                        f"conditioned_{primary_horizon}_median_return",
+                        f"历史相似条件后 {horizon_label}中位收益",
+                        analog.get("median_return"),
+                    ),
+                ):
+                    item = self._add_metric_claim(
+                        run_id,
+                        claim_key=claim_key,
+                        label=label,
+                        value=value,
+                        unit="%",
+                        evidence_id=analysis_evidence["id"],
+                    )
+                    if item:
+                        facts.append(item)
 
         estimate_payload = outputs.get("fund_estimate") or {}
         estimate_result = None
@@ -414,7 +457,7 @@ class AgentWorkflowRunner:
             headline += " 部分真实数据暂不可用，结论范围已收窄。"
 
         return {
-            "schema_version": "fund_deep_research.v1",
+            "schema_version": "fund_deep_research.v2",
             "generated_at": _now(),
             "intent": "fund_deep_research",
             "scope": {
@@ -439,6 +482,7 @@ class AgentWorkflowRunner:
                 "timing_score": timing.get("score"),
             },
             "facts": facts,
+            "strategy": strategy_result,
             "risk_review": {
                 "red_flags": playbook.get("red_flags") or [],
                 "entry_rules": playbook.get("entry_rules") or [],

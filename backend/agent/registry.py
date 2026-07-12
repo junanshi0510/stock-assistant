@@ -67,7 +67,7 @@ def build_default_registry() -> ToolRegistry:
         timeout_seconds=45,
         handler=lambda payload: fund_service.analyze_fund(
             str(payload["code"]),
-            int(payload.get("months") or 36),
+            int(payload.get("months") or 60),
             include_profile=False,
         ),
     ))

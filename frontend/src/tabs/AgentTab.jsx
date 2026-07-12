@@ -53,6 +53,42 @@ const STEP_LABELS = {
   'fund.alternatives.get': '同类替代候选',
 }
 
+const STRATEGY_DECISION = {
+  research: ['可继续研究', 'positive', '历史相似条件偏正面，但仍需结合估值、持仓和个人风险约束。'],
+  avoid_for_now: ['当前暂缓', 'negative', '历史相似条件偏弱，优先等待条件变化，不因回撤自动加仓。'],
+  hold_review: ['等待复核', 'mixed', '历史结果分化，当前没有足够一致的方向优势。'],
+  data_required: ['数据不足', 'unavailable', '历史相似样本不足，策略拒绝输出方向。'],
+}
+
+const STRATEGY_SIGNAL = {
+  positive: '历史分布偏正面',
+  negative: '历史分布偏负面',
+  mixed: '历史分布分化',
+  unavailable: '不可判断',
+}
+
+const STRATEGY_CONFIDENCE = {
+  medium: '中等',
+  low: '较低',
+  unavailable: '不可用',
+}
+
+const CONDITION_LABELS = {
+  above_ma60: '净值位于 60 日均值上方',
+  below_ma60: '净值位于 60 日均值下方',
+  near_high: '接近历史高位',
+  normal_pullback: '普通回撤区',
+  deep_drawdown: '深回撤区',
+}
+
+const HORIZON_LABELS = { '3m': '随后 3 个月', '6m': '随后 6 个月', '12m': '随后 12 个月' }
+
+const INVALIDATION_LABELS = {
+  trend: '净值与 60 日均值的关系发生变化',
+  drawdown_band: '当前回撤跨入新的区间',
+  as_of: '发布新的确认净值后需要重新计算',
+}
+
 function pct(value) {
   if (value == null || Number.isNaN(Number(value))) return '-'
   return `${Number(value) > 0 ? '+' : ''}${Number(value).toFixed(2)}%`
@@ -62,7 +98,7 @@ function metricValue(item) {
   if (item.value == null) return '-'
   if (item.unit === '%') {
     const number = Number(item.value)
-    const prefix = number > 0 && /收益|涨跌/.test(item.label || '') ? '+' : ''
+    const prefix = number > 0 && /收益|涨跌/.test(item.label || '') && !/比例|胜率/.test(item.label || '') ? '+' : ''
     return `${prefix}${number.toFixed(2)}%`
   }
   if (item.unit === '分') return `${Number(item.value).toFixed(0)} 分`
@@ -75,6 +111,11 @@ function comparisonValue(value, unit = '') {
   if (unit === '%') return `${number.toFixed(2)}%`
   if (unit === '分') return `${number.toFixed(0)} 分`
   return `${number.toLocaleString('zh-CN', { maximumFractionDigits: 4 })}${unit}`
+}
+
+function ratePct(value) {
+  if (value == null || Number.isNaN(Number(value))) return '-'
+  return `${Number(value).toFixed(2)}%`
 }
 
 function comparisonDelta(item) {
@@ -94,6 +135,87 @@ function timeText(value) {
 
 function statusMeta(value) {
   return STATUS[value] || [value || '未知', 'partial']
+}
+
+function StrategyPanel({ strategy, onOpenEvidence }) {
+  const [decisionLabel, decisionTone, decisionNote] = STRATEGY_DECISION[strategy.decision]
+    || STRATEGY_DECISION.data_required
+  const condition = strategy.condition || {}
+  const coverage = strategy.coverage || {}
+  return (
+    <section className="agent-strategy-panel" aria-label="基金历史条件策略">
+      <div className="agent-section-head">
+        <div>
+          <span className="eyebrow">Strategy Evidence</span>
+          <h3>当前条件的历史前瞻统计</h3>
+          <small>{strategy.strategy_id}@{strategy.strategy_version} · 数据截至 {condition.as_of || coverage.end_date || '-'}</small>
+        </div>
+        {strategy.evidence_id && (
+          <button className="ghost" onClick={() => onOpenEvidence(strategy.evidence_id)}>
+            <Database size={14} aria-hidden="true" />查看策略 Evidence
+          </button>
+        )}
+      </div>
+
+      <div className="agent-strategy-summary">
+        <div className={`decision ${decisionTone}`}>
+          <span>策略研究判断</span><b>{decisionLabel}</b><small>{decisionNote}</small>
+        </div>
+        <div><span>历史方向</span><b>{STRATEGY_SIGNAL[strategy.signal?.direction] || '-'}</b><small>方向一致度 {strategy.signal?.strength ?? '-'} / 100</small></div>
+        <div><span>统计置信度</span><b>{STRATEGY_CONFIDENCE[strategy.confidence?.level] || '-'}</b><small>最高仅标记中等，不把重叠样本当独立预测</small></div>
+        <div><span>主观察窗口</span><b>{HORIZON_LABELS[strategy.primary_horizon] || '暂不可用'}</b><small>优先使用 6 个月，样本不足时按规则降级</small></div>
+      </div>
+
+      <div className="agent-strategy-condition">
+        <div><span>趋势条件</span><b>{CONDITION_LABELS[condition.trend] || '-'}</b></div>
+        <div><span>回撤条件</span><b>{CONDITION_LABELS[condition.drawdown_band] || '-'}</b></div>
+        <div><span>当前回撤</span><b>{pct(condition.current_drawdown)}</b></div>
+        <div><span>近 3 月</span><b>{pct(condition.return_3m)}</b></div>
+        <div><span>净值 / 60 日均值</span><b>{condition.latest_nav ?? '-'} / {condition.ma60 ?? '-'}</b></div>
+      </div>
+
+      <div className="agent-strategy-horizons">
+        {(strategy.horizons || []).map((item) => {
+          const analog = item.analog || {}
+          const baseline = item.baseline || {}
+          return (
+            <article className={item.status === 'available' ? '' : 'insufficient'} key={item.horizon}>
+              <header>
+                <div><span>{HORIZON_LABELS[item.horizon] || item.horizon}</span><b>{item.status === 'available' ? `${analog.sample_count} 个相似月末样本` : `仅 ${analog.sample_count || 0} 个样本`}</b></div>
+                <em>{item.status === 'available' ? '可评估' : '样本不足'}</em>
+              </header>
+              <dl>
+                <div><dt>历史正收益比例</dt><dd>{ratePct(analog.positive_rate)}</dd></div>
+                <div><dt>历史中位收益</dt><dd>{pct(analog.median_return)}</dd></div>
+                <div><dt>中间 50% 区间</dt><dd>{pct(analog.p25_return)} 至 {pct(analog.p75_return)}</dd></div>
+                <div><dt>历史最差结果</dt><dd>{pct(analog.worst_return)}</dd></div>
+                <div><dt>无条件基准正收益比例</dt><dd>{ratePct(baseline.positive_rate)}</dd></div>
+                <div><dt>相对基准差</dt><dd>{pct(item.edge?.positive_rate)}</dd></div>
+              </dl>
+              <small>信号样本区间 {analog.sample_start || '-'} 至 {analog.sample_end || '-'}</small>
+            </article>
+          )
+        })}
+      </div>
+
+      <div className="agent-strategy-gates">
+        <div>
+          <h4>策略何时失效</h4>
+          {(strategy.invalidation_conditions || []).map((item) => (
+            <p key={item.field}><CircleAlert size={13} aria-hidden="true" />{INVALIDATION_LABELS[item.field] || item.field}</p>
+          ))}
+        </div>
+        <div>
+          <h4>适用性缺口</h4>
+          <p><ShieldCheck size={13} aria-hidden="true" />尚未应用你的风险偏好、预算、已有仓位和组合重合度</p>
+          <p><ShieldCheck size={13} aria-hidden="true" />历史月末样本的前瞻窗口可能重叠，不能当作独立预测次数</p>
+        </div>
+      </div>
+      <p className="agent-strategy-policy">
+        这里只回答“过去处于相同趋势和回撤区间后发生过什么”，不回答未来一定涨跌；历史收益不代表未来表现。
+      </p>
+    </section>
+  )
 }
 
 function StepState({ step }) {
@@ -122,7 +244,7 @@ function StepState({ step }) {
 
 export default function AgentTab() {
   const [code, setCode] = useState('001480')
-  const [months, setMonths] = useState(36)
+  const [months, setMonths] = useState(60)
   const [includeEstimate, setIncludeEstimate] = useState(false)
   const [includeDisclosure, setIncludeDisclosure] = useState(false)
   const [includeAlternatives, setIncludeAlternatives] = useState(false)
@@ -585,6 +707,8 @@ export default function AgentTab() {
             </div>
             <div className="agent-scope-note"><CircleAlert size={15} aria-hidden="true" />{result.scope?.statement}</div>
           </section>
+
+          {result.strategy && <StrategyPanel strategy={result.strategy} onOpenEvidence={openEvidence} />}
 
           <section className="agent-result-section">
             <div className="agent-section-head">

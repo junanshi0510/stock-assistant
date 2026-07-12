@@ -27,6 +27,8 @@ import requests
 import akshare as ak
 from akshare.utils import demjson
 
+from strategies.fund_conditioned_forward import evaluate_conditioned_forward_strategy
+
 
 _CACHE_TTL = 300
 _PROFILE_CACHE_TTL = 30
@@ -3464,6 +3466,7 @@ def analyze_fund(code: str, months: int = 36, *, include_profile: bool = True) -
     }
     timing = _fund_timing_profile(df, metrics, recovery_profile)
     playbook = _fund_investment_playbook(metrics, timing, fact_sheet, style, calendar_returns, recovery_profile)
+    conditioned_forward = evaluate_conditioned_forward_strategy(nav_points)
     return {
         "source": "东方财富基金净值走势 / 天天基金历史净值",
         "source_url": f"https://fund.eastmoney.com/{code}.html",
@@ -3486,6 +3489,7 @@ def analyze_fund(code: str, months: int = 36, *, include_profile: bool = True) -
         "style": style,
         "metrics": metrics,
         "timing": timing,
+        "conditioned_forward": conditioned_forward,
         "playbook": playbook,
         "drawdown_recovery": recovery_profile,
         "calendar_returns": calendar_returns,

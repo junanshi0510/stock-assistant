@@ -15,6 +15,10 @@ _DIMENSIONS = (
     ("timing_label", "投入节奏", ("conclusion", "timing_label")),
     ("timing_score", "投入节奏评分", ("conclusion", "timing_score")),
     ("minimum_holding_period", "最低观察周期", ("conclusion", "minimum_holding_period")),
+    ("strategy_decision", "历史条件策略判断", ("strategy", "decision")),
+    ("strategy_direction", "历史条件策略方向", ("strategy", "signal", "direction")),
+    ("strategy_confidence", "历史条件策略置信度", ("strategy", "confidence", "level")),
+    ("strategy_horizon", "历史条件策略主窗口", ("strategy", "primary_horizon")),
 )
 
 
@@ -30,8 +34,13 @@ def _number(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
-def _nested(payload: dict[str, Any], path: tuple[str, str]) -> Any:
-    return (payload.get(path[0]) or {}).get(path[1])
+def _nested(payload: dict[str, Any], path: tuple[str, ...]) -> Any:
+    current: Any = payload
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
 
 
 def _fact_key(item: dict[str, Any]) -> tuple[str, str]:

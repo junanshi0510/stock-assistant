@@ -39,6 +39,66 @@ def _analysis(_payload):
             "current_drawdown": -4.5,
         },
         "timing": {"score": 63, "label": "小额观察"},
+        "conditioned_forward": {
+            "strategy_id": "fund_conditioned_forward_return",
+            "strategy_version": "1.0.0",
+            "status": "evaluated",
+            "decision": "research",
+            "signal": {"direction": "positive", "strength": 28},
+            "confidence": {"level": "low", "reasons": ["analog_sample_count:8"]},
+            "suitability": {
+                "status": "not_evaluated",
+                "conflicts": ["user_profile_not_in_scope", "portfolio_exposure_not_in_scope"],
+            },
+            "condition": {
+                "as_of": "2026-07-10",
+                "latest_nav": 1.2345,
+                "ma60": 1.20,
+                "trend": "above_ma60",
+                "drawdown_band": "normal_pullback",
+                "current_drawdown": -4.5,
+                "return_3m": 8.2,
+            },
+            "primary_horizon": "6m",
+            "horizons": [{
+                "horizon": "6m",
+                "observation_days": 126,
+                "status": "available",
+                "analog": {
+                    "sample_count": 8,
+                    "positive_rate": 64.0,
+                    "median_return": 7.5,
+                    "p25_return": -2.0,
+                    "p75_return": 12.0,
+                    "worst_return": -9.0,
+                    "best_return": 20.0,
+                    "sample_start": "2020-01-31",
+                    "sample_end": "2025-01-31",
+                },
+                "baseline": {
+                    "sample_count": 30,
+                    "positive_rate": 55.0,
+                    "median_return": 4.0,
+                },
+                "edge": {"positive_rate": 9.0, "median_return": 3.5},
+            }],
+            "coverage": {
+                "observation_count": 500,
+                "start_date": "2020-01-02",
+                "end_date": "2026-07-10",
+                "monthly_candidate_count": 30,
+            },
+            "invalidation_conditions": [
+                {"field": "trend", "current": "above_ma60", "invalid_when": "changes"},
+            ],
+            "thesis": [],
+            "counter_evidence": [],
+            "risks": ["historical_tail_loss_remains_possible"],
+            "next_research_actions": ["apply_user_risk_and_portfolio_constraints"],
+            "evidence_ids": [],
+            "method": {"sampling": "calendar_month_last_observation"},
+            "limitations": ["historical_results_are_not_forecasts"],
+        },
         "trend_state": "震荡观察",
         "playbook": {
             "role": {
@@ -155,6 +215,12 @@ class AgentRuntimeTests(unittest.TestCase):
         AgentWorkflowRunner(self.repository, registry or _registry()).execute(claimed)
         return self.repository.get_run(created["id"])
 
+    def test_new_fund_research_defaults_to_five_year_strategy_window(self):
+        request = agent_router.CreateAgentRunRequest(code="001480")
+        self.assertEqual(request.months, 60)
+        steps = AgentWorkflowRunner(self.repository, _registry())._fund_steps({"code": "001480"})
+        self.assertEqual(steps[0].input_payload["months"], 60)
+
     def test_completed_run_persists_claims_evidence_and_hash_chained_audit(self):
         run = self._run()
 
@@ -163,7 +229,19 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(len(run["evidence"]), 4)
         self.assertGreaterEqual(len(run["claims"]), 7)
         self.assertEqual(run["result"]["fund"]["code"], "001480")
+        self.assertEqual(run["result"]["schema_version"], "fund_deep_research.v2")
         self.assertEqual(run["result"]["alternatives"][0]["code"], "000001")
+        self.assertEqual(
+            run["result"]["strategy"]["strategy_id"],
+            "fund_conditioned_forward_return",
+        )
+        self.assertEqual(
+            run["result"]["strategy"]["evidence_ids"],
+            [run["evidence"][0]["id"]],
+        )
+        fact_labels = {item["label"] for item in run["result"]["facts"]}
+        self.assertIn("历史相似条件后 6 个月正收益比例", fact_labels)
+        self.assertIn("历史相似条件后 6 个月中位收益", fact_labels)
 
         evidence_id = run["result"]["facts"][0]["evidence_id"]
         evidence = self.repository.get_evidence(run["id"], evidence_id, include_payload=True)
