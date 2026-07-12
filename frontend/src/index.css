@@ -1369,19 +1369,23 @@ tbody tr:hover {
 .fund-holding-table {
   min-width: 560px;
 }
-.fund-disclosure-head {
+.fund-disclosure-head,
+.fund-estimate-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
 }
-.fund-disclosure-head .section-title {
+.fund-disclosure-head .section-title,
+.fund-estimate-head .section-title {
   margin-bottom: 6px;
 }
-.fund-disclosure-caption {
+.fund-disclosure-caption,
+.fund-estimate-caption {
   margin: 0;
 }
-.fund-disclosure-head button {
+.fund-disclosure-head button,
+.fund-estimate-head button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1393,6 +1397,12 @@ tbody tr:hover {
   flex-wrap: wrap;
   gap: 8px;
   margin: 14px 0;
+}
+.fund-estimate-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
 }
 .fund-disclosure-table {
   min-width: 420px;
@@ -1676,11 +1686,13 @@ tbody tr:hover {
   .fund-holding-grid {
     grid-template-columns: 1fr;
   }
-  .fund-disclosure-head {
+  .fund-disclosure-head,
+  .fund-estimate-head {
     align-items: stretch;
     flex-direction: column;
   }
-  .fund-disclosure-head button {
+  .fund-disclosure-head button,
+  .fund-estimate-head button {
     width: 100%;
   }
   .fund-manager-card {

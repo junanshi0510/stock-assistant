@@ -57,6 +57,7 @@ EXPECTED_OPERATIONS = {
     "/api/funds/search": {"GET"},
     "/api/funds/analyze": {"GET"},
     "/api/funds/portfolio": {"GET"},
+    "/api/funds/estimate": {"GET"},
     "/api/funds/disclosure-changes": {"GET"},
     "/api/funds/peers": {"GET"},
     "/api/funds/alternatives": {"GET"},

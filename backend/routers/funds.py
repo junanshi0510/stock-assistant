@@ -99,6 +99,15 @@ def fund_portfolio(
     )
 
 
+@router.get("/api/funds/estimate")
+def fund_estimate(code: str = Query(..., min_length=6, max_length=6)):
+    return _call_fund_service(
+        "真实基金估值数据获取失败",
+        funds_mod.get_fund_estimate,
+        code=code,
+    )
+
+
 @router.get("/api/funds/disclosure-changes")
 def fund_disclosure_changes(
     code: str = Query(..., min_length=6, max_length=6),

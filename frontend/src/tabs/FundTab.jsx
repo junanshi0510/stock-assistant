@@ -4,6 +4,7 @@ import FundCompareView from '../features/funds/FundCompareView'
 import FundDecisionView from '../features/funds/FundDecisionView'
 import FundDividendView from '../features/funds/FundDividendView'
 import FundDiscoveryView from '../features/funds/FundDiscoveryView'
+import FundEstimateView from '../features/funds/FundEstimateView'
 import FundFactSheetView from '../features/funds/FundFactSheetView'
 import FundInsightsView from '../features/funds/FundInsightsView'
 import FundPeerEvidenceView from '../features/funds/FundPeerEvidenceView'
@@ -25,12 +26,12 @@ export default function FundTab() {
   const {
     fundView, setFundView, researchLayer, setResearchLayer,
     category, setCategory, sort, setSort, limit, setLimit, months, setMonths, code, setCode,
-    hot, categories, categoryError, fund, portfolio, portfolioError, disclosureChanges, disclosureChangesError, peers, peerSort, setPeerSort,
+    hot, categories, categoryError, fund, portfolio, portfolioError, estimate, estimateError, disclosureChanges, disclosureChangesError, peers, peerSort, setPeerSort,
     dividends, searchKeyword, setSearchKeyword, searchResults, compareInput, setCompareInput,
     compareData, overlapData, opportunityRisk, setOpportunityRisk, opportunities, alternatives,
-    loadingHot, loadingFund, loadingPortfolio, loadingDisclosureChanges, loadingPeers, loadingDividends, loadingSearch,
+    loadingHot, loadingFund, loadingPortfolio, loadingEstimate, loadingDisclosureChanges, loadingPeers, loadingDividends, loadingSearch,
     loadingCompare, loadingOverlap, loadingOpportunities, loadingAlternatives, error,
-    loadHot, loadFund, loadPeers, loadDisclosureChanges, loadAlternatives, loadOpportunities, runSearch, runCompare, runOverlap,
+    loadHot, loadFund, loadPeers, loadEstimate, loadDisclosureChanges, loadAlternatives, loadOpportunities, runSearch, runCompare, runOverlap,
   } = useFundWorkspace()
 
   const rows = hot?.items || []
@@ -134,7 +135,16 @@ export default function FundTab() {
             <button className={researchLayer === 'evidence' ? 'active' : ''} onClick={() => setResearchLayer('evidence')}>数据证据</button>
           </div>
 
-          {researchLayer === 'decision' && <FundDecisionView fund={fund} />}
+          {researchLayer === 'decision' && <>
+            <FundEstimateView
+              code={fund.code}
+              estimate={estimate}
+              error={estimateError}
+              loading={loadingEstimate}
+              onLoad={loadEstimate}
+            />
+            <FundDecisionView fund={fund} />
+          </>}
 
           {researchLayer === 'evidence' && <>
           <FundPeerEvidenceView

@@ -7,6 +7,7 @@ import {
   fetchFundCategories,
   fetchFundDisclosureChanges,
   fetchFundDividends,
+  fetchFundEstimate,
   fetchFundOpportunities,
   fetchFundPeers,
   fetchFundPortfolio,
@@ -36,6 +37,8 @@ export function useFundWorkspace() {
   const [fund, setFund] = useState(null)
   const [portfolio, setPortfolio] = useState(null)
   const [portfolioError, setPortfolioError] = useState('')
+  const [estimate, setEstimate] = useState(null)
+  const [estimateError, setEstimateError] = useState('')
   const [disclosureChanges, setDisclosureChanges] = useState(null)
   const [disclosureChangesError, setDisclosureChangesError] = useState('')
   const [peers, setPeers] = useState(null)
@@ -52,6 +55,7 @@ export function useFundWorkspace() {
   const [loadingHot, setLoadingHot] = useState(false)
   const [loadingFund, setLoadingFund] = useState(false)
   const [loadingPortfolio, setLoadingPortfolio] = useState(false)
+  const [loadingEstimate, setLoadingEstimate] = useState(false)
   const [loadingDisclosureChanges, setLoadingDisclosureChanges] = useState(false)
   const [loadingPeers, setLoadingPeers] = useState(false)
   const [loadingDividends, setLoadingDividends] = useState(false)
@@ -89,6 +93,8 @@ export function useFundWorkspace() {
     setError('')
     setPortfolio(null)
     setPortfolioError('')
+    setEstimate(null)
+    setEstimateError('')
     setDisclosureChanges(null)
     setDisclosureChangesError('')
     setPeers(null)
@@ -116,6 +122,21 @@ export function useFundWorkspace() {
       setPortfolioError(requestError.message)
     } finally {
       setLoadingPortfolio(false)
+    }
+  }
+
+  async function loadEstimate(nextCode = code) {
+    const clean = String(nextCode || '').trim()
+    if (!/^\d{6}$/.test(clean)) return
+    setLoadingEstimate(true)
+    setEstimateError('')
+    try {
+      setEstimate(await fetchFundEstimate(clean))
+    } catch (requestError) {
+      setEstimate(null)
+      setEstimateError(requestError.message)
+    } finally {
+      setLoadingEstimate(false)
     }
   }
 
@@ -265,11 +286,11 @@ export function useFundWorkspace() {
   return {
     fundView, setFundView, researchLayer, setResearchLayer,
     category, setCategory, sort, setSort, limit, setLimit, months, setMonths, code, setCode,
-    hot, categories, categoryError, fund, portfolio, portfolioError, disclosureChanges, disclosureChangesError, peers, peerSort, setPeerSort,
+    hot, categories, categoryError, fund, portfolio, portfolioError, estimate, estimateError, disclosureChanges, disclosureChangesError, peers, peerSort, setPeerSort,
     dividends, searchKeyword, setSearchKeyword, searchResults, compareInput, setCompareInput,
     compareData, overlapData, opportunityRisk, setOpportunityRisk, opportunities, alternatives,
-    loadingHot, loadingFund, loadingPortfolio, loadingDisclosureChanges, loadingPeers, loadingDividends, loadingSearch,
+    loadingHot, loadingFund, loadingPortfolio, loadingEstimate, loadingDisclosureChanges, loadingPeers, loadingDividends, loadingSearch,
     loadingCompare, loadingOverlap, loadingOpportunities, loadingAlternatives, error,
-    loadHot, loadFund, loadPeers, loadDisclosureChanges, loadAlternatives, loadOpportunities, runSearch, runCompare, runOverlap,
+    loadHot, loadFund, loadPeers, loadEstimate, loadDisclosureChanges, loadAlternatives, loadOpportunities, runSearch, runCompare, runOverlap,
   }
 }

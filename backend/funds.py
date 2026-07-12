@@ -28,6 +28,7 @@ from akshare.utils import demjson
 
 
 _CACHE_TTL = 300
+_PROFILE_CACHE_TTL = 30
 _cache: dict[tuple, tuple[float, dict]] = {}
 
 _RANK_URL = "https://fund.eastmoney.com/data/rankhandler.aspx"
@@ -84,9 +85,9 @@ def _session() -> requests.Session:
     return s
 
 
-def _cache_get(key):
+def _cache_get(key, ttl: int = _CACHE_TTL):
     item = _cache.get(key)
-    if item and time.time() - item[0] < _CACHE_TTL:
+    if item and time.time() - item[0] < ttl:
         return item[1]
     return None
 
@@ -2381,7 +2382,7 @@ def analyze_fund_overlap(codes: list[str], year: str | None = None) -> dict:
 
 def _fetch_profile(code: str) -> dict:
     cache_key = ("fund_profile", code)
-    cached = _cache_get(cache_key)
+    cached = _cache_get(cache_key, ttl=_PROFILE_CACHE_TTL)
     if cached:
         return cached
     resp = _session().get(
@@ -2398,12 +2399,63 @@ def _fetch_profile(code: str) -> dict:
     profile = {
         "code": data.get("fundcode") or code,
         "name": data.get("name") or "",
+        "confirmed_nav_date": data.get("jzrq") or "",
+        "confirmed_nav": _num(data.get("dwjz")),
         "estimate_date": data.get("gztime") or data.get("jzrq") or "",
         "estimate_nav": _num(data.get("gsz")),
         "estimate_return": _num(data.get("gszzl")),
     }
     _cache_put(cache_key, profile)
     return profile
+
+
+def get_fund_estimate(code: str) -> dict:
+    """Return the latest provider estimate without treating it as confirmed NAV."""
+    code = str(code or "").strip()
+    if not re.fullmatch(r"\d{6}", code):
+        raise ValueError("基金代码需要是 6 位数字")
+
+    profile = _fetch_profile(code)
+    estimate_nav = _num(profile.get("estimate_nav"))
+    confirmed_nav = _num(profile.get("confirmed_nav"))
+    source_return = _num(profile.get("estimate_return"))
+    computed_return = (
+        _round((estimate_nav / confirmed_nav - 1) * 100)
+        if estimate_nav is not None and confirmed_nav not in (None, 0)
+        else None
+    )
+    estimate_return = source_return if source_return is not None else computed_return
+    base = {
+        "source": "东方财富基金估值",
+        "source_url": f"https://fund.eastmoney.com/{code}.html",
+        "code": code,
+        "name": profile.get("name") or "",
+        "confirmed": {
+            "date": profile.get("confirmed_nav_date") or "",
+            "unit_nav": confirmed_nav,
+        },
+        "estimate": {
+            "time": profile.get("estimate_date") or "",
+            "unit_nav": estimate_nav,
+            "change_pct": estimate_return,
+            "change_value": _round(estimate_nav - confirmed_nav, 4) if estimate_nav is not None and confirmed_nav is not None else None,
+        },
+        "policy": "估值来自第三方盘中估算，不等于基金最终确认净值；QDII、非交易时段、暂停估值或底层市场波动时可能滞后或偏离，不能用于确认收益。",
+    }
+    if estimate_nav is None:
+        return {
+            **base,
+            "status": "unavailable",
+            "reason": "数据源当前未提供盘中估算净值，系统不会用历史净值或模拟数据替代。",
+        }
+    return {
+        **base,
+        "status": "available",
+        "method": {
+            "estimate": "估算涨跌优先使用数据源给出的估算涨跌幅；缺失时才用估算净值相对上一确认净值计算。",
+            "cache": f"估值响应最多缓存 {_PROFILE_CACHE_TTL} 秒，避免频繁请求上游数据源。",
+        },
+    }
 
 
 def _fetch_nav_history(code: str, months: int = 36) -> pd.DataFrame:

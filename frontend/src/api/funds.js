@@ -30,6 +30,10 @@ export function fetchFundPortfolio(code, year = '') {
   return getJson(`/api/funds/portfolio?${query.toString()}`)
 }
 
+export function fetchFundEstimate(code) {
+  return getJson(`/api/funds/estimate?code=${encodeURIComponent(code)}`)
+}
+
 export function fetchFundDisclosureChanges(code, year = '') {
   const query = new URLSearchParams({ code })
   if (year) query.set('year', year)
