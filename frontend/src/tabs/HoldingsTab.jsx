@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
-import { deleteHolding, fetchHoldings, fetchHoldingsInsights, parseHoldingsText, saveHoldings, uploadHoldingScreenshot } from '../api/portfolio'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { FileSpreadsheet, ImageUp, Layers3 } from 'lucide-react'
+import { deleteHolding, fetchHoldings, fetchHoldingsExposure, fetchHoldingsInsights, parseHoldingsText, previewHoldingsFile, saveHoldings, uploadHoldingScreenshot } from '../api/portfolio'
 
 function num(v, digits = 2) {
   if (v == null || Number.isNaN(Number(v))) return '-'
@@ -15,6 +16,14 @@ function cls(v) {
   if (v > 0) return 'delta-pos'
   if (v < 0) return 'delta-neg'
   return 'delta-zero'
+}
+
+function sourceLabel(source) {
+  if (source === 'tiantian_fund_export') return '天天基金导出'
+  if (source === 'holdings_file_import') return '持仓账单导入'
+  if (source === 'manual') return '手动录入'
+  if (String(source || '').includes('ocr')) return '截图识别'
+  return source || '-'
 }
 
 const blankCandidate = {
@@ -37,11 +46,17 @@ export default function HoldingsTab() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [ocrLoading, setOcrLoading] = useState(false)
+  const [fileLoading, setFileLoading] = useState(false)
   const [text, setText] = useState('')
   const [parsed, setParsed] = useState([])
   const [warnings, setWarnings] = useState([])
+  const [filePreview, setFilePreview] = useState(null)
   const [insights, setInsights] = useState(null)
   const [insightsLoading, setInsightsLoading] = useState(false)
+  const [exposure, setExposure] = useState(null)
+  const [exposureLoading, setExposureLoading] = useState(false)
+  const screenshotInputRef = useRef(null)
+  const holdingFileInputRef = useRef(null)
 
   async function load() {
     setLoading(true); setError('')
@@ -79,6 +94,7 @@ export default function HoldingsTab() {
       const result = await parseHoldingsText(text)
       setParsed(result.candidates || [])
       setWarnings(result.warnings || [])
+      setFilePreview(null)
     } catch (e) {
       setError(e.message)
     }
@@ -92,10 +108,28 @@ export default function HoldingsTab() {
       setText(result.raw_text || '')
       setParsed(result.candidates || [])
       setWarnings(result.warnings || [])
+      setFilePreview(null)
     } catch (e) {
       setError(e.message)
     } finally {
       setOcrLoading(false)
+    }
+  }
+
+  async function doPreviewHoldingFile(file) {
+    if (!file) return
+    setFileLoading(true); setError(''); setWarnings([])
+    try {
+      const result = await previewHoldingsFile(file)
+      setParsed(result.candidates || [])
+      setWarnings(result.warnings || [])
+      setFilePreview(result)
+      setText('')
+    } catch (e) {
+      setError(e.message || '持仓账单预览失败')
+      setFilePreview(null)
+    } finally {
+      setFileLoading(false)
     }
   }
 
@@ -111,12 +145,15 @@ export default function HoldingsTab() {
       setData({ items: result.items, summary: result.summary })
       setParsed([])
       setWarnings([])
+      setFilePreview(null)
+      if (holdingFileInputRef.current) holdingFileInputRef.current.value = ''
     } catch (e) {
       setError(e.message)
     }
   }
 
   async function doAddBlank() {
+    setFilePreview(null)
     setParsed((rows) => [{ ...blankCandidate }, ...rows])
   }
 
@@ -140,6 +177,17 @@ export default function HoldingsTab() {
     }
   }
 
+  async function loadExposure() {
+    setExposureLoading(true); setError('')
+    try {
+      setExposure(await fetchHoldingsExposure(6))
+    } catch (e) {
+      setError(e.message || '基金穿透真实数据获取失败')
+    } finally {
+      setExposureLoading(false)
+    }
+  }
+
   return (
     <>
       <div className="panel">
@@ -148,19 +196,31 @@ export default function HoldingsTab() {
           截图可能包含姓名、手机号、账号或资产隐私。建议上传前先打码；系统第一版只保存确认后的持仓结果，不长期保存原图。
         </div>
         <div className="form-row">
-          <div className="field">
-            <label>上传持仓截图</label>
-            <input type="file" accept="image/*" onChange={(e) => doUpload(e.target.files?.[0])} />
-          </div>
-          <button className="ghost" disabled={ocrLoading} onClick={() => document.querySelector('input[type=file]')?.click()}>
-            {ocrLoading ? <><span className="spinner" /> OCR识别中</> : '选择截图'}
+          <input ref={screenshotInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => doUpload(e.target.files?.[0])} />
+          <input ref={holdingFileInputRef} type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style={{ display: 'none' }} onChange={(e) => doPreviewHoldingFile(e.target.files?.[0])} />
+          <button className="ghost" disabled={ocrLoading} onClick={() => screenshotInputRef.current?.click()} title="选择持仓截图">
+            <ImageUp size={16} aria-hidden="true" />
+            <span>{ocrLoading ? 'OCR识别中' : '选择截图'}</span>
+          </button>
+          <button className="ghost" disabled={fileLoading} onClick={() => holdingFileInputRef.current?.click()} title="导入持仓 CSV 或 Excel 账单">
+            <FileSpreadsheet size={16} aria-hidden="true" />
+            <span>{fileLoading ? '账单解析中' : '导入持仓账单'}</span>
           </button>
           <button className="ghost" onClick={doAddBlank}>手动添加一行</button>
           <button className="ghost" onClick={load} disabled={loading}>{loading ? '刷新中' : '刷新持仓'}</button>
           <button onClick={loadInsights} disabled={insightsLoading || items.length === 0}>
             {insightsLoading ? <><span className="spinner" /> 组合体检中</> : '组合体检'}
           </button>
+          <button className="ghost" onClick={loadExposure} disabled={exposureLoading || items.length === 0} title="按基金定期报告查看披露重仓股和行业">
+            <Layers3 size={16} aria-hidden="true" />
+            <span>{exposureLoading ? '穿透分析中' : '基金穿透'}</span>
+          </button>
         </div>
+        {filePreview && (
+          <div className="warning" style={{ marginTop: 12 }}>
+            已识别为{filePreview.template?.label || '持仓账单'}：{filePreview.candidates?.length || 0} 条待确认。{filePreview.privacy}
+          </div>
+        )}
         {error && <div className="error">{error}</div>}
         {warnings.map((w, idx) => <div className="hint" key={idx} style={{ marginTop: 8 }}>{w}</div>)}
       </div>
@@ -181,7 +241,8 @@ export default function HoldingsTab() {
 
       {parsed.length > 0 && (
         <div className="panel fade-in">
-          <h3 className="section-title">待确认持仓 <span className="hint">{parsed.length} 条 · 保存前可以直接修改</span></h3>
+          <h3 className="section-title">{filePreview ? `${filePreview.template?.label || '持仓账单'}预览` : '待确认持仓'} <span className="hint">{parsed.length} 条 · 保存前可以直接修改</span></h3>
+          {filePreview?.errors?.length > 0 && <div className="error" style={{ marginBottom: 12 }}>未纳入导入：{filePreview.errors.slice(0, 5).map((row) => `第 ${row.row} 行 ${row.message}`).join('；')}</div>}
           <div className="corr-wrap">
             <table className="compact-table holdings-edit-table">
               <thead>
@@ -213,6 +274,7 @@ export default function HoldingsTab() {
               </tbody>
             </table>
           </div>
+          {filePreview && <p className="hint" style={{ marginTop: 12 }}>来源：{filePreview.template?.label || '用户导出持仓账单'}。确认保存后只保留核对过的持仓字段与来源。</p>}
         </div>
       )}
 
@@ -331,6 +393,78 @@ export default function HoldingsTab() {
         </div>
       )}
 
+      {exposure && (
+        <div className="panel fade-in">
+          <h3 className="section-title">
+            基金穿透暴露 <span className="hint">{exposure.source}</span>
+          </h3>
+          <div className="bt-cards quality-cards">
+            <div className="bt-card"><div className="k">基金金额覆盖</div><div className="v">{pct(exposure.summary?.fund_amount_coverage)}</div></div>
+            <div className="bt-card"><div className="k">股票披露占组合</div><div className="v">{pct(exposure.summary?.stock_disclosed_portfolio_ratio)}</div></div>
+            <div className="bt-card"><div className="k">行业披露占组合</div><div className="v">{pct(exposure.summary?.industry_disclosed_portfolio_ratio)}</div></div>
+            <div className="bt-card"><div className="k">已披露基金</div><div className="v">{`${exposure.summary?.loaded_fund_count ?? 0}/${exposure.summary?.selected_fund_count ?? 0}`}</div></div>
+            <div className="bt-card"><div className="k">未纳入/失败</div><div className="v">{(exposure.summary?.unselected_fund_count || 0) + (exposure.summary?.failed_count || 0)}</div></div>
+          </div>
+
+          {exposure.reasons?.length > 0 && (
+            <div className="fund-bond-list" style={{ marginTop: 12 }}>
+              {exposure.reasons.map((reason, index) => <span className="tag neutral" key={`${reason}-${index}`}>{reason}</span>)}
+            </div>
+          )}
+
+          <div className="fund-holding-grid" style={{ marginTop: 16 }}>
+            <div>
+              <h4 className="fund-subhead">披露重仓股票</h4>
+              <div className="corr-wrap">
+                <table className="compact-table holdings-insight-table">
+                  <thead><tr><th>代码</th><th>名称</th><th>占总组合</th><th>占基金仓位</th><th>涉及基金</th></tr></thead>
+                  <tbody>
+                    {exposure.stocks?.slice(0, 12).map((row) => (
+                      <tr key={row.code}>
+                        <td style={{ fontWeight: 800 }}>{row.code}</td>
+                        <td>{row.name || '-'}</td>
+                        <td>{pct(row.portfolio_ratio)}</td>
+                        <td>{pct(row.fund_bucket_ratio)}</td>
+                        <td>{row.fund_count} 只</td>
+                      </tr>
+                    ))}
+                    {!exposure.stocks?.length && <tr><td colSpan="5" className="hint">没有可用于股票穿透的真实披露。</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div>
+              <h4 className="fund-subhead">披露行业配置</h4>
+              <div className="corr-wrap">
+                <table className="compact-table holdings-insight-table">
+                  <thead><tr><th>行业</th><th>占总组合</th><th>占基金仓位</th><th>涉及基金</th></tr></thead>
+                  <tbody>
+                    {exposure.industries?.slice(0, 12).map((row) => (
+                      <tr key={row.name}>
+                        <td>{row.name}</td>
+                        <td>{pct(row.portfolio_ratio)}</td>
+                        <td>{pct(row.fund_bucket_ratio)}</td>
+                        <td>{row.fund_count} 只</td>
+                      </tr>
+                    ))}
+                    {!exposure.industries?.length && <tr><td colSpan="4" className="hint">没有可用于行业穿透的真实披露。</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          {exposure.funds?.length > 0 && (
+            <div className="fund-bond-list" style={{ marginTop: 14 }}>
+              {exposure.funds.map((row) => <span className="tag neutral" key={row.code}>{row.code} {row.name} · 股票披露 {pct(row.stock_disclosure_ratio)} · {row.stock_period || '未返回报告期'}</span>)}
+            </div>
+          )}
+          {exposure.failed?.length > 0 && <div className="error" style={{ marginTop: 12 }}>{exposure.failed.slice(0, 4).map((row) => `${row.code}: ${row.error}`).join('；')}</div>}
+          <p className="hint" style={{ marginTop: 12 }}>{exposure.policy}</p>
+          <p className="hint">{exposure.method?.timeliness}</p>
+        </div>
+      )}
+
       {items.length > 0 ? (
         <div className="panel fade-in">
           <h3 className="section-title">持仓明细</h3>
@@ -353,7 +487,7 @@ export default function HoldingsTab() {
                     <td className={cls(row.yesterday_profit)}>{num(row.yesterday_profit)}</td>
                     <td className={cls(row.profit)}>{num(row.profit)}</td>
                     <td className={cls(row.profit_rate)}>{pct(row.profit_rate)}</td>
-                    <td className="hint">{row.source}</td>
+                    <td className="hint">{sourceLabel(row.source)}</td>
                     <td><button className="ghost" onClick={() => doDelete(row.id)}>删除</button></td>
                   </tr>
                 ))}

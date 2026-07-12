@@ -30,6 +30,12 @@ export function fetchFundPortfolio(code, year = '') {
   return getJson(`/api/funds/portfolio?${query.toString()}`)
 }
 
+export function fetchFundDisclosureChanges(code, year = '') {
+  const query = new URLSearchParams({ code })
+  if (year) query.set('year', year)
+  return getJson(`/api/funds/disclosure-changes?${query.toString()}`)
+}
+
 export function fetchFundPeers(code, sort = '1y', limit = 1000) {
   const query = new URLSearchParams({ code, sort, limit: String(limit) })
   return getJson(`/api/funds/peers?${query.toString()}`)

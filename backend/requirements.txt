@@ -8,6 +8,7 @@ numpy>=1.26
 requests>=2.27
 scikit-learn>=1.4
 python-multipart>=0.0.9
+openpyxl>=3.1
 alibabacloud_ocr_api20210707>=3.0.0
 alibabacloud_tea_openapi>=0.3.8
 alibabacloud_tea_util>=0.3.13

@@ -47,6 +47,14 @@ class FundRouterTests(unittest.TestCase):
         self.assertIn("真实基金持仓数据获取失败", context.exception.detail)
         self.assertIn("provider unavailable", context.exception.detail)
 
+    def test_disclosure_changes_forwards_code_and_year(self):
+        expected = {"status": "available", "code": "110022"}
+        with patch.object(fund_router.funds_mod, "get_fund_disclosure_changes", return_value=expected) as service:
+            actual = fund_router.fund_disclosure_changes("110022", "2025")
+
+        self.assertEqual(actual, expected)
+        service.assert_called_once_with(code="110022", year="2025")
+
     def test_compare_request_forwards_all_codes_and_months(self):
         expected = {"codes": ["110022", "001480"]}
         request = fund_router.FundCompareRequest(codes=["110022", "001480"], months=24)

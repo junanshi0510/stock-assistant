@@ -99,6 +99,19 @@ def fund_portfolio(
     )
 
 
+@router.get("/api/funds/disclosure-changes")
+def fund_disclosure_changes(
+    code: str = Query(..., min_length=6, max_length=6),
+    year: str | None = Query(None, pattern="^$|^20\\d{2}$"),
+):
+    return _call_fund_service(
+        "真实基金披露变化数据获取失败",
+        funds_mod.get_fund_disclosure_changes,
+        code=code,
+        year=year or None,
+    )
+
+
 @router.get("/api/funds/peers")
 def fund_peers(
     code: str = Query(..., min_length=6, max_length=6),

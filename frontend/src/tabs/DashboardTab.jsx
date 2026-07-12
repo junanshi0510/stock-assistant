@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
-import { fetchMarketDaily } from '../api/market'
-import { fetchHoldings, fetchHoldingsInsights } from '../api/portfolio'
+import { fetchDecisionCenter } from '../api/portfolio'
+import DecisionCenter from '../features/decision/DecisionCenter'
 
 function money(value) {
   if (value == null || Number.isNaN(Number(value))) return '-'
-  return `${Number(value).toLocaleString('zh-CN', { maximumFractionDigits: 2 })}元`
+  return `¥${Number(value).toLocaleString('zh-CN', { maximumFractionDigits: 2 })}`
 }
 
 function pct(value) {
@@ -28,74 +28,68 @@ function SummaryMetric({ label, value, tone = '' }) {
 }
 
 export default function DashboardTab({ goPortfolio, goFunds, goMarket }) {
-  const [risk, setRisk] = useState('balanced')
-  const [holdings, setHoldings] = useState(null)
-  const [insights, setInsights] = useState(null)
-  const [daily, setDaily] = useState(null)
+  const [decision, setDecision] = useState(null)
   const [loading, setLoading] = useState(false)
-  const [errors, setErrors] = useState({})
+  const [error, setError] = useState('')
 
-  async function refresh(nextRisk = risk) {
+  async function refresh() {
     setLoading(true)
-    setErrors({})
-    const loadBlock = async (key, request, setData) => {
-      const labels = { holdings: '持仓', insights: '组合体检', daily: '市场日报' }
-      try {
-        setData(await request)
-      } catch (error) {
-        setErrors((current) => ({
-          ...current,
-          [key]: error?.message || `真实${labels[key] || '数据'}获取失败`,
-        }))
-      }
+    setError('')
+    try {
+      setDecision(await fetchDecisionCenter())
+    } catch (requestError) {
+      setError(requestError.message || '真实投资决策数据获取失败')
+    } finally {
+      setLoading(false)
     }
-    await Promise.all([
-      loadBlock('holdings', fetchHoldings(), setHoldings),
-      loadBlock('insights', fetchHoldingsInsights(6), setInsights),
-      loadBlock('daily', fetchMarketDaily(nextRisk, 4), setDaily),
-    ])
-    setLoading(false)
   }
 
-  useEffect(() => { refresh('balanced') }, [])
+  useEffect(() => { refresh() }, [])
 
-  const summary = insights?.summary || holdings?.summary || {}
-  const holdingCount = summary.holding_count ?? summary.count ?? 0
-  const priorityItems = useMemo(() => {
-    const portfolioNotes = (insights?.notes || []).map((text) => ({ kind: '组合', title: '组合需要复盘', text }))
-    const marketRisks = (daily?.risks || []).map((item) => ({ kind: '市场', title: item.title, text: item.text }))
-    return [...portfolioNotes, ...marketRisks].slice(0, 5)
-  }, [daily, insights])
-  const topIndustry = daily?.summary?.top_industry
-  const topFundCategory = daily?.summary?.top_fund_category
-  const topCandidate = daily?.fund_candidates?.[0]
+  const portfolio = decision?.portfolio
+  const market = decision?.market
+  const summary = portfolio?.summary || {}
+  const holdingCount = summary.holding_count ?? 0
+  const topIndustry = market?.summary?.top_industry
+  const topFundCategory = market?.summary?.top_fund_category
+  const topCandidate = market?.fund_candidates?.[0]
+  const unavailableCount = decision?.summary?.unavailable_count ?? 0
+  const sourceState = useMemo(() => {
+    if (!decision) return '正在获取真实数据'
+    if (unavailableCount > 0) return `${unavailableCount} 个来源暂不可用`
+    return '真实数据已完成汇总'
+  }, [decision, unavailableCount])
+
+  function navigateDecision(target) {
+    if (target === 'portfolio') goPortfolio()
+    if (target === 'ledger') goPortfolio('ledger')
+    if (target === 'funds') goFunds()
+    if (target === 'market') goMarket()
+  }
 
   return (
     <>
-      <section className="overview-hero" aria-label="投资总览">
+      <section className="overview-hero" aria-label="投资决策总览">
         <div>
           <span className="eyebrow">真实持仓与真实市场数据</span>
-          <h2>先看组合，再看机会</h2>
-          <p>只聚合已保存的持仓、真实基金净值与市场数据；源不可用时直接标记，不以模拟数据补齐。</p>
+          <h2>先处理组合，再研究机会</h2>
+          <p>把持仓风险、基金回撤、重复暴露和市场日报放进同一条行动清单。数据源不可用时会明确标注，不用模拟结果补齐。</p>
         </div>
         <div className="overview-actions">
-          <label className="compact-field">
-            <span>风险偏好</span>
-            <select value={risk} onChange={(event) => {
-              const nextRisk = event.target.value
-              setRisk(nextRisk)
-              refresh(nextRisk)
-            }}>
-              <option value="stable">稳健</option>
-              <option value="balanced">均衡</option>
-              <option value="aggressive">进取</option>
-            </select>
-          </label>
-          <button onClick={() => refresh()} disabled={loading}>
-            {loading ? <><span className="spinner" /> 刷新中</> : '刷新总览'}
+          <div className="overview-source-state">{sourceState}</div>
+          <button onClick={refresh} disabled={loading}>
+            {loading ? <><span className="spinner" /> 刷新中</> : '刷新决策'}
           </button>
         </div>
       </section>
+
+      <DecisionCenter
+        data={decision}
+        loading={loading}
+        error={error}
+        onRefresh={refresh}
+        onNavigate={navigateDecision}
+      />
 
       <section className="overview-band">
         <div className="overview-band-head">
@@ -105,45 +99,40 @@ export default function DashboardTab({ goPortfolio, goFunds, goMarket }) {
           </div>
           <button className="ghost" onClick={goPortfolio}>{holdingCount > 0 ? '查看组合' : '导入持仓'}</button>
         </div>
-        {holdingCount > 0 && (holdings || insights) ? (
+        {portfolio?.status === 'available' && holdingCount > 0 ? (
           <div className="overview-metrics">
             <SummaryMetric label="持仓金额" value={money(summary.total_amount)} />
             <SummaryMetric label="累计收益" value={money(summary.total_profit)} tone={deltaClass(summary.total_profit)} />
             <SummaryMetric label="昨日收益" value={money(summary.total_yesterday_profit)} tone={deltaClass(summary.total_yesterday_profit)} />
             <SummaryMetric label="加权收益率" value={pct(summary.weighted_profit_rate)} tone={deltaClass(summary.weighted_profit_rate)} />
-            <SummaryMetric label="第一大持仓" value={pct(summary.top1_ratio ?? holdings?.summary?.top_concentration)} />
+            <SummaryMetric label="第一大持仓" value={pct(summary.top1_ratio)} />
             <SummaryMetric label="集中度" value={summary.concentration_level || '-'} />
           </div>
         ) : (
-          <div className="overview-empty">暂无持仓汇总数据。导入并确认持仓金额后，才能计算真实配置与收益贡献。</div>
+          <div className="overview-empty">导入并确认每项持仓金额后，才能计算真实配置、收益贡献和集中度风险。</div>
         )}
-        {errors.holdings && <div className="error">持仓数据：{errors.holdings}</div>}
-        {errors.insights && <div className="error">组合体检：{errors.insights}</div>}
       </section>
 
       <div className="overview-grid">
         <section className="overview-band">
           <div className="overview-band-head">
             <div>
-              <span className="eyebrow">优先处理</span>
-              <h3>需要你确认的事项</h3>
+              <span className="eyebrow">组合复盘依据</span>
+              <h3>只使用已确认的持仓数据</h3>
             </div>
             <button className="ghost" onClick={goPortfolio}>组合体检</button>
           </div>
-          {priorityItems.length > 0 ? (
+          {portfolio?.notes?.length > 0 ? (
             <div className="priority-list">
-              {priorityItems.map((item, index) => (
-                <div className="priority-item" key={`${item.kind}-${item.title}-${index}`}>
-                  <span>{item.kind}</span>
-                  <div>
-                    <b>{item.title}</b>
-                    <p>{item.text}</p>
-                  </div>
+              {portfolio.notes.slice(0, 4).map((text, index) => (
+                <div className="priority-item" key={`${text}-${index}`}>
+                  <span>组合</span>
+                  <div><b>需要复盘</b><p>{text}</p></div>
                 </div>
               ))}
             </div>
           ) : (
-            <div className="overview-empty">真实数据暂未形成需要优先处理的事项。</div>
+            <div className="overview-empty">真实持仓数据尚未形成额外组合复盘提示。</div>
           )}
         </section>
 
@@ -151,30 +140,28 @@ export default function DashboardTab({ goPortfolio, goFunds, goMarket }) {
           <div className="overview-band-head">
             <div>
               <span className="eyebrow">市场环境</span>
-              <h3>{daily?.summary?.headline || '等待真实市场日报'}</h3>
+              <h3>{market?.status === 'available' ? (market.summary?.headline || '真实市场日报') : '等待真实市场日报'}</h3>
             </div>
             <button className="ghost" onClick={goMarket}>查看市场</button>
           </div>
-          {daily ? (
+          {market?.status === 'available' ? (
             <>
               <div className="market-pulse-grid">
-                <SummaryMetric label="市场温度" value={daily.summary?.temperature || '-'} />
-                <SummaryMetric label="机会线索" value={`${daily.summary?.opportunity_count ?? 0} 条`} />
-                <SummaryMetric label="风险提示" value={`${daily.summary?.risk_count ?? 0} 条`} />
-                <SummaryMetric label="失败源" value={`${daily.summary?.failed_count ?? 0} 个`} />
+                <SummaryMetric label="市场温度" value={market.summary?.temperature || '-'} />
+                <SummaryMetric label="机会线索" value={`${market.summary?.opportunity_count ?? 0} 条`} />
+                <SummaryMetric label="风险提示" value={`${market.summary?.risk_count ?? 0} 条`} />
+                <SummaryMetric label="不可用来源" value={`${market.failed?.length ?? 0} 个`} />
               </div>
               <div className="market-pulse-list">
-                {topIndustry && <button className="market-pulse" onClick={goMarket}><span>行业热度</span><b>{topIndustry.name}</b><small className={deltaClass(topIndustry.change_pct)}>均涨 {pct(topIndustry.change_pct)}</small></button>}
-                {topFundCategory && <button className="market-pulse" onClick={goFunds}><span>基金分类</span><b>{topFundCategory.name}</b><small className={deltaClass(topFundCategory.return_3m)}>近3月 {pct(topFundCategory.return_3m)}</small></button>}
-                {topCandidate && <button className="market-pulse" onClick={goFunds}><span>基金候选</span><b>{topCandidate.code} {topCandidate.name}</b><small className={deltaClass(topCandidate.return_3m)}>近3月 {pct(topCandidate.return_3m)}</small></button>}
+                {topIndustry?.name && <button className="market-pulse" onClick={goMarket}><span>行业热度</span><b>{topIndustry.name}</b><small className={deltaClass(topIndustry.change_pct)}>区间 {pct(topIndustry.change_pct)}</small></button>}
+                {topFundCategory?.name && <button className="market-pulse" onClick={goFunds}><span>基金分类</span><b>{topFundCategory.name}</b><small className={deltaClass(topFundCategory.return_3m)}>近 3 月 {pct(topFundCategory.return_3m)}</small></button>}
+                {topCandidate && <button className="market-pulse" onClick={goFunds}><span>基金线索</span><b>{topCandidate.code} {topCandidate.name}</b><small className={deltaClass(topCandidate.return_3m)}>近 3 月 {pct(topCandidate.return_3m)}</small></button>}
               </div>
-              {daily.failed?.length > 0 && <p className="hint">不可用源：{daily.failed.map((item) => item.source).join('、')}</p>}
-              <p className="hint">截至 {daily.as_of} · {daily.method?.aggregation}</p>
+              <p className="hint">截至 {market.as_of || '-'}。市场线索仅用于研究排序，不构成买入建议。</p>
             </>
           ) : (
-            <div className="overview-empty">真实市场日报尚未返回。</div>
+            <div className="overview-empty">真实市场日报尚未返回；市场层结论已暂停。</div>
           )}
-          {errors.daily && <div className="error">市场日报：{errors.daily}</div>}
         </section>
       </div>
     </>

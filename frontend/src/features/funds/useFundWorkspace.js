@@ -5,6 +5,7 @@ import {
   compareFunds,
   fetchFundAlternatives,
   fetchFundCategories,
+  fetchFundDisclosureChanges,
   fetchFundDividends,
   fetchFundOpportunities,
   fetchFundPeers,
@@ -35,6 +36,8 @@ export function useFundWorkspace() {
   const [fund, setFund] = useState(null)
   const [portfolio, setPortfolio] = useState(null)
   const [portfolioError, setPortfolioError] = useState('')
+  const [disclosureChanges, setDisclosureChanges] = useState(null)
+  const [disclosureChangesError, setDisclosureChangesError] = useState('')
   const [peers, setPeers] = useState(null)
   const [peerSort, setPeerSort] = useState('1y')
   const [dividends, setDividends] = useState(null)
@@ -49,6 +52,7 @@ export function useFundWorkspace() {
   const [loadingHot, setLoadingHot] = useState(false)
   const [loadingFund, setLoadingFund] = useState(false)
   const [loadingPortfolio, setLoadingPortfolio] = useState(false)
+  const [loadingDisclosureChanges, setLoadingDisclosureChanges] = useState(false)
   const [loadingPeers, setLoadingPeers] = useState(false)
   const [loadingDividends, setLoadingDividends] = useState(false)
   const [loadingSearch, setLoadingSearch] = useState(false)
@@ -85,6 +89,8 @@ export function useFundWorkspace() {
     setError('')
     setPortfolio(null)
     setPortfolioError('')
+    setDisclosureChanges(null)
+    setDisclosureChangesError('')
     setPeers(null)
     setDividends(null)
     setAlternatives(null)
@@ -110,6 +116,21 @@ export function useFundWorkspace() {
       setPortfolioError(requestError.message)
     } finally {
       setLoadingPortfolio(false)
+    }
+  }
+
+  async function loadDisclosureChanges(nextCode = code) {
+    const clean = String(nextCode || '').trim()
+    if (!/^\d{6}$/.test(clean)) return
+    setLoadingDisclosureChanges(true)
+    setDisclosureChangesError('')
+    try {
+      setDisclosureChanges(await fetchFundDisclosureChanges(clean))
+    } catch (requestError) {
+      setDisclosureChanges(null)
+      setDisclosureChangesError(requestError.message)
+    } finally {
+      setLoadingDisclosureChanges(false)
     }
   }
 
@@ -244,11 +265,11 @@ export function useFundWorkspace() {
   return {
     fundView, setFundView, researchLayer, setResearchLayer,
     category, setCategory, sort, setSort, limit, setLimit, months, setMonths, code, setCode,
-    hot, categories, categoryError, fund, portfolio, portfolioError, peers, peerSort, setPeerSort,
+    hot, categories, categoryError, fund, portfolio, portfolioError, disclosureChanges, disclosureChangesError, peers, peerSort, setPeerSort,
     dividends, searchKeyword, setSearchKeyword, searchResults, compareInput, setCompareInput,
     compareData, overlapData, opportunityRisk, setOpportunityRisk, opportunities, alternatives,
-    loadingHot, loadingFund, loadingPortfolio, loadingPeers, loadingDividends, loadingSearch,
+    loadingHot, loadingFund, loadingPortfolio, loadingDisclosureChanges, loadingPeers, loadingDividends, loadingSearch,
     loadingCompare, loadingOverlap, loadingOpportunities, loadingAlternatives, error,
-    loadHot, loadFund, loadPeers, loadAlternatives, loadOpportunities, runSearch, runCompare, runOverlap,
+    loadHot, loadFund, loadPeers, loadDisclosureChanges, loadAlternatives, loadOpportunities, runSearch, runCompare, runOverlap,
   }
 }

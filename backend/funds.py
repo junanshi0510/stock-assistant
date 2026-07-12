@@ -1457,6 +1457,449 @@ def get_fund_portfolio(code: str, year: str | None = None) -> dict:
     return result
 
 
+def _portfolio_period_identity(portfolio: dict) -> tuple:
+    """Prefer provider report periods over the requested calendar year."""
+    periods = tuple(
+        (field, str(portfolio.get(field) or "").strip())
+        for field in ("stock_period", "bond_period", "industry_period")
+        if str(portfolio.get(field) or "").strip()
+    )
+    return periods or (("year", str(portfolio.get("year") or "").strip()),)
+
+
+def _disclosed_ratio_rows(rows: list[dict], key_fields: tuple[str, ...]) -> dict[str, dict]:
+    """Normalize only rows that have a stable identifier and disclosed ratio."""
+    mapped = {}
+    for raw in rows or []:
+        if not isinstance(raw, dict):
+            continue
+        identifier = next(
+            (str(raw.get(field) or "").strip() for field in key_fields if str(raw.get(field) or "").strip()),
+            "",
+        )
+        ratio = _num(raw.get("nav_ratio"))
+        if not identifier or ratio is None:
+            continue
+        mapped[identifier] = {
+            **raw,
+            "nav_ratio": _round(ratio),
+        }
+    return mapped
+
+
+def _disclosure_delta_rows(
+    latest_rows: list[dict],
+    previous_rows: list[dict],
+    key_fields: tuple[str, ...],
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """Compare disclosed rows without turning report-list changes into trades."""
+    latest = _disclosed_ratio_rows(latest_rows, key_fields)
+    previous = _disclosed_ratio_rows(previous_rows, key_fields)
+
+    added = [latest[key] for key in latest if key not in previous]
+    removed = [previous[key] for key in previous if key not in latest]
+    common = []
+    for key, latest_item in latest.items():
+        previous_item = previous.get(key)
+        if not previous_item:
+            continue
+        delta = _round((latest_item.get("nav_ratio") or 0) - (previous_item.get("nav_ratio") or 0))
+        common.append({
+            "code": latest_item.get("code") or previous_item.get("code") or "",
+            "name": latest_item.get("name") or previous_item.get("name") or "",
+            "latest_nav_ratio": latest_item.get("nav_ratio"),
+            "previous_nav_ratio": previous_item.get("nav_ratio"),
+            "delta": delta,
+        })
+
+    added.sort(key=lambda item: item.get("nav_ratio") or 0, reverse=True)
+    removed.sort(key=lambda item: item.get("nav_ratio") or 0, reverse=True)
+    common.sort(key=lambda item: abs(item.get("delta") or 0), reverse=True)
+    return added, removed, common
+
+
+def _disclosure_snapshot(portfolio: dict) -> dict:
+    return {
+        "year": portfolio.get("year") or "",
+        "stock_period": portfolio.get("stock_period") or "",
+        "bond_period": portfolio.get("bond_period") or "",
+        "industry_period": portfolio.get("industry_period") or "",
+        "top10_stock_ratio": portfolio.get("summary", {}).get("top10_stock_ratio"),
+        "top_industry": (portfolio.get("industries") or [{}])[0].get("name") or "",
+    }
+
+
+def _disclosure_changes_unavailable(code: str, latest: dict, reasons: list[str]) -> dict:
+    return {
+        "status": "unavailable",
+        "source": "天天基金投资组合 / 东方财富基金档案",
+        "source_url": f"https://fundf10.eastmoney.com/ccmx_{code}.html",
+        "code": code,
+        "name": latest.get("name") or "",
+        "latest": _disclosure_snapshot(latest),
+        "previous": None,
+        "summary": {
+            "latest_top10_stock_ratio": latest.get("summary", {}).get("top10_stock_ratio"),
+            "previous_top10_stock_ratio": None,
+            "top10_stock_ratio_change": None,
+            "common_stock_count": 0,
+            "added_stock_count": 0,
+            "removed_stock_count": 0,
+            "latest_top_industry": (latest.get("industries") or [{}])[0].get("name") or "",
+            "previous_top_industry": "",
+            "industry_focus_changed": None,
+        },
+        "comparison_scope": [],
+        "added_stocks": [],
+        "removed_stocks": [],
+        "stock_changes": [],
+        "industry_changes": [],
+        "reasons": reasons,
+        "policy": "仅比较基金定期报告中已披露的前列持仓和行业配置；未出现在下一期披露前列不等于已经清仓，披露也不代表实时持仓。",
+    }
+
+
+def get_fund_disclosure_changes(code: str, year: str | None = None) -> dict:
+    """Compare two real, distinct periodic fund disclosures for one fund."""
+    code = str(code or "").strip()
+    cache_key = ("fund_disclosure_changes", code, year or "latest")
+    cached = _cache_get(cache_key)
+    if cached:
+        return cached
+
+    def unavailable(latest_portfolio: dict, reasons: list[str]) -> dict:
+        result = _disclosure_changes_unavailable(code, latest_portfolio, reasons)
+        _cache_put(cache_key, result)
+        return result
+
+    latest = get_fund_portfolio(code, year=year)
+    try:
+        latest_year = int(str(latest.get("year") or ""))
+    except ValueError:
+        return unavailable(
+            latest,
+            ["最新披露缺少可识别的报告年份，无法定位上一期真实披露。"],
+        )
+
+    try:
+        previous = get_fund_portfolio(code, year=str(latest_year - 1))
+    except RuntimeError as error:
+        if "未取到基金持仓或行业配置真实数据" not in str(error):
+            raise
+        return unavailable(
+            latest,
+            [f"未取得 {latest_year - 1} 年可比较的真实基金披露：{error}"],
+        )
+
+    if _portfolio_period_identity(latest) == _portfolio_period_identity(previous):
+        return unavailable(
+            latest,
+            ["两次读取指向同一报告期，无法据此生成披露变化。"],
+        )
+
+    latest_stock_rows = _disclosed_ratio_rows(latest.get("stocks") or [], ("code", "name"))
+    previous_stock_rows = _disclosed_ratio_rows(previous.get("stocks") or [], ("code", "name"))
+    latest_industry_rows = _disclosed_ratio_rows(latest.get("industries") or [], ("name",))
+    previous_industry_rows = _disclosed_ratio_rows(previous.get("industries") or [], ("name",))
+    can_compare_stocks = bool(latest_stock_rows) and bool(previous_stock_rows)
+    can_compare_industries = bool(latest_industry_rows) and bool(previous_industry_rows)
+    if not can_compare_stocks and not can_compare_industries:
+        return unavailable(
+            latest,
+            ["两期披露中没有可同时比较的股票前列或行业配置。"],
+        )
+
+    added_stocks, removed_stocks, stock_changes = ([], [], [])
+    if can_compare_stocks:
+        added_stocks, removed_stocks, stock_changes = _disclosure_delta_rows(
+            latest.get("stocks") or [],
+            previous.get("stocks") or [],
+            ("code", "name"),
+        )
+
+    _, _, industry_changes = ([], [], [])
+    if can_compare_industries:
+        _, _, industry_changes = _disclosure_delta_rows(
+            latest.get("industries") or [],
+            previous.get("industries") or [],
+            ("name",),
+        )
+
+    latest_top10 = latest.get("summary", {}).get("top10_stock_ratio")
+    previous_top10 = previous.get("summary", {}).get("top10_stock_ratio")
+    latest_industry = (latest.get("industries") or [{}])[0].get("name") or ""
+    previous_industry = (previous.get("industries") or [{}])[0].get("name") or ""
+    comparison_scope = []
+    if can_compare_stocks:
+        comparison_scope.append("stocks")
+    if can_compare_industries:
+        comparison_scope.append("industries")
+
+    result = {
+        "status": "available",
+        "source": "天天基金投资组合 / 东方财富基金档案",
+        "source_url": f"https://fundf10.eastmoney.com/ccmx_{code}.html",
+        "code": code,
+        "name": latest.get("name") or previous.get("name") or "",
+        "latest": _disclosure_snapshot(latest),
+        "previous": _disclosure_snapshot(previous),
+        "summary": {
+            "latest_top10_stock_ratio": latest_top10,
+            "previous_top10_stock_ratio": previous_top10,
+            "top10_stock_ratio_change": (
+                _round((_num(latest_top10) or 0) - (_num(previous_top10) or 0))
+                if latest_top10 is not None and previous_top10 is not None
+                else None
+            ),
+            "common_stock_count": len(stock_changes),
+            "added_stock_count": len(added_stocks),
+            "removed_stock_count": len(removed_stocks),
+            "latest_top_industry": latest_industry,
+            "previous_top_industry": previous_industry,
+            "industry_focus_changed": bool(latest_industry and previous_industry and latest_industry != previous_industry),
+        },
+        "comparison_scope": comparison_scope,
+        "added_stocks": added_stocks,
+        "removed_stocks": removed_stocks,
+        "stock_changes": stock_changes,
+        "industry_changes": industry_changes,
+        "reasons": [],
+        "policy": "仅比较基金定期报告中已披露的前列持仓和行业配置；未出现在下一期披露前列不等于已经清仓，披露也不代表实时持仓。",
+        "method": {
+            "comparison": "最近可得披露与其上一年可得披露相比；共同披露项按占净值比例的百分点变化排序。",
+            "scope": "股票部分仅在两期都有股票前列披露时比较；行业部分仅在两期都有行业配置披露时比较。",
+        },
+    }
+    _cache_put(cache_key, result)
+    return result
+
+
+def aggregate_fund_exposure(holdings: list[dict], max_funds: int = 6) -> dict:
+    """Aggregate disclosed fund holdings using the user's confirmed holding amounts.
+
+    This is a look-through view of disclosed top stocks and industries only. It
+    deliberately does not infer undisclosed positions or treat report data as
+    real-time composition.
+    """
+    max_funds = max(1, min(10, int(max_funds or 6)))
+    valid_holdings = []
+    total_portfolio_amount = 0.0
+    for item in holdings:
+        amount = _num(item.get("amount")) or 0.0
+        if amount > 0:
+            total_portfolio_amount += amount
+        code = str(item.get("code") or "").strip()
+        if (
+            item.get("asset_type") == "fund"
+            and re.fullmatch(r"\d{6}", code)
+            and amount > 0
+        ):
+            valid_holdings.append({
+                "code": code,
+                "name": str(item.get("name") or ""),
+                "amount": amount,
+            })
+    valid_holdings.sort(key=lambda item: item["amount"], reverse=True)
+    total_fund_amount = sum(item["amount"] for item in valid_holdings)
+    base = {
+        "source": "用户确认基金持仓 / 天天基金投资组合 / 东方财富基金档案",
+        "policy": "只汇总基金定期报告实际披露的股票和行业，不推断未披露仓位，也不把披露组合视为实时持仓。",
+        "summary": {
+            "total_portfolio_amount": _round(total_portfolio_amount),
+            "total_fund_amount": _round(total_fund_amount),
+            "selected_fund_amount": 0.0,
+            "loaded_fund_amount": 0.0,
+            "fund_amount_coverage": None,
+            "stock_disclosed_amount": 0.0,
+            "stock_disclosed_portfolio_ratio": None,
+            "industry_disclosed_amount": 0.0,
+            "industry_disclosed_portfolio_ratio": None,
+            "fund_count": len(valid_holdings),
+            "selected_fund_count": 0,
+            "loaded_fund_count": 0,
+            "failed_count": 0,
+            "unselected_fund_count": 0,
+        },
+        "funds": [],
+        "stocks": [],
+        "industries": [],
+        "failed": [],
+        "reasons": [],
+        "method": {
+            "weight": "单只披露股票/行业的组合贡献 = 用户该基金确认金额 ÷ 总确认持仓金额 × 基金披露占净值比例。",
+            "coverage": "股票覆盖只代表每只基金已披露的前列股票；行业覆盖只代表已披露行业配置，二者均可能低于基金实际总仓位。",
+            "timeliness": "报告期来自基金定期报告披露，通常滞后于当前净值。",
+        },
+    }
+    if not valid_holdings:
+        return {
+            **base,
+            "status": "unavailable",
+            "reasons": ["没有金额大于零且代码有效的基金持仓，无法计算穿透暴露。"],
+        }
+    if total_portfolio_amount <= 0:
+        return {
+            **base,
+            "status": "unavailable",
+            "reasons": ["总确认持仓金额无效，无法计算基金对组合的贡献比例。"],
+        }
+
+    selected = valid_holdings[:max_funds]
+    selected_amount = sum(item["amount"] for item in selected)
+    cache_key = (
+        "fund_lookthrough_exposure",
+        tuple((item["code"], round(item["amount"], 2)) for item in selected),
+        round(total_portfolio_amount, 2),
+        max_funds,
+    )
+    cached = _cache_get(cache_key)
+    if cached:
+        return cached
+
+    def load_one(item: dict) -> tuple[dict, dict | None]:
+        try:
+            return get_fund_portfolio(item["code"]), None
+        except Exception as exc:
+            return item, {"code": item["code"], "name": item["name"], "error": str(exc)[:180]}
+
+    with ThreadPoolExecutor(max_workers=min(4, len(selected))) as pool:
+        loaded = list(pool.map(load_one, selected))
+
+    stock_acc: dict[str, dict] = {}
+    industry_acc: dict[str, dict] = {}
+    funds = []
+    failed = []
+    loaded_amount = 0.0
+    stock_disclosed_amount = 0.0
+    industry_disclosed_amount = 0.0
+    for item, (portfolio, error) in zip(selected, loaded):
+        if error:
+            failed.append(error)
+            continue
+        if not isinstance(portfolio, dict):
+            failed.append({"code": item["code"], "name": item["name"], "error": "基金披露返回格式异常"})
+            continue
+
+        amount = item["amount"]
+        fund_portfolio_ratio = amount / total_portfolio_amount * 100
+        fund_bucket_ratio = amount / total_fund_amount * 100 if total_fund_amount else None
+        stocks = [row for row in (portfolio.get("stocks") or []) if row.get("code") and _num(row.get("nav_ratio")) is not None]
+        industries = [row for row in (portfolio.get("industries") or []) if row.get("name") and _num(row.get("nav_ratio")) is not None]
+        stock_disclosure_ratio = sum(_num(row.get("nav_ratio")) or 0 for row in stocks)
+        industry_disclosure_ratio = sum(_num(row.get("nav_ratio")) or 0 for row in industries)
+        loaded_amount += amount
+        stock_disclosed_amount += amount * stock_disclosure_ratio / 100
+        industry_disclosed_amount += amount * industry_disclosure_ratio / 100
+        fund_name = portfolio.get("name") or item["name"] or item["code"]
+        funds.append({
+            "code": item["code"],
+            "name": fund_name,
+            "amount": _round(amount),
+            "portfolio_ratio": _round(fund_portfolio_ratio),
+            "fund_bucket_ratio": _round(fund_bucket_ratio),
+            "stock_period": portfolio.get("stock_period") or "",
+            "industry_period": portfolio.get("industry_period") or "",
+            "stock_disclosure_ratio": _round(stock_disclosure_ratio),
+            "industry_disclosure_ratio": _round(industry_disclosure_ratio),
+            "stock_count": len(stocks),
+            "industry_count": len(industries),
+        })
+
+        for row in stocks:
+            disclosure_ratio = _num(row.get("nav_ratio")) or 0
+            contribution = fund_portfolio_ratio * disclosure_ratio / 100
+            current = stock_acc.setdefault(str(row["code"]), {
+                "code": str(row["code"]),
+                "name": str(row.get("name") or ""),
+                "portfolio_ratio": 0.0,
+                "fund_bucket_ratio": 0.0,
+                "funds": [],
+            })
+            current["portfolio_ratio"] += contribution
+            current["fund_bucket_ratio"] += (fund_bucket_ratio or 0) * disclosure_ratio / 100
+            current["funds"].append({
+                "code": item["code"],
+                "name": fund_name,
+                "fund_portfolio_ratio": _round(fund_portfolio_ratio),
+                "disclosure_ratio": _round(disclosure_ratio),
+                "contribution": _round(contribution, 4),
+            })
+
+        for row in industries:
+            disclosure_ratio = _num(row.get("nav_ratio")) or 0
+            contribution = fund_portfolio_ratio * disclosure_ratio / 100
+            current = industry_acc.setdefault(str(row["name"]), {
+                "name": str(row["name"]),
+                "portfolio_ratio": 0.0,
+                "fund_bucket_ratio": 0.0,
+                "funds": [],
+            })
+            current["portfolio_ratio"] += contribution
+            current["fund_bucket_ratio"] += (fund_bucket_ratio or 0) * disclosure_ratio / 100
+            current["funds"].append({
+                "code": item["code"],
+                "name": fund_name,
+                "fund_portfolio_ratio": _round(fund_portfolio_ratio),
+                "disclosure_ratio": _round(disclosure_ratio),
+                "contribution": _round(contribution, 4),
+            })
+
+    stocks = [
+        {
+            **row,
+            "portfolio_ratio": _round(row["portfolio_ratio"], 4),
+            "fund_bucket_ratio": _round(row["fund_bucket_ratio"], 4),
+            "fund_count": len(row["funds"]),
+            "funds": sorted(row["funds"], key=lambda item: item["contribution"] or 0, reverse=True)[:6],
+        }
+        for row in stock_acc.values()
+    ]
+    industries = [
+        {
+            **row,
+            "portfolio_ratio": _round(row["portfolio_ratio"], 4),
+            "fund_bucket_ratio": _round(row["fund_bucket_ratio"], 4),
+            "fund_count": len(row["funds"]),
+            "funds": sorted(row["funds"], key=lambda item: item["contribution"] or 0, reverse=True)[:6],
+        }
+        for row in industry_acc.values()
+    ]
+    stocks.sort(key=lambda row: row["portfolio_ratio"] or 0, reverse=True)
+    industries.sort(key=lambda row: row["portfolio_ratio"] or 0, reverse=True)
+
+    if len(selected) < len(valid_holdings):
+        base["reasons"].append(f"仅加载金额最高的 {len(selected)} 只基金，另有 {len(valid_holdings) - len(selected)} 只基金未纳入穿透。")
+    if failed:
+        base["reasons"].append(f"有 {len(failed)} 只基金的真实持仓披露当前不可用。")
+    if not stocks and not industries:
+        base["reasons"].append("已加载基金未返回可用于股票或行业穿透的定期报告披露。")
+
+    result = {
+        **base,
+        "status": "available" if not base["reasons"] else "partial",
+        "summary": {
+            **base["summary"],
+            "selected_fund_amount": _round(selected_amount),
+            "loaded_fund_amount": _round(loaded_amount),
+            "fund_amount_coverage": _round(loaded_amount / total_fund_amount * 100 if total_fund_amount else None),
+            "stock_disclosed_amount": _round(stock_disclosed_amount),
+            "stock_disclosed_portfolio_ratio": _round(stock_disclosed_amount / total_portfolio_amount * 100 if total_portfolio_amount else None),
+            "industry_disclosed_amount": _round(industry_disclosed_amount),
+            "industry_disclosed_portfolio_ratio": _round(industry_disclosed_amount / total_portfolio_amount * 100 if total_portfolio_amount else None),
+            "selected_fund_count": len(selected),
+            "loaded_fund_count": len(funds),
+            "failed_count": len(failed),
+            "unselected_fund_count": max(0, len(valid_holdings) - len(selected)),
+        },
+        "funds": funds,
+        "stocks": stocks[:20],
+        "industries": industries[:16],
+        "failed": failed,
+    }
+    _cache_put(cache_key, result)
+    return result
+
+
 def _fund_batch_playbook(rows: list[dict], corr: pd.DataFrame, months: int) -> dict:
     def avg(values, digits=2):
         vals = [_num(v) for v in values]

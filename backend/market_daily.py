@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import datetime as dt
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 
 import funds
 import hot_stocks
@@ -23,6 +23,7 @@ import sectors
 
 
 _CACHE_TTL = 300
+_SOURCE_DEADLINE_SECONDS = 12
 _cache: dict[tuple, tuple[float, dict]] = {}
 
 
@@ -278,14 +279,32 @@ def get_market_daily(risk: str = "balanced", fund_limit: int = 4) -> dict:
 
     data = {}
     failed = []
-    with ThreadPoolExecutor(max_workers=7) as pool:
-        futures = [pool.submit(_safe_result, name, fn) for name, fn in tasks.items()]
-        for fut in futures:
-            name, payload, error = fut.result()
+    pool = ThreadPoolExecutor(max_workers=7)
+    futures = {pool.submit(_safe_result, name, fn): name for name, fn in tasks.items()}
+    try:
+        done, pending = wait(futures, timeout=_SOURCE_DEADLINE_SECONDS)
+        for future in done:
+            name = futures[future]
+            try:
+                _, payload, error = future.result()
+            except Exception as error:  # Defensive: _safe_result normally captures provider failures.
+                failed.append({"source": name, "error": str(error)[:220]})
+                continue
             if error:
                 failed.append(error)
             else:
                 data[name] = payload
+        for future in pending:
+            name = futures[future]
+            future.cancel()
+            failed.append({
+                "source": name,
+                "error": f"真实数据源在 {_SOURCE_DEADLINE_SECONDS} 秒内未返回",
+            })
+    finally:
+        # Do not make the response wait for a provider that has already exceeded the
+        # daily-report deadline. Pending calls are never converted into synthetic data.
+        pool.shutdown(wait=False, cancel_futures=True)
 
     sector_data = data.get("sector_analysis") or {}
     industries = ((sector_data.get("industries") or {}).get("items") or [])[:8]

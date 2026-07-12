@@ -706,6 +706,29 @@ def holdings_insights(max_funds: int = 6) -> dict:
     }
 
 
+def fund_lookthrough_exposure(max_funds: int = 6) -> dict:
+    """Return disclosed fund look-through exposure without inferring missing positions."""
+    items = storage.list_holdings()
+    try:
+        import funds as funds_mod
+        return funds_mod.aggregate_fund_exposure(items, max_funds=max_funds)
+    except Exception as exc:
+        return {
+            "source": "用户确认基金持仓 / 天天基金投资组合 / 东方财富基金档案",
+            "status": "unavailable",
+            "policy": "真实基金披露暂不可用时不会推断重仓股票或行业。",
+            "summary": {},
+            "funds": [],
+            "stocks": [],
+            "industries": [],
+            "failed": [],
+            "reasons": [f"基金穿透真实数据获取失败:{str(exc)[:180]}"],
+            "method": {
+                "timeliness": "基金定期报告披露通常滞后于当前净值。",
+            },
+        }
+
+
 def list_holdings() -> dict:
     items = storage.list_holdings()
     return {"items": items, "summary": holdings_summary(items)}
@@ -714,11 +737,20 @@ def list_holdings() -> dict:
 def save_holdings(items: list[dict]) -> dict:
     saved = [storage.upsert_holding(item) for item in items]
     all_items = storage.list_holdings()
-    return {"saved": saved, "items": all_items, "summary": holdings_summary(all_items)}
+    snapshot = storage.create_portfolio_snapshot(all_items, reason="holding_saved")
+    return {
+        "saved": saved,
+        "items": all_items,
+        "summary": holdings_summary(all_items),
+        "snapshot": snapshot,
+    }
 
 
 def delete_holding(holding_id: int) -> bool:
-    return storage.delete_holding(holding_id)
+    deleted = storage.delete_holding(holding_id)
+    if deleted:
+        storage.create_portfolio_snapshot(storage.list_holdings(), reason="holding_deleted")
+    return deleted
 
 
 def recognize_image_with_aliyun(image_bytes: bytes, content_type: str = "image/png") -> str:

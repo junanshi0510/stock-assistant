@@ -7,6 +7,7 @@ import FundDiscoveryView from '../features/funds/FundDiscoveryView'
 import FundFactSheetView from '../features/funds/FundFactSheetView'
 import FundInsightsView from '../features/funds/FundInsightsView'
 import FundPeerEvidenceView from '../features/funds/FundPeerEvidenceView'
+import FundDisclosureChangesView from '../features/funds/FundDisclosureChangesView'
 import FundPortfolioEvidenceView from '../features/funds/FundPortfolioEvidenceView'
 import FundRiskEvidenceView from '../features/funds/FundRiskEvidenceView'
 import FundWorkspaceControls from '../features/funds/FundWorkspaceControls'
@@ -24,12 +25,12 @@ export default function FundTab() {
   const {
     fundView, setFundView, researchLayer, setResearchLayer,
     category, setCategory, sort, setSort, limit, setLimit, months, setMonths, code, setCode,
-    hot, categories, categoryError, fund, portfolio, portfolioError, peers, peerSort, setPeerSort,
+    hot, categories, categoryError, fund, portfolio, portfolioError, disclosureChanges, disclosureChangesError, peers, peerSort, setPeerSort,
     dividends, searchKeyword, setSearchKeyword, searchResults, compareInput, setCompareInput,
     compareData, overlapData, opportunityRisk, setOpportunityRisk, opportunities, alternatives,
-    loadingHot, loadingFund, loadingPortfolio, loadingPeers, loadingDividends, loadingSearch,
+    loadingHot, loadingFund, loadingPortfolio, loadingDisclosureChanges, loadingPeers, loadingDividends, loadingSearch,
     loadingCompare, loadingOverlap, loadingOpportunities, loadingAlternatives, error,
-    loadHot, loadFund, loadPeers, loadAlternatives, loadOpportunities, runSearch, runCompare, runOverlap,
+    loadHot, loadFund, loadPeers, loadDisclosureChanges, loadAlternatives, loadOpportunities, runSearch, runCompare, runOverlap,
   } = useFundWorkspace()
 
   const rows = hot?.items || []
@@ -161,6 +162,14 @@ export default function FundTab() {
             portfolio={portfolio}
             portfolioError={portfolioError}
             loadingPortfolio={loadingPortfolio}
+          />
+
+          <FundDisclosureChangesView
+            code={fund.code}
+            changes={disclosureChanges}
+            error={disclosureChangesError}
+            loading={loadingDisclosureChanges}
+            onLoad={loadDisclosureChanges}
           />
           </>}
 
