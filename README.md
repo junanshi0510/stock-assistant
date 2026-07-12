@@ -8,6 +8,14 @@
 
 ## 最近更新
 
+### 2026-07-12：Agent 重跑结果对比
+
+- 新增 `GET /api/v1/agent/runs/{run_id}/comparison`，可比较重跑任务与其来源 Run 的数据日期、关键指标和研究结论。
+- 对比只读取两个 Run 已保存的结果快照，不重新请求数据源，也不生成模拟数据。
+- 比较前同时校验父子 Run 的 Evidence 载荷 SHA-256、`evidence.created` 审计记录和完整哈希链；任一校验失败即拒绝输出差异。
+- Agent 工作台新增“与来源任务对比”面板，展示旧值、本次值、变化量、结论变化和 Evidence 核验数量，并适配桌面端与手机端。
+- 增加真实差异、结果稳定、Evidence 篡改拒绝和公开 API 契约测试。
+
 ### 2026-07-12：Agent 历史筛选
 
 - Agent 运行历史新增基金代码和任务状态筛选，支持 Enter 或按钮提交。
@@ -59,6 +67,7 @@
 - 工具通过版本化白名单注册，当前仅开放 R0 公共只读工具；每个工具都有实际生效的执行时限。
 - 请求支持幂等键、活动队列限制、运行中取消、可选盘中估值、披露变化和同类替代品研究。
 - 已完成任务可以按原配置创建新的 Run，并保留可审计的父子任务关系。
+- 重跑完成后可以比较父子 Run 已持久化的指标和结论；只有双方 Evidence 与审计链均完整时才输出差异。
 - 每条数值 Claim 绑定 Evidence，Evidence 保存来源、有效时间、质量状态和 SHA-256 摘要。
 - 真实来源失败时 Run 进入 `partial` 或 `failed`，不会生成替代数据。
 
@@ -163,12 +172,13 @@ npm run dev
 backend/
   main.py                  FastAPI 启动与路由装配
   agent/
+    comparison.py          基于持久化结果和 Evidence 门禁的父子 Run 对比
     registry.py            版本化工具白名单
     repository.py          Run、Step、Evidence、Claim 与 Audit 持久化
     workflow.py            确定性基金研究工作流、超时与取消
     worker.py              可恢复的迁移期单进程 Worker
   routers/
-    agent.py               Agent Run、Evidence 和 Audit API
+    agent.py               Agent Run、重跑对比、Evidence 和 Audit API
     market.py              股票、板块、行情和市场日报接口
     funds.py               基金发现、研究、比较和替代品接口
     portfolio.py           持仓、交易、OCR、复盘和提醒接口

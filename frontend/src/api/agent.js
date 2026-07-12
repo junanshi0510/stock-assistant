@@ -20,6 +20,10 @@ export function fetchAgentRun(runId) {
   return getJson(`/api/v1/agent/runs/${encodeURIComponent(runId)}`)
 }
 
+export function fetchAgentRunComparison(runId) {
+  return getJson(`/api/v1/agent/runs/${encodeURIComponent(runId)}/comparison`)
+}
+
 export function rerunAgentRun(runId) {
   return getJson(`/api/v1/agent/runs/${encodeURIComponent(runId)}/rerun`, {
     method: 'POST',

@@ -453,6 +453,104 @@ class AgentRuntimeTests(unittest.TestCase):
             agent_router.rerun_agent_run(source["id"], idempotency_key="running-rerun")
         self.assertEqual(raised.exception.status_code, 409)
 
+    def test_rerun_comparison_reports_persisted_metric_and_conclusion_changes(self):
+        source = self._run(
+            include_estimate=False,
+            include_disclosure_changes=False,
+            include_alternatives=False,
+        )
+
+        def changed_analysis(payload):
+            result = _analysis(payload)
+            result["as_of"] = "2026-07-11"
+            result["metrics"]["return_1y"] = 18.9
+            result["timing"] = {"score": 71, "label": "分批投入"}
+            result["playbook"]["role"]["risk_band"] = "进取高波动"
+            return result
+
+        child, _ = self.repository.create_run(
+            source["intent"],
+            source["input"],
+            tenant_id=source["tenant_id"],
+            user_id=source["user_id"],
+            parent_run_id=source["id"],
+        )
+        claimed = self.repository.claim_next_run("comparison-worker")
+        AgentWorkflowRunner(
+            self.repository,
+            _registry(analysis_handler=changed_analysis),
+        ).execute(claimed)
+
+        with patch.object(agent_router, "repository", self.repository):
+            comparison = agent_router.get_agent_run_comparison(child["id"])
+
+        self.assertEqual(comparison["parent_run_id"], source["id"])
+        self.assertEqual(comparison["period"]["previous_as_of"], "2026-07-10")
+        self.assertEqual(comparison["period"]["current_as_of"], "2026-07-11")
+        one_year = next(item for item in comparison["metrics"] if item["label"] == "近 1 年收益")
+        self.assertEqual(one_year["previous"], 16.4)
+        self.assertEqual(one_year["current"], 18.9)
+        self.assertEqual(one_year["delta"], 2.5)
+        self.assertEqual(one_year["direction"], "up")
+        risk_band = next(item for item in comparison["dimensions"] if item["key"] == "risk_band")
+        self.assertTrue(risk_band["changed"])
+        self.assertFalse(comparison["summary"]["stable"])
+        self.assertTrue(comparison["integrity"]["current"]["verified"])
+        self.assertTrue(comparison["integrity"]["parent"]["verified"])
+
+    def test_rerun_comparison_is_stable_when_saved_results_are_unchanged(self):
+        source = self._run(
+            include_estimate=False,
+            include_disclosure_changes=False,
+            include_alternatives=False,
+        )
+        child, _ = self.repository.create_run(
+            source["intent"],
+            source["input"],
+            parent_run_id=source["id"],
+        )
+        claimed = self.repository.claim_next_run("stable-comparison-worker")
+        AgentWorkflowRunner(self.repository, _registry()).execute(claimed)
+
+        with patch.object(agent_router, "repository", self.repository):
+            comparison = agent_router.get_agent_run_comparison(child["id"])
+
+        self.assertTrue(comparison["summary"]["stable"])
+        self.assertEqual(comparison["summary"]["metric_changed_count"], 0)
+        self.assertEqual(comparison["summary"]["dimension_changed_count"], 0)
+
+    def test_rerun_comparison_rejects_tampered_evidence(self):
+        source = self._run(
+            include_estimate=False,
+            include_disclosure_changes=False,
+            include_alternatives=False,
+        )
+        child, _ = self.repository.create_run(
+            source["intent"],
+            source["input"],
+            parent_run_id=source["id"],
+        )
+        claimed = self.repository.claim_next_run("tamper-comparison-worker")
+        AgentWorkflowRunner(self.repository, _registry()).execute(claimed)
+
+        connection = sqlite3.connect(self.repository.db_path)
+        try:
+            connection.execute(
+                "UPDATE agent_evidence SET payload_json='{}' WHERE run_id=?",
+                (source["id"],),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        integrity = self.repository.verify_run_evidence_integrity(source["id"])
+        self.assertFalse(integrity["verified"])
+        self.assertEqual(integrity["reason"], "payload_hash_mismatch")
+        with patch.object(agent_router, "repository", self.repository), \
+             self.assertRaises(agent_router.HTTPException) as raised:
+            agent_router.get_agent_run_comparison(child["id"])
+        self.assertEqual(raised.exception.status_code, 409)
+
 
 if __name__ == "__main__":
     unittest.main()

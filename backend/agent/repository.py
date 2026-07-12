@@ -966,3 +966,53 @@ class AgentRepository:
             "failing_sequence": None,
             "chain_head": previous_hash,
         }
+
+    def verify_run_evidence_integrity(self, run_id: str) -> dict[str, Any]:
+        audit = self.verify_audit_chain(run_id)
+        events = self.list_audit_events(run_id)
+        evidence_events = [item for item in events if item["event_type"] == "evidence.created"]
+        audit_hashes = {
+            item["details"].get("evidence_id"): item["details"].get("payload_sha256")
+            for item in evidence_events
+        }
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM agent_evidence WHERE run_id=? ORDER BY created_at, id",
+                (run_id,),
+            ).fetchall()
+        evidence_ids = {row["id"] for row in rows}
+        event_ids = [item["details"].get("evidence_id") for item in evidence_events]
+        if (
+            not audit["verified"]
+            or not rows
+            or len(event_ids) != len(set(event_ids))
+            or set(event_ids) != evidence_ids
+        ):
+            return {
+                "verified": False,
+                "evidence_count": len(rows),
+                "failing_evidence_id": None,
+                "audit_verified": audit["verified"],
+                "reason": "audit_evidence_mismatch" if audit["verified"] else "audit_chain_invalid",
+            }
+        for row in rows:
+            evidence = self._evidence_from_row(row, include_payload=True)
+            evidence_id = evidence["id"]
+            if (
+                not evidence["integrity_verified"]
+                or audit_hashes.get(evidence_id) != evidence["payload_sha256"]
+            ):
+                return {
+                    "verified": False,
+                    "evidence_count": len(rows),
+                    "failing_evidence_id": evidence_id,
+                    "audit_verified": audit["verified"],
+                    "reason": "payload_hash_mismatch",
+                }
+        return {
+            "verified": True,
+            "evidence_count": len(rows),
+            "failing_evidence_id": None,
+            "audit_verified": True,
+            "reason": None,
+        }

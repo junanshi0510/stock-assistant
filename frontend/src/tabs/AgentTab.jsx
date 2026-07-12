@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
+  ArrowRight,
+  ArrowRightLeft,
   Bot,
   CheckCircle2,
   CircleAlert,
@@ -19,6 +21,7 @@ import {
   fetchAgentAudit,
   fetchAgentEvidence,
   fetchAgentRun,
+  fetchAgentRunComparison,
   fetchAgentRuns,
   rerunAgentRun,
 } from '../api/agent'
@@ -64,6 +67,22 @@ function metricValue(item) {
   }
   if (item.unit === '分') return `${Number(item.value).toFixed(0)} 分`
   return `${Number(item.value).toLocaleString('zh-CN', { maximumFractionDigits: 4 })}${item.unit || ''}`
+}
+
+function comparisonValue(value, unit = '') {
+  if (value == null || Number.isNaN(Number(value))) return '-'
+  const number = Number(value)
+  if (unit === '%') return `${number.toFixed(2)}%`
+  if (unit === '分') return `${number.toFixed(0)} 分`
+  return `${number.toLocaleString('zh-CN', { maximumFractionDigits: 4 })}${unit}`
+}
+
+function comparisonDelta(item) {
+  if (item.direction === 'added') return '本次新增'
+  if (item.direction === 'removed') return '本次缺失'
+  if (item.delta == null || Math.abs(Number(item.delta)) < 1e-9) return '无变化'
+  const prefix = Number(item.delta) > 0 ? '+' : ''
+  return `${prefix}${comparisonValue(item.delta, item.unit)}`
 }
 
 function timeText(value) {
@@ -118,10 +137,15 @@ export default function AgentTab() {
   const [loadingEvidence, setLoadingEvidence] = useState(false)
   const [audit, setAudit] = useState(null)
   const [loadingAudit, setLoadingAudit] = useState(false)
+  const [comparison, setComparison] = useState(null)
+  const [loadingComparison, setLoadingComparison] = useState(false)
 
   async function loadRun(runId, { quiet = false } = {}) {
     if (!runId) return
-    if (!quiet) setLoading(true)
+    if (!quiet) {
+      setLoading(true)
+      setComparison(null)
+    }
     try {
       const data = await fetchAgentRun(runId)
       setRun(data)
@@ -212,6 +236,7 @@ export default function AgentTab() {
     setRun(null)
     setSelectedEvidence(null)
     setAudit(null)
+    setComparison(null)
     try {
       const data = await createFundResearchRun({
         code: clean,
@@ -247,6 +272,7 @@ export default function AgentTab() {
     setError('')
     setSelectedEvidence(null)
     setAudit(null)
+    setComparison(null)
     try {
       const data = await rerunAgentRun(run.id)
       setRun(data.run)
@@ -280,6 +306,19 @@ export default function AgentTab() {
       setError(requestError.message || '审计链获取失败')
     } finally {
       setLoadingAudit(false)
+    }
+  }
+
+  async function openComparison() {
+    if (!run?.id || !run.parent_run_id || !TERMINAL.has(run.status)) return
+    setLoadingComparison(true)
+    setError('')
+    try {
+      setComparison(await fetchAgentRunComparison(run.id))
+    } catch (requestError) {
+      setError(requestError.message || '重跑结果对比失败')
+    } finally {
+      setLoadingComparison(false)
     }
   }
 
@@ -423,6 +462,12 @@ export default function AgentTab() {
               {run.parent_run_id && <small>来源 Run: {run.parent_run_id}</small>}
             </div>
             <div className="agent-run-actions">
+              {run.parent_run_id && result && TERMINAL.has(run.status) && (
+                <button className="ghost" onClick={openComparison} disabled={loadingComparison} title="对比本次与来源任务的已保存结果">
+                  <ArrowRightLeft size={15} aria-hidden="true" />
+                  <span>{loadingComparison ? '对比中' : '与来源任务对比'}</span>
+                </button>
+              )}
               {TERMINAL.has(run.status) && (
                 <button className="ghost" onClick={rerunCurrent} disabled={loading} title="按原配置创建新的研究任务">
                   <Play size={15} aria-hidden="true" />
@@ -455,6 +500,74 @@ export default function AgentTab() {
           </div>
 
           {run.status === 'failed' && <div className="error">{run.error_message || '必需真实数据未能形成 Evidence，本次研究已停止。'}</div>}
+        </section>
+      )}
+
+      {comparison && (
+        <section className="agent-comparison-panel" aria-label="Agent 重跑结果对比">
+          <div className="agent-section-head">
+            <div>
+              <span className="eyebrow">Run Comparison</span>
+              <h3>与来源任务的变化</h3>
+              <small>
+                {comparison.summary?.stable
+                  ? '数据日期、关键指标与研究结论均未变化'
+                  : `指标变化 ${comparison.summary?.metric_changed_count || 0} 项 · 结论变化 ${comparison.summary?.dimension_changed_count || 0} 项`}
+              </small>
+            </div>
+            <button className="ghost" onClick={() => setComparison(null)}>关闭</button>
+          </div>
+
+          <div className="agent-comparison-overview">
+            <div><span>来源数据日期</span><b>{comparison.period?.previous_as_of || '-'}</b></div>
+            <ArrowRight size={17} aria-hidden="true" />
+            <div><span>本次数据日期</span><b>{comparison.period?.current_as_of || '-'}</b></div>
+            <div className={comparison.summary?.stable ? 'stable' : 'changed'}>
+              <span>对比状态</span>
+              <b>{comparison.summary?.stable ? '结果稳定' : '发现变化'}</b>
+            </div>
+          </div>
+
+          <div className="agent-comparison-block">
+            <div className="agent-comparison-title">
+              <h4>关键指标</h4>
+              <span>数值方向只表示变化，不代表利好或利空</span>
+            </div>
+            <div className="agent-comparison-table">
+              <div className="agent-comparison-row heading">
+                <span>指标</span><span>来源 Run</span><span>本次 Run</span><span>变化量</span>
+              </div>
+              {(comparison.metrics || []).map((item) => (
+                <div className={`agent-comparison-row ${item.changed ? 'changed' : ''}`} key={`${item.label}-${item.unit}`}>
+                  <b>{item.label}</b>
+                  <span>{comparisonValue(item.previous, item.unit)}</span>
+                  <span>{comparisonValue(item.current, item.unit)}</span>
+                  <em>{comparisonDelta(item)}</em>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="agent-comparison-block">
+            <div className="agent-comparison-title"><h4>研究结论</h4><span>基于两个 Run 各自保存的结论快照</span></div>
+            <div className="agent-comparison-dimensions">
+              {(comparison.dimensions || []).map((item) => (
+                <div className={item.changed ? 'changed' : ''} key={item.key}>
+                  <span>{item.label}</span>
+                  <p><b>{item.previous ?? '-'}</b><ArrowRight size={13} aria-hidden="true" /><b>{item.current ?? '-'}</b></p>
+                  <small>{item.changed ? '本次结论已变化' : '保持一致'}</small>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="agent-comparison-integrity">
+            <ShieldCheck size={16} aria-hidden="true" />
+            <span>
+              父子 Evidence 与审计链校验通过 · 共核验 {(comparison.integrity?.parent?.evidence_count || 0) + (comparison.integrity?.current?.evidence_count || 0)} 条 Evidence
+            </span>
+          </div>
+          <p className="agent-comparison-policy">{comparison.policy}</p>
         </section>
       )}
 

@@ -13,6 +13,7 @@ from typing import Literal
 from fastapi import APIRouter, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
 
+from agent.comparison import compare_run_results
 from agent.repository import RUN_TERMINAL_STATUSES
 from agent.worker import registry, repository, start_worker
 
@@ -158,6 +159,42 @@ def list_agent_runs(
 @router.get("/runs/{run_id}")
 def get_agent_run(run_id: str):
     return _get_run_or_404(run_id)
+
+
+@router.get("/runs/{run_id}/comparison")
+def get_agent_run_comparison(run_id: str):
+    current = _get_run_or_404(run_id)
+    parent_run_id = current.get("parent_run_id")
+    if not parent_run_id:
+        raise HTTPException(status_code=409, detail="只有重跑任务才能与来源 Run 对比")
+    if current["status"] not in RUN_TERMINAL_STATUSES:
+        raise HTTPException(status_code=409, detail="当前重跑任务尚未完成，暂时不能比较")
+
+    parent = repository.get_run(parent_run_id)
+    if (
+        parent is None
+        or parent.get("tenant_id") != current.get("tenant_id")
+        or parent.get("user_id") != current.get("user_id")
+    ):
+        raise HTTPException(status_code=404, detail="来源 Agent Run 不存在")
+    if parent["status"] not in RUN_TERMINAL_STATUSES:
+        raise HTTPException(status_code=409, detail="来源 Agent Run 尚未完成，暂时不能比较")
+    if not current.get("result") or not parent.get("result"):
+        raise HTTPException(status_code=409, detail="父子任务均需形成研究结果后才能比较")
+
+    current_integrity = repository.verify_run_evidence_integrity(current["id"])
+    parent_integrity = repository.verify_run_evidence_integrity(parent["id"])
+    if not current_integrity["verified"] or not parent_integrity["verified"]:
+        raise HTTPException(status_code=409, detail="父子 Run 的 Evidence 完整性校验未通过，已拒绝比较")
+    try:
+        comparison = compare_run_results(current, parent)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    comparison["integrity"] = {
+        "current": current_integrity,
+        "parent": parent_integrity,
+    }
+    return comparison
 
 
 @router.post("/runs/{run_id}/rerun", status_code=status.HTTP_202_ACCEPTED)
