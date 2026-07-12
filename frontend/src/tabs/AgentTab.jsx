@@ -5,11 +5,13 @@ import {
   CircleAlert,
   Database,
   FileSearch,
+  Filter,
   History,
   Play,
   RefreshCw,
   ShieldCheck,
   Square,
+  X,
 } from 'lucide-react'
 import {
   cancelAgentRun,
@@ -22,6 +24,7 @@ import {
 } from '../api/agent'
 
 const TERMINAL = new Set(['completed', 'partial', 'failed', 'cancelled', 'abstained'])
+const EMPTY_HISTORY_FILTERS = { code: '', status: '' }
 
 const STATUS = {
   queued: ['等待执行', 'queued'],
@@ -108,6 +111,8 @@ export default function AgentTab() {
   const [loading, setLoading] = useState(false)
   const [history, setHistory] = useState({ items: [], next_cursor: null, has_more: false })
   const [loadingHistory, setLoadingHistory] = useState(false)
+  const [historyFilterDraft, setHistoryFilterDraft] = useState(EMPTY_HISTORY_FILTERS)
+  const [historyFilters, setHistoryFilters] = useState(EMPTY_HISTORY_FILTERS)
   const [error, setError] = useState('')
   const [selectedEvidence, setSelectedEvidence] = useState(null)
   const [loadingEvidence, setLoadingEvidence] = useState(false)
@@ -129,10 +134,15 @@ export default function AgentTab() {
     }
   }
 
-  async function loadHistory({ append = false, cursor = '' } = {}) {
+  async function loadHistory({ append = false, cursor = '', filters = historyFilters } = {}) {
     setLoadingHistory(true)
     try {
-      const data = await fetchAgentRuns({ limit: 6, cursor })
+      const data = await fetchAgentRuns({
+        limit: 6,
+        cursor,
+        code: filters.code,
+        status: filters.status,
+      })
       setHistory((current) => ({
         ...data,
         items: append ? [...current.items, ...(data.items || [])] : (data.items || []),
@@ -142,6 +152,28 @@ export default function AgentTab() {
     } finally {
       setLoadingHistory(false)
     }
+  }
+
+  function applyHistoryFilters(event) {
+    event.preventDefault()
+    const cleanCode = historyFilterDraft.code.trim()
+    if (cleanCode && !/^\d{6}$/.test(cleanCode)) {
+      setError('历史筛选的基金代码需要是 6 位数字')
+      return
+    }
+    const next = { code: cleanCode, status: historyFilterDraft.status }
+    setHistoryFilterDraft(next)
+    setHistoryFilters(next)
+    setError('')
+    loadHistory({ filters: next })
+  }
+
+  function clearHistoryFilters() {
+    const next = { ...EMPTY_HISTORY_FILTERS }
+    setHistoryFilterDraft(next)
+    setHistoryFilters(next)
+    setError('')
+    loadHistory({ filters: next })
   }
 
   useEffect(() => {
@@ -253,6 +285,12 @@ export default function AgentTab() {
 
   const result = run?.result
   const [runStatusLabel, runStatusTone] = statusMeta(run?.status)
+  const hasHistoryFilters = Boolean(
+    historyFilters.code
+    || historyFilters.status
+    || historyFilterDraft.code
+    || historyFilterDraft.status,
+  )
 
   return (
     <div className="agent-workspace">
@@ -300,6 +338,42 @@ export default function AgentTab() {
             <span>{loadingHistory ? '刷新中' : '刷新'}</span>
           </button>
         </div>
+        <form className="agent-history-filters" onSubmit={applyHistoryFilters}>
+          <label>
+            <span>基金代码</span>
+            <input
+              value={historyFilterDraft.code}
+              inputMode="numeric"
+              maxLength={6}
+              placeholder="6 位代码"
+              onChange={(event) => setHistoryFilterDraft((current) => ({ ...current, code: event.target.value }))}
+            />
+          </label>
+          <label>
+            <span>任务状态</span>
+            <select
+              value={historyFilterDraft.status}
+              onChange={(event) => setHistoryFilterDraft((current) => ({ ...current, status: event.target.value }))}
+            >
+              <option value="">全部状态</option>
+              <option value="queued">等待执行</option>
+              <option value="running">正在研究</option>
+              <option value="completed">证据完整</option>
+              <option value="partial">部分完成</option>
+              <option value="failed">执行失败</option>
+              <option value="cancelled">已取消</option>
+              <option value="abstained">数据不足</option>
+            </select>
+          </label>
+          <div className="agent-history-filter-actions">
+            <button type="submit" disabled={loadingHistory}>
+              <Filter size={14} aria-hidden="true" />筛选
+            </button>
+            <button type="button" className="ghost" onClick={clearHistoryFilters} disabled={loadingHistory || !hasHistoryFilters}>
+              <X size={14} aria-hidden="true" />清除
+            </button>
+          </div>
+        </form>
         <div className="agent-history-list">
           {history.items.map((item) => {
             const [label, tone] = statusMeta(item.status)
@@ -320,7 +394,10 @@ export default function AgentTab() {
             )
           })}
           {!loadingHistory && history.items.length === 0 && (
-            <div className="agent-history-empty"><History size={16} aria-hidden="true" />还没有研究任务</div>
+            <div className="agent-history-empty">
+              <History size={16} aria-hidden="true" />
+              {historyFilters.code || historyFilters.status ? '没有符合筛选条件的任务' : '还没有研究任务'}
+            </div>
           )}
         </div>
         {history.has_more && (
