@@ -370,7 +370,12 @@ class AgentRepository:
                 connection,
                 run_id,
                 "run.created",
-                {"intent": intent, "input_hash": input_hash, "status": "queued"},
+                {
+                    "intent": intent,
+                    "input_hash": input_hash,
+                    "status": "queued",
+                    "parent_run_id": parent_run_id,
+                },
                 actor_type="user",
                 actor_id=user_id,
             )

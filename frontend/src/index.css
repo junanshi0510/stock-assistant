@@ -3606,6 +3606,8 @@ tbody tr:hover { background: #f0f8f6; }
 .agent-section-head h3 { margin: 5px 0 3px; font-size: 17px; letter-spacing: 0; }
 .agent-run-head small,
 .agent-section-head > span { color: var(--faint); font-size: 11px; overflow-wrap: anywhere; }
+.agent-run-head small { display: block; }
+.agent-run-head small + small { margin-top: 3px; }
 
 .agent-run-actions { display: flex; align-items: center; gap: 8px; }
 .agent-run-actions button,

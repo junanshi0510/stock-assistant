@@ -18,6 +18,7 @@ import {
   fetchAgentEvidence,
   fetchAgentRun,
   fetchAgentRuns,
+  rerunAgentRun,
 } from '../api/agent'
 
 const TERMINAL = new Set(['completed', 'partial', 'failed', 'cancelled', 'abstained'])
@@ -208,6 +209,24 @@ export default function AgentTab() {
     }
   }
 
+  async function rerunCurrent() {
+    if (!run?.id || !TERMINAL.has(run.status)) return
+    setLoading(true)
+    setError('')
+    setSelectedEvidence(null)
+    setAudit(null)
+    try {
+      const data = await rerunAgentRun(run.id)
+      setRun(data.run)
+      localStorage.setItem('investment-agent-run-id', data.run.id)
+      loadHistory()
+    } catch (requestError) {
+      setError(requestError.message || 'Agent 任务重新运行失败')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   async function openEvidence(evidenceId) {
     if (!run?.id || !evidenceId) return
     setLoadingEvidence(true)
@@ -294,7 +313,7 @@ export default function AgentTab() {
               >
                 <span className="agent-history-main">
                   <b>{item.summary?.code || item.input?.code || '-'} {item.summary?.name || '基金研究'}</b>
-                  <small>{timeText(item.completed_at || item.created_at)}</small>
+                  <small>{item.parent_run_id ? '重跑 · ' : ''}{timeText(item.completed_at || item.created_at)}</small>
                 </span>
                 <span className={`agent-status ${tone}`}>{label}</span>
               </button>
@@ -324,8 +343,15 @@ export default function AgentTab() {
               <span className={`agent-status ${runStatusTone}`}>{runStatusLabel}</span>
               <h3>{result?.fund ? `${result.fund.code} ${result.fund.name}` : `${run.input?.code || '-'} 基金研究`}</h3>
               <small>Run ID: {run.id}</small>
+              {run.parent_run_id && <small>来源 Run: {run.parent_run_id}</small>}
             </div>
             <div className="agent-run-actions">
+              {TERMINAL.has(run.status) && (
+                <button className="ghost" onClick={rerunCurrent} disabled={loading} title="按原配置创建新的研究任务">
+                  <Play size={15} aria-hidden="true" />
+                  <span>按原配置重跑</span>
+                </button>
+              )}
               <button className="ghost" onClick={() => loadRun(run.id)} disabled={loading} title="刷新任务状态">
                 <RefreshCw size={16} className={loading ? 'spin-icon' : ''} aria-hidden="true" />
                 <span>刷新</span>

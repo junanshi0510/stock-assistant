@@ -9,6 +9,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -18,6 +19,7 @@ if str(BACKEND_ROOT) not in sys.path:
 from agent.registry import ToolDefinition, ToolRegistry  # noqa: E402
 from agent.repository import AgentRepository  # noqa: E402
 from agent.workflow import AgentWorkflowRunner  # noqa: E402
+from routers import agent as agent_router  # noqa: E402
 
 
 def _analysis(_payload):
@@ -414,6 +416,42 @@ class AgentRuntimeTests(unittest.TestCase):
             code="000002",
         )
         self.assertEqual([item["input"]["code"] for item in code_page], ["000002"])
+
+    def test_terminal_run_rerun_is_idempotent_and_keeps_parent_audit(self):
+        source = self._run(
+            include_estimate=False,
+            include_disclosure_changes=False,
+            include_alternatives=False,
+        )
+        with patch.object(agent_router, "repository", self.repository), \
+             patch.object(agent_router, "start_worker"):
+            first = agent_router.rerun_agent_run(
+                source["id"],
+                idempotency_key="rerun-same-request",
+            )
+            retry = agent_router.rerun_agent_run(
+                source["id"],
+                idempotency_key="rerun-same-request",
+            )
+
+        self.assertTrue(first["created"])
+        self.assertFalse(retry["created"])
+        self.assertEqual(first["run"]["id"], retry["run"]["id"])
+        self.assertNotEqual(first["run"]["id"], source["id"])
+        self.assertEqual(first["run"]["parent_run_id"], source["id"])
+        self.assertEqual(first["run"]["input"], source["input"])
+        created_event = self.repository.list_audit_events(first["run"]["id"])[0]
+        self.assertEqual(created_event["details"]["parent_run_id"], source["id"])
+
+    def test_running_run_cannot_be_rerun(self):
+        source, _ = self.repository.create_run(
+            "fund_deep_research",
+            {"code": "001480", "months": 36},
+        )
+        with patch.object(agent_router, "repository", self.repository), \
+             self.assertRaises(agent_router.HTTPException) as raised:
+            agent_router.rerun_agent_run(source["id"], idempotency_key="running-rerun")
+        self.assertEqual(raised.exception.status_code, 409)
 
 
 if __name__ == "__main__":

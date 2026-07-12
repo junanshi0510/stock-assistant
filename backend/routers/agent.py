@@ -13,6 +13,7 @@ from typing import Literal
 from fastapi import APIRouter, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
 
+from agent.repository import RUN_TERMINAL_STATUSES
 from agent.worker import registry, repository, start_worker
 
 
@@ -85,6 +86,7 @@ def _history_item(run: dict) -> dict:
         },
         "error_code": run.get("error_code"),
         "error_message": run.get("error_message"),
+        "parent_run_id": run.get("parent_run_id"),
         "created_at": run.get("created_at"),
         "started_at": run.get("started_at"),
         "completed_at": run.get("completed_at"),
@@ -156,6 +158,32 @@ def list_agent_runs(
 @router.get("/runs/{run_id}")
 def get_agent_run(run_id: str):
     return _get_run_or_404(run_id)
+
+
+@router.post("/runs/{run_id}/rerun", status_code=status.HTTP_202_ACCEPTED)
+def rerun_agent_run(
+    run_id: str,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+):
+    source = _get_run_or_404(run_id)
+    if source["status"] not in RUN_TERMINAL_STATUSES:
+        raise HTTPException(status_code=409, detail="运行中的 Agent Run 不能重复启动")
+    if idempotency_key and len(idempotency_key) > 128:
+        raise HTTPException(status_code=400, detail="Idempotency-Key 不能超过 128 个字符")
+    if idempotency_key:
+        existing = repository.get_run_by_idempotency_key(source["user_id"], idempotency_key)
+        if existing is not None:
+            return {"created": False, "run": existing}
+    run, created = repository.create_run(
+        source["intent"],
+        source.get("input") or {},
+        tenant_id=source["tenant_id"],
+        user_id=source["user_id"],
+        idempotency_key=idempotency_key,
+        parent_run_id=source["id"],
+    )
+    start_worker()
+    return {"created": created, "run": repository.get_run(run["id"])}
 
 
 @router.post("/runs/{run_id}/cancel")

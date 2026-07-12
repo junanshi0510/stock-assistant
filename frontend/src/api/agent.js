@@ -1,7 +1,11 @@
 import { getJson } from './client'
 
+function newIdempotencyKey() {
+  return globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`
+}
+
 export function createFundResearchRun(payload) {
-  const idempotencyKey = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`
+  const idempotencyKey = newIdempotencyKey()
   return getJson('/api/v1/agent/runs', {
     method: 'POST',
     headers: {
@@ -14,6 +18,13 @@ export function createFundResearchRun(payload) {
 
 export function fetchAgentRun(runId) {
   return getJson(`/api/v1/agent/runs/${encodeURIComponent(runId)}`)
+}
+
+export function rerunAgentRun(runId) {
+  return getJson(`/api/v1/agent/runs/${encodeURIComponent(runId)}/rerun`, {
+    method: 'POST',
+    headers: { 'Idempotency-Key': newIdempotencyKey() },
+  })
 }
 
 export function fetchAgentRuns({ limit = 8, cursor = '', status = '', code = '' } = {}) {
