@@ -1,0 +1,500 @@
+# -*- coding: utf-8 -*-
+"""Deterministic workflows built from versioned, evidence-producing tools."""
+
+from __future__ import annotations
+
+import datetime as dt
+import time
+from concurrent.futures import ThreadPoolExecutor, wait
+from dataclasses import dataclass
+from typing import Any
+
+from .registry import ToolDefinition, ToolRegistry
+from .repository import AgentRepository, STEP_REUSABLE_STATUSES
+
+
+SUPPORTED_INTENTS = {"fund_deep_research"}
+
+
+def _now() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="milliseconds")
+
+
+def _number(value: Any) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _fmt_number(value: Any, digits: int = 2) -> str:
+    number = _number(value)
+    return "-" if number is None else f"{number:.{digits}f}"
+
+
+@dataclass(frozen=True)
+class WorkflowStep:
+    key: str
+    tool_name: str
+    tool_version: str
+    required: bool
+    input_payload: dict[str, Any]
+
+
+class RequiredToolError(RuntimeError):
+    pass
+
+
+class ToolTimeoutError(TimeoutError):
+    pass
+
+
+class RunCancelledError(RuntimeError):
+    pass
+
+
+class AgentWorkflowRunner:
+    def __init__(self, repository: AgentRepository, registry: ToolRegistry) -> None:
+        self.repository = repository
+        self.registry = registry
+
+    def execute(self, run: dict[str, Any]) -> dict[str, Any]:
+        run_id = str(run["id"])
+        try:
+            if run.get("intent") not in SUPPORTED_INTENTS:
+                return self.repository.finish_run(
+                    run_id,
+                    status="failed",
+                    result=None,
+                    error_code="UNSUPPORTED_INTENT",
+                    error_message=f"暂不支持的 Agent 意图:{run.get('intent')}",
+                )
+            return self._execute_fund_research(run)
+        except RunCancelledError:
+            return self.repository.finish_run(run_id, status="cancelled", result=None)
+        except RequiredToolError as error:
+            return self.repository.finish_run(
+                run_id,
+                status="failed",
+                result=None,
+                error_code="REQUIRED_TOOL_FAILED",
+                error_message=str(error),
+            )
+        except Exception as error:
+            return self.repository.finish_run(
+                run_id,
+                status="failed",
+                result=None,
+                error_code="WORKFLOW_FAILED",
+                error_message=str(error),
+            )
+
+    def _invoke_tool(
+        self,
+        run_id: str,
+        definition: ToolDefinition,
+        input_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix=f"agent-{definition.name.replace('.', '-')}",
+        )
+        future = executor.submit(definition.handler, dict(input_payload))
+        deadline = time.monotonic() + max(0.01, float(definition.timeout_seconds))
+        try:
+            while True:
+                if self.repository.is_cancel_requested(run_id):
+                    future.cancel()
+                    raise RunCancelledError("Agent Run 已请求取消")
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    future.cancel()
+                    raise ToolTimeoutError(
+                        f"工具超过 {definition.timeout_seconds} 秒执行时限: "
+                        f"{definition.name}@{definition.version}"
+                    )
+                done, _ = wait({future}, timeout=min(0.25, remaining))
+                if done:
+                    return future.result()
+        finally:
+            # Persistence happens only after this method returns, so a provider
+            # request that is still unwinding cannot write late evidence.
+            executor.shutdown(wait=False, cancel_futures=True)
+
+    def _fund_steps(self, payload: dict[str, Any]) -> list[WorkflowStep]:
+        code = str(payload["code"])
+        months = int(payload.get("months") or 36)
+        steps = [WorkflowStep(
+            key="fund_analysis",
+            tool_name="fund.analysis.get",
+            tool_version="1.0.0",
+            required=True,
+            input_payload={"code": code, "months": months},
+        )]
+        if payload.get("include_estimate", False):
+            steps.append(WorkflowStep(
+                key="fund_estimate",
+                tool_name="fund.estimate.get",
+                tool_version="1.0.0",
+                required=False,
+                input_payload={"code": code},
+            ))
+        if payload.get("include_disclosure_changes", True):
+            steps.append(WorkflowStep(
+                key="fund_disclosure_changes",
+                tool_name="fund.disclosure_changes.get",
+                tool_version="1.0.0",
+                required=False,
+                input_payload={"code": code},
+            ))
+        if payload.get("include_alternatives", True):
+            steps.append(WorkflowStep(
+                key="fund_alternatives",
+                tool_name="fund.alternatives.get",
+                tool_version="1.0.0",
+                required=False,
+                input_payload={
+                    "code": code,
+                    "months": months,
+                    "sort": "1y",
+                    "limit": int(payload.get("alternative_limit") or 5),
+                },
+            ))
+        return steps
+
+    @staticmethod
+    def _quality_status(payload: dict[str, Any]) -> str:
+        declared = str(payload.get("status") or "").lower()
+        if declared == "unavailable":
+            return "unavailable"
+        if declared == "partial" or payload.get("failed"):
+            return "partial"
+        return "complete"
+
+    @staticmethod
+    def _as_of(payload: dict[str, Any], step_key: str) -> str | None:
+        if payload.get("as_of"):
+            return str(payload["as_of"])
+        if step_key == "fund_estimate":
+            estimate = payload.get("estimate") or {}
+            confirmed = payload.get("confirmed") or {}
+            return str(estimate.get("time") or confirmed.get("date") or "") or None
+        if step_key == "fund_disclosure_changes":
+            latest = payload.get("latest") or {}
+            return str(
+                latest.get("stock_period")
+                or latest.get("industry_period")
+                or latest.get("year")
+                or ""
+            ) or None
+        return None
+
+    def _execute_tool_step(
+        self,
+        run_id: str,
+        sequence_no: int,
+        step: WorkflowStep,
+        code: str,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
+        existing = self.repository.get_step(run_id, step.key)
+        if existing and existing.get("status") in STEP_REUSABLE_STATUSES and existing.get("evidence_id"):
+            evidence = self.repository.get_evidence(run_id, existing["evidence_id"], include_payload=True)
+            if evidence:
+                return evidence.get("payload") or {}, evidence, None
+
+        definition: ToolDefinition = self.registry.get(step.tool_name, step.tool_version)
+        if definition.risk_level != "R0":
+            raise RequiredToolError(
+                f"公开基金工作流只允许 R0 工具:{definition.name}@{definition.version}"
+            )
+        persisted_step = self.repository.start_step(
+            run_id,
+            step_key=step.key,
+            sequence_no=sequence_no,
+            tool_name=definition.name,
+            tool_version=definition.version,
+            required=step.required,
+            input_payload=step.input_payload,
+        )
+        try:
+            output = self._invoke_tool(run_id, definition, step.input_payload)
+            if not isinstance(output, dict):
+                raise TypeError("工具必须返回结构化对象")
+            quality = self._quality_status(output)
+            step_status = "succeeded" if quality == "complete" else "partial"
+            evidence = self.repository.complete_step_with_evidence(
+                run_id,
+                persisted_step["id"],
+                status=step_status,
+                payload=output,
+                evidence_type="calculation" if step.key == "fund_analysis" else "provider_normalized",
+                subject_type="fund",
+                subject_id=code,
+                provider=str(output.get("source") or definition.name),
+                source_url=str(output.get("source_url") or "") or None,
+                as_of=self._as_of(output, step.key),
+                quality_status=quality,
+            )
+            unavailable = None
+            if quality != "complete":
+                unavailable = {
+                    "step": step.key,
+                    "tool": definition.name,
+                    "status": quality,
+                    "reason": str(
+                        output.get("reason")
+                        or (output.get("reasons") or ["该真实数据仅部分可用"])[0]
+                    ),
+                    "evidence_id": evidence["id"],
+                }
+            return output, evidence, unavailable
+        except RunCancelledError as error:
+            self.repository.cancel_step(run_id, persisted_step["id"], reason=str(error))
+            raise
+        except Exception as error:
+            if isinstance(error, ToolTimeoutError):
+                error_code = "TOOL_TIMEOUT"
+            elif isinstance(error, ValueError):
+                error_code = "TOOL_INVALID_INPUT"
+            else:
+                error_code = "TOOL_EXECUTION_FAILED"
+            self.repository.fail_step(
+                run_id,
+                persisted_step["id"],
+                error_code=error_code,
+                error_message=str(error),
+            )
+            failure = {
+                "step": step.key,
+                "tool": definition.name,
+                "status": "failed",
+                "reason": str(error)[:300],
+                "evidence_id": None,
+            }
+            if step.required:
+                raise RequiredToolError(f"必需真实数据工具失败:{definition.name}: {error}") from error
+            return None, None, failure
+
+    def _add_metric_claim(
+        self,
+        run_id: str,
+        *,
+        claim_key: str,
+        label: str,
+        value: Any,
+        unit: str,
+        evidence_id: str,
+        digits: int = 2,
+    ) -> dict[str, Any] | None:
+        number = _number(value)
+        if number is None:
+            return None
+        suffix = unit if unit != "%" else "%"
+        claim = self.repository.add_claim(
+            run_id,
+            claim_key=claim_key,
+            claim_type="fact_numeric",
+            claim_text=f"{label}为 {_fmt_number(number, digits)}{suffix}",
+            value={"label": label, "value": number, "unit": unit},
+            evidence_id=evidence_id,
+        )
+        return {
+            "claim_id": claim["id"],
+            "label": label,
+            "value": number,
+            "unit": unit,
+            "evidence_id": evidence_id,
+        }
+
+    def _build_fund_result(
+        self,
+        run_id: str,
+        input_payload: dict[str, Any],
+        outputs: dict[str, dict[str, Any]],
+        evidence: dict[str, dict[str, Any]],
+        unavailable: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        analysis = outputs["fund_analysis"]
+        analysis_evidence = evidence["fund_analysis"]
+        code = str(analysis.get("code") or input_payload["code"])
+        name = str(analysis.get("name") or code)
+        latest = analysis.get("latest") or {}
+        metrics = analysis.get("metrics") or {}
+        timing = analysis.get("timing") or {}
+        playbook = analysis.get("playbook") or {}
+        role = playbook.get("role") or {}
+
+        metric_specs = [
+            ("latest_nav", "最新确认单位净值", latest.get("unit_nav"), "", 4),
+            ("return_3m", "近 3 月收益", metrics.get("return_3m"), "%", 2),
+            ("return_1y", "近 1 年收益", metrics.get("return_1y"), "%", 2),
+            ("annual_volatility", "年化波动", metrics.get("annual_volatility"), "%", 2),
+            ("max_drawdown", "样本最大回撤", metrics.get("max_drawdown"), "%", 2),
+            ("current_drawdown", "当前回撤", metrics.get("current_drawdown"), "%", 2),
+            ("timing_score", "投入节奏评分", timing.get("score"), "分", 0),
+        ]
+        facts = []
+        for claim_key, label, value, unit, digits in metric_specs:
+            item = self._add_metric_claim(
+                run_id,
+                claim_key=claim_key,
+                label=label,
+                value=value,
+                unit=unit,
+                evidence_id=analysis_evidence["id"],
+                digits=digits,
+            )
+            if item:
+                facts.append(item)
+
+        estimate_payload = outputs.get("fund_estimate") or {}
+        estimate_result = None
+        if estimate_payload:
+            estimate_data = estimate_payload.get("estimate") or {}
+            confirmed_data = estimate_payload.get("confirmed") or {}
+            estimate_result = {
+                "status": estimate_payload.get("status") or "unavailable",
+                "confirmed_date": confirmed_data.get("date"),
+                "confirmed_nav": confirmed_data.get("unit_nav"),
+                "estimate_time": estimate_data.get("time"),
+                "estimate_nav": estimate_data.get("unit_nav"),
+                "estimate_change_pct": estimate_data.get("change_pct"),
+                "policy": estimate_payload.get("policy"),
+                "evidence_id": (evidence.get("fund_estimate") or {}).get("id"),
+            }
+            if estimate_payload.get("status") == "available" and estimate_result["evidence_id"]:
+                estimate_claim = self._add_metric_claim(
+                    run_id,
+                    claim_key="intraday_estimate_change",
+                    label="第三方盘中估算涨跌",
+                    value=estimate_data.get("change_pct"),
+                    unit="%",
+                    evidence_id=estimate_result["evidence_id"],
+                )
+                if estimate_claim:
+                    facts.append(estimate_claim)
+
+        disclosure_payload = outputs.get("fund_disclosure_changes") or {}
+        disclosure_result = None
+        if disclosure_payload:
+            summary = disclosure_payload.get("summary") or {}
+            disclosure_result = {
+                "status": disclosure_payload.get("status") or "unavailable",
+                "latest": disclosure_payload.get("latest"),
+                "previous": disclosure_payload.get("previous"),
+                "top10_stock_ratio_change": summary.get("top10_stock_ratio_change"),
+                "added_stock_count": summary.get("added_stock_count"),
+                "removed_stock_count": summary.get("removed_stock_count"),
+                "industry_focus_changed": summary.get("industry_focus_changed"),
+                "policy": disclosure_payload.get("policy"),
+                "evidence_id": (evidence.get("fund_disclosure_changes") or {}).get("id"),
+            }
+
+        alternatives_payload = outputs.get("fund_alternatives") or {}
+        alternative_result = []
+        if alternatives_payload:
+            alternative_evidence_id = (evidence.get("fund_alternatives") or {}).get("id")
+            for row in (alternatives_payload.get("alternatives") or [])[:5]:
+                alternative_result.append({
+                    "code": row.get("code"),
+                    "name": row.get("name"),
+                    "score": row.get("score"),
+                    "label": row.get("label"),
+                    "trend_state": row.get("trend_state"),
+                    "metrics": row.get("metrics") or {},
+                    "advantages": row.get("advantages") or [],
+                    "cautions": row.get("cautions") or [],
+                    "evidence_id": alternative_evidence_id,
+                })
+
+        role_label = role.get("label") or "观察仓"
+        timing_label = timing.get("label") or analysis.get("trend_state") or "等待更多数据"
+        headline = f"{name} 当前研究定位为「{role_label}」，投入节奏为「{timing_label}」。"
+        if unavailable:
+            headline += " 部分真实数据暂不可用，结论范围已收窄。"
+
+        return {
+            "schema_version": "fund_deep_research.v1",
+            "generated_at": _now(),
+            "intent": "fund_deep_research",
+            "scope": {
+                "personalized": False,
+                "statement": "本轮只分析公共基金数据，未读取用户持仓，不生成个性化仓位或交易指令。",
+            },
+            "fund": {
+                "code": code,
+                "name": name,
+                "as_of": analysis.get("as_of"),
+                "sample_count": analysis.get("sample_count"),
+                "trend_state": analysis.get("trend_state"),
+            },
+            "conclusion": {
+                "status": "research_ready" if not unavailable else "research_partial",
+                "headline": headline,
+                "role": role_label,
+                "role_reason": role.get("reason"),
+                "risk_band": role.get("risk_band"),
+                "minimum_holding_period": role.get("minimum_holding_period"),
+                "timing_label": timing_label,
+                "timing_score": timing.get("score"),
+            },
+            "facts": facts,
+            "risk_review": {
+                "red_flags": playbook.get("red_flags") or [],
+                "entry_rules": playbook.get("entry_rules") or [],
+                "exit_rules": playbook.get("exit_rules") or [],
+                "evidence_id": analysis_evidence["id"],
+            },
+            "estimate": estimate_result,
+            "disclosure_changes": disclosure_result,
+            "alternatives": alternative_result,
+            "next_actions": playbook.get("execution_steps") or [],
+            "unavailable": unavailable,
+            "evidence_refs": [
+                {
+                    "evidence_id": item["id"],
+                    "tool_step": key,
+                    "provider": item.get("provider"),
+                    "as_of": item.get("as_of"),
+                    "quality_status": item.get("quality_status"),
+                    "payload_sha256": item.get("payload_sha256"),
+                }
+                for key, item in evidence.items()
+            ],
+            "policy": "研究候选不等于买入建议；任何新增投入都应在登录和持仓隔离完成后，再结合用户真实组合复盘。",
+        }
+
+    def _execute_fund_research(self, run: dict[str, Any]) -> dict[str, Any]:
+        run_id = str(run["id"])
+        payload = dict(run.get("input") or {})
+        code = str(payload["code"])
+        outputs: dict[str, dict[str, Any]] = {}
+        evidence: dict[str, dict[str, Any]] = {}
+        unavailable: list[dict[str, Any]] = []
+
+        for index, step in enumerate(self._fund_steps(payload), start=1):
+            if self.repository.is_cancel_requested(run_id):
+                return self.repository.finish_run(run_id, status="cancelled", result=None)
+            output, evidence_item, failure = self._execute_tool_step(
+                run_id,
+                index,
+                step,
+                code,
+            )
+            if output is not None:
+                outputs[step.key] = output
+            if evidence_item is not None:
+                evidence[step.key] = evidence_item
+            if failure is not None:
+                unavailable.append(failure)
+
+        if "fund_analysis" not in outputs or "fund_analysis" not in evidence:
+            raise RequiredToolError("基金核心分析没有形成可验证 Evidence")
+
+        if self.repository.is_cancel_requested(run_id):
+            return self.repository.finish_run(run_id, status="cancelled", result=None)
+        result = self._build_fund_result(run_id, payload, outputs, evidence, unavailable)
+        if self.repository.is_cancel_requested(run_id):
+            return self.repository.finish_run(run_id, status="cancelled", result=None)
+        final_status = "partial" if unavailable else "completed"
+        return self.repository.finish_run(run_id, status=final_status, result=result)

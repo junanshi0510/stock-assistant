@@ -15,6 +15,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import math
+import os
 import re
 import statistics
 import time
@@ -81,7 +82,26 @@ _SORT_MAP = {
 
 def _session() -> requests.Session:
     s = requests.Session()
-    s.trust_env = False
+    trust_env = os.getenv("FUND_HTTP_TRUST_ENV", "1").strip().lower()
+    use_environment = trust_env not in {"0", "false", "no", "off", "direct"}
+    if not use_environment:
+        s.trust_env = False
+        return s
+
+    # data_fetch historically mutates process-wide NO_PROXY for domestic stock
+    # providers. Fund transport must remain independently configurable, so an
+    # explicitly configured proxy is attached to this session and is not
+    # silently disabled by another module's global environment mutation.
+    http_proxy = os.getenv("HTTP_PROXY") or os.getenv("http_proxy")
+    https_proxy = os.getenv("HTTPS_PROXY") or os.getenv("https_proxy") or os.getenv("ALL_PROXY")
+    if http_proxy or https_proxy:
+        s.trust_env = False
+        s.proxies.update({
+            "http": http_proxy or https_proxy,
+            "https": https_proxy or http_proxy,
+        })
+    else:
+        s.trust_env = True
     return s
 
 
@@ -2502,24 +2522,50 @@ def _fetch_nav_history(code: str, months: int = 36) -> pd.DataFrame:
         pass
 
     target_rows = max(120, min(1200, months * 24 + 40))
-    page_size = 20
-    items = []
-    session = _session()
-    for page in range(1, math.ceil(target_rows / page_size) + 2):
+    # This endpoint caps responses at 20 rows even when a larger page size is
+    # requested. Fetch the real pages concurrently and fail if the requested
+    # history is incomplete instead of silently treating a short series as a
+    # multi-year sample.
+    requested_page_size = 20
+
+    def fetch_page(page: int) -> tuple[int, list[dict], int, int]:
         params = {
             "fundCode": code,
             "pageIndex": str(page),
-            "pageSize": str(page_size),
+            "pageSize": str(requested_page_size),
         }
-        resp = session.get(_NAV_URL, params=params, headers=_NAV_HEADERS, timeout=18)
+        resp = _session().get(_NAV_URL, params=params, headers=_NAV_HEADERS, timeout=18)
         resp.raise_for_status()
-        data = resp.json().get("Data") or {}
-        page_items = data.get("LSJZList") or []
-        if not page_items:
-            break
-        items.extend(page_items)
-        if len(items) >= target_rows:
-            break
+        payload = resp.json()
+        data = payload.get("Data") or {}
+        return (
+            page,
+            data.get("LSJZList") or [],
+            int(payload.get("TotalCount") or 0),
+            int(payload.get("PageSize") or 0),
+        )
+
+    _, first_items, total_count, provider_page_size = fetch_page(1)
+    if not first_items:
+        raise RuntimeError("天天基金历史净值返回为空")
+    effective_page_size = provider_page_size or len(first_items)
+    required_rows = min(target_rows, total_count or target_rows)
+    page_count = max(1, math.ceil(required_rows / effective_page_size))
+    pages: dict[int, list[dict]] = {1: first_items}
+    if page_count > 1:
+        worker_count = min(8, page_count - 1)
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            for page, page_items, _, _ in executor.map(fetch_page, range(2, page_count + 1)):
+                pages[page] = page_items
+
+    missing_pages = [page for page in range(1, page_count + 1) if not pages.get(page)]
+    if missing_pages:
+        raise RuntimeError(f"天天基金历史净值分页不完整: {missing_pages[:5]}")
+    items = [item for page in range(1, page_count + 1) for item in pages[page]][:required_rows]
+    if len(items) < required_rows:
+        raise RuntimeError(
+            f"天天基金历史净值样本不完整: 需要 {required_rows} 条，实际 {len(items)} 条"
+        )
     if not items:
         raise RuntimeError("天天基金历史净值返回为空")
     rows = []
@@ -3312,7 +3358,7 @@ def _fund_investment_playbook(metrics: dict, timing: dict, fact_sheet: dict, sty
     }
 
 
-def analyze_fund(code: str, months: int = 36) -> dict:
+def analyze_fund(code: str, months: int = 36, *, include_profile: bool = True) -> dict:
     months = max(6, min(120, int(months)))
     df = _fetch_nav_history(code, months)
     nav_points = []
@@ -3369,19 +3415,21 @@ def analyze_fund(code: str, months: int = 36) -> dict:
 
     profile = {}
     fact_sheet = _fund_fact_sheet(str(code))
-    rank_name = ""
-    try:
-        profile = _fetch_profile(str(code))
-        rank_name = profile.get("name") or fact_sheet.get("name") or ""
-    except Exception:
-        profile = {}
-    try:
-        rank = _fetch_rank("all", 100, "1y")
-        match = next((r for r in rank["items"] if r["code"] == str(code)), None)
-        if match and not rank_name:
-            rank_name = match["name"]
-    except Exception:
-        pass
+    rank_name = fact_sheet.get("name") or ""
+    if include_profile or not rank_name:
+        try:
+            profile = _fetch_profile(str(code))
+            rank_name = profile.get("name") or rank_name
+        except Exception:
+            profile = {}
+    if not rank_name:
+        try:
+            rank = _fetch_rank("all", 100, "1y")
+            match = next((r for r in rank["items"] if r["code"] == str(code)), None)
+            if match:
+                rank_name = match["name"]
+        except Exception:
+            pass
 
     style = _infer_style(rank_name)
     metrics = {

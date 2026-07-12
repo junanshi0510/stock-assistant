@@ -11,6 +11,7 @@
 | 工作区 | 主要能力 |
 |---|---|
 | 投资总览 | 汇总真实持仓、投资约束、组合风险、数据缺口和市场机会日报，生成有优先级的复盘任务 |
+| 投资 Agent | 创建可恢复的基金深度研究 Run，执行版本化 R0 只读工具，保存 Step、Evidence、Claim 和追加式审计链 |
 | 基金中心 | 基金发现与搜索、真实净值分析、盘中估值、回撤与恢复、同类排名、替代品、分红、定期报告持仓、披露变化、多基金比较与重合度 |
 | 股票与板块 | A 股/港股/美股行情、热门榜、行业与概念、个股技术面和基本面、多股比较、批量筛选、新闻情绪与历史信号回测 |
 | 我的组合 | 手动、文本、CSV/XLSX 和 OCR 持仓导入，基金名称反查、组合体检、穿透暴露、交易流水、FIFO 成本、XIRR、行为复盘、快照归因和仓位纪律 |
@@ -24,6 +25,17 @@
 - 同类排名、同类分位和多维替代品比较。
 - 最新定期报告持仓、前后披露期变化和风格变化线索。
 - 多基金相关性、重仓股/行业重合以及用户持仓穿透暴露。
+
+### 投资 Agent 第一阶段
+
+- 当前支持固定意图 `fund_deep_research`，默认只读取公募基金确认净值并执行确定性风险计算。
+- Agent Run、工具步骤、证据、结论引用和审计事件持久化到 SQLite，进程重启后可恢复未完成任务并复用已完成证据。
+- 工具通过版本化白名单注册，当前仅开放 R0 公共只读工具；每个工具都有实际生效的执行时限。
+- 请求支持幂等键、活动队列限制、运行中取消、可选盘中估值、披露变化和同类替代品研究。
+- 每条数值 Claim 绑定 Evidence，Evidence 保存来源、有效时间、质量状态和 SHA-256 摘要。
+- 真实来源失败时 Run 进入 `partial` 或 `failed`，不会生成替代数据。
+
+当前阶段没有自主规划大模型、私人持仓工具、交易工具或自动下单。SQLite 和单进程 Worker 是迁移期实现，不等同于最终的 PostgreSQL + Temporal 生产架构。
 
 ### 组合与交易复盘
 
@@ -110,6 +122,11 @@ npm run dev
 | `ALIBABA_CLOUD_ACCESS_KEY_SECRET` | 阿里云 OCR |
 | `ALIYUN_OCR_ENDPOINT` | 阿里云 OCR Endpoint |
 | `ALLOWED_ORIGINS` | FastAPI CORS 允许来源 |
+| `AGENT_DB_PATH` | Agent 迁移期 SQLite 文件路径；默认复用 `backend/stock_assistant.db` |
+| `AGENT_MAX_PENDING_RUNS` | Agent 排队和运行任务总上限；默认 `20` |
+| `AGENT_WORKER_ENABLED` | 是否启动内置持久化 Worker；默认开启 |
+| `AGENT_WORKER_POLL_SECONDS` | 内置 Worker 轮询间隔；默认 `0.75` 秒 |
+| `FUND_HTTP_TRUST_ENV` | 基金请求是否使用环境代理；设为 `0`/`direct` 时强制直连 |
 
 前后端分离部署时，参考 `frontend/.env.example` 配置 `VITE_API_BASE_URL`。不要把真实 Key、服务器密码或用户数据提交到 Git。
 
@@ -118,7 +135,13 @@ npm run dev
 ```text
 backend/
   main.py                  FastAPI 启动与路由装配
+  agent/
+    registry.py            版本化工具白名单
+    repository.py          Run、Step、Evidence、Claim 与 Audit 持久化
+    workflow.py            确定性基金研究工作流、超时与取消
+    worker.py              可恢复的迁移期单进程 Worker
   routers/
+    agent.py               Agent Run、Evidence 和 Audit API
     market.py              股票、板块、行情和市场日报接口
     funds.py               基金发现、研究、比较和替代品接口
     portfolio.py           持仓、交易、OCR、复盘和提醒接口
@@ -179,7 +202,7 @@ npm run build
 
 **[金融投资助手工业级 Agent 升级方案设计书（PRD）](docs/industrial-agent-prd.md)**
 
-当前实现与目标架构之间仍有明确差距：尚未提供真实登录、多用户隔离、PostgreSQL、持久化 Agent 工作流和自动交易。README 和 UI 中不得把规划中的能力描述为已经上线。
+第一条“基金深度研究”垂直链路已经落地持久化 Run、工具协议、Evidence、Claim 和审计链。当前实现与目标架构之间仍有明确差距：尚未提供真实登录、多用户隔离、PostgreSQL、Temporal 分布式工作流、动态规划与模型治理，也不提供自动交易。README 和 UI 中不得把规划中的能力描述为已经上线。
 
 ## 相关文档
 

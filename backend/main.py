@@ -12,10 +12,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 import monitor
-from routers import funds, market, portfolio
+from agent.worker import start_worker
+from routers import agent, funds, market, portfolio
 
 
-app = FastAPI(title="金融投资助手 API", version="2.1")
+app = FastAPI(title="金融投资助手 API", version="2.2")
 
 _allowed_origins = [
     item.strip()
@@ -33,6 +34,8 @@ app.add_middleware(
 app.include_router(market.router)
 app.include_router(funds.router)
 app.include_router(portfolio.router)
+app.include_router(agent.router)
 
 # Each process owns one daemon monitor. It only evaluates user-confirmed watchlist data.
 monitor.start_monitor(interval_seconds=3600)
+start_worker()

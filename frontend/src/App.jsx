@@ -1,8 +1,9 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
-import { BriefcaseBusiness, ChartNoAxesCombined, FlaskConical, Info, Landmark, LayoutDashboard, TrendingUp } from 'lucide-react'
+import { Bot, BriefcaseBusiness, ChartNoAxesCombined, FlaskConical, Info, Landmark, LayoutDashboard, TrendingUp } from 'lucide-react'
 import { fetchMarkets } from './api/market'
 
 const BacktestTab = lazy(() => import('./tabs/BacktestTab'))
+const AgentTab = lazy(() => import('./tabs/AgentTab'))
 const FundTab = lazy(() => import('./tabs/FundTab'))
 const DashboardTab = lazy(() => import('./tabs/DashboardTab'))
 const MarketTab = lazy(() => import('./tabs/MarketTab'))
@@ -10,6 +11,7 @@ const PortfolioTab = lazy(() => import('./tabs/PortfolioTab'))
 
 const TABS = [
   { id: 'overview', label: '投资总览', icon: LayoutDashboard },
+  { id: 'agent', label: '投资 Agent', icon: Bot },
   { id: 'funds', label: '基金中心', icon: Landmark },
   { id: 'market', label: '股票与板块', icon: ChartNoAxesCombined },
   { id: 'portfolio', label: '我的组合', icon: BriefcaseBusiness },
@@ -81,6 +83,7 @@ export default function App() {
 
         <Suspense fallback={<div className="page-loading"><span className="spinner" />正在加载工作区</div>}>
           {tab === 'overview' && <DashboardTab goPortfolio={goPortfolio} goFunds={goFunds} goMarket={goMarket} />}
+          {tab === 'agent' && <AgentTab />}
           {tab === 'funds' && <FundTab />}
           {tab === 'market' && <MarketTab activeView={marketView} setActiveView={setMarketView} markets={markets}
             market={market} setMarket={setMarket} symbol={symbol} setSymbol={setSymbol}

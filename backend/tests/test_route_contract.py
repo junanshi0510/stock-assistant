@@ -64,6 +64,12 @@ EXPECTED_OPERATIONS = {
     "/api/funds/dividends": {"GET"},
     "/api/funds/compare": {"POST"},
     "/api/funds/overlap": {"POST"},
+    "/api/v1/agent/tools": {"GET"},
+    "/api/v1/agent/runs": {"POST"},
+    "/api/v1/agent/runs/{run_id}": {"GET"},
+    "/api/v1/agent/runs/{run_id}/cancel": {"POST"},
+    "/api/v1/agent/runs/{run_id}/evidence/{evidence_id}": {"GET"},
+    "/api/v1/agent/runs/{run_id}/audit": {"GET"},
 }
 
 
