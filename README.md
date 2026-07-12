@@ -1,181 +1,188 @@
-# 金融投资助手 📈
+# 金融投资助手
 
-抓取 **A股 / 港股 / 美股** 的历史行情,用**多因子量化模型**打分,给出看涨打分、
-方向判断与**估计上涨概率**,支持**多股对比**、**批量扫描排名**和**信号回测**,并画出专业 K 线图。
+一个面向个人投资者的真实数据决策工作台，覆盖公募基金、A 股、港股、美股和用户真实持仓。
 
-架构:**React 前端 + FastAPI 后端**(Python 负责抓数据/打分/回测,React 负责界面)。
+当前版本使用 **React + Vite** 构建前端，使用 **FastAPI + Python** 完成数据获取、基金与股票研究、组合账本和确定性计算。项目正在按照工业级投资 Agent PRD 逐步升级，但当前线上版本仍是“专业投资工作台”，不是已经完成的自主 Agent，也不具备自动交易能力。
 
-> ⚠️ **重要**:本工具给出的是基于历史价格的【量化信号与估计概率】,**不是涨跌预测,
-> 也不是投资建议**。没有任何模型能准确预测股市;请用「信号回测」查看历史命中率,
-> 理性参考,盈亏自负。
+> 风险提示：系统输出用于研究和风险复盘，不代表未来涨跌，不构成投资建议，也不承诺收益。数据源不可用、数据过期或用户持仓不完整时，系统必须明确显示缺口，不使用模拟数据补齐。
 
-## 三大功能(界面顶部切换标签页)
+## 当前能力
 
-| 标签页 | 作用 |
-|--------|------|
-| **单股分析** | 技术面看涨打分(0-100)+ 上涨概率 + 10 因子透明加减分 + K线/均线/布林带图,并附:<br>　• 🏦 **基本面**(PE/PB/ROE/营收净利增长 + 基本面评分)<br>　• 🤖 **AI 模型预测**(梯度提升 + 样本外准确率 + 最新上涨概率)<br>　• 📰 **新闻情绪**(近期个股新闻 + 情绪打分) |
-| **多股对比** | 同一市场多只股票横向比较:归一化走势(都从100起步)、区间收益、波动率、最大回撤、技术评分、相关性矩阵,并支持导出 CSV |
-| **发现** | 真实热门榜/涨跌幅榜/成交活跃榜。优先走新浪真实行情榜,东财仅作真实备选源;不使用精选池或假兜底 |
-| **批量扫描** | 一次扫一批股票(或一键载入预设股票池),按看涨打分排序,点任意一行跳到详细分析 |
-| **信号回测** | 用约 4 年历史检验技术信号的真实命中率(方向准确率、看涨/看跌胜率、分数分档收益) |
+| 工作区 | 主要能力 |
+|---|---|
+| 投资总览 | 汇总真实持仓、投资约束、组合风险、数据缺口和市场机会日报，生成有优先级的复盘任务 |
+| 基金中心 | 基金发现与搜索、真实净值分析、盘中估值、回撤与恢复、同类排名、替代品、分红、定期报告持仓、披露变化、多基金比较与重合度 |
+| 股票与板块 | A 股/港股/美股行情、热门榜、行业与概念、个股技术面和基本面、多股比较、批量筛选、新闻情绪与历史信号回测 |
+| 我的组合 | 手动、文本、CSV/XLSX 和 OCR 持仓导入，基金名称反查、组合体检、穿透暴露、交易流水、FIFO 成本、XIRR、行为复盘、快照归因和仓位纪律 |
+| 自选与提醒 | 自选股票、评分刷新和提醒记录 |
 
-> 🤖 **关于 AI 预测的诚实说明**:模型用严格的「时间序列样本外验证」,并把样本外准确率与
-> 基准一并显示。单股技术面模型多数情况下与抛硬币接近(50%±几个点),**别只看"上涨概率"就重仓**。
-> 🏦📰 **美股的基本面与新闻情绪**需要在 `backend/config.py` 配置免费的 Alpha Vantage Key;
-> A股 用 BaoStock / 东方财富,开箱即用;港股 暂无免费基本面/新闻源。
+### 基金研究
 
----
+- 基金分类、热门榜和风险偏好机会筛选。
+- 单基金净值趋势、区间收益、波动、最大回撤和恢复过程。
+- 已确认净值与盘中估值分开显示，估值不会替代确认净值。
+- 同类排名、同类分位和多维替代品比较。
+- 最新定期报告持仓、前后披露期变化和风格变化线索。
+- 多基金相关性、重仓股/行业重合以及用户持仓穿透暴露。
 
-## 最简单的用法(推荐给非技术用户)
+### 组合与交易复盘
 
-1. **首次安装**:双击 `setup.bat`,等它跑完(会装 Python 和前端依赖,约几分钟)。
-2. **每次使用**:双击 `start.bat`,会自动打开浏览器到 `http://localhost:5173`。
-3. 用完后,关掉弹出的两个黑色命令行窗口即可。
+- OCR 截图、粘贴文本、CSV/XLSX 文件和手动持仓录入。
+- 解析结果先预览，只有用户确认的数据才写入持仓。
+- 交易流水批量预览、原子导入和重复文件保护。
+- FIFO 剩余成本、已实现收益、费用和份额对账。
+- XIRR 资金加权收益率；现金流不完整时拒绝展示完整收益率。
+- 组合快照、区间归因、交易行为和用户单品上限复盘。
 
-> 前提:电脑已安装 [Python 3.10+](https://www.python.org/) 和
-> [Node.js 18+](https://nodejs.org/)。本机已确认安装(Python 3.13 / Node 24)。
+### 股票与市场研究
 
----
+- A 股、港股、美股历史行情和当前行情。
+- 技术指标、多因子评分、基本面、新闻情绪和模型信号。
+- 单股与基准比较、多股收益/波动/回撤/相关性比较。
+- 批量股票筛选、热门股、涨跌榜和成交活跃榜。
+- A 股行业与概念热度、板块热门股以及盈利/概念驱动线索。
+- 市场机会日报和风险提示。
 
-## 怎么用界面
+## 数据原则
 
-**单股分析**:选市场 → 输代码 → 拖动回溯时间 → 点「开始分析」。
-- A股:6 位数字,如 `600519`(贵州茅台);港股:5 位,如 `00700`(腾讯);
-  美股:字母,如 `AAPL`(苹果),忘了代码可用搜索框。
+1. 不展示伪造行情、净值、财务数据、持仓或投资结论。
+2. 可以在已接入的真实来源之间切换，但必须保留实际来源、数据时间和失败原因。
+3. 来源全部失败时返回 `partial`、`unavailable` 或明确错误，不用示例值兜底。
+4. 用户组合分析只使用用户保存或确认过的持仓和交易。
+5. 盘中估值、确认净值、日终行情和定期报告披露不得混为同一种“最新数据”。
+6. 收益率、回撤、FIFO、XIRR、相关性和组合集中度由确定性代码计算，不由大模型自行编造。
 
-**批量扫描**:选市场 → 点「一键载入预设股票池」或自己粘贴一串代码 → 点「批量扫描」,
-结果按打分从高到低排序,点行可跳转详细分析。
+## 快速开始
 
-**多股对比**:选市场 → 粘贴 2-12 只股票代码 → 点「开始对比」。
-它会把所有股票放在同一张归一化走势图上,并输出收益、波动、回撤、评分和相关性矩阵。
+### 环境要求
 
-**信号回测**:输代码 + 选前瞻天数 → 点「开始回测」,看这套信号过去准不准。
-> 重点:若方向准确率接近或低于「基准随机上涨率」,说明信号对该股该周期预测力有限 —— 这很正常,别盲信。
+- Python 3.10+
+- Node.js 18+
+- Windows 本地运行，或 Ubuntu 22.04/24.04 服务器
 
----
+### Windows 一键运行
 
-## 手动启动(给开发者)
+首次使用：
 
-需要开两个终端:
+```text
+双击 setup.bat
+```
+
+以后启动：
+
+```text
+双击 start.bat
+```
+
+浏览器会打开 [http://localhost:5173](http://localhost:5173)。后端 API 默认运行在 `http://127.0.0.1:8000`。
+
+### 手动启动
+
+后端终端：
 
 ```powershell
-# 终端 1 —— 后端 API
+Set-Location C:\Project
 .\venv\Scripts\Activate.ps1
-cd backend
-uvicorn main:app --reload --port 8000
+Set-Location backend
+python -m uvicorn main:app --reload --port 8000
+```
 
-# 终端 2 —— 前端界面
-cd frontend
+前端终端：
+
+```powershell
+Set-Location C:\Project\frontend
+npm install
 npm run dev
 ```
 
-浏览器打开 `http://localhost:5173`。前端通过 vite 代理把 `/api` 转发到后端 8000 端口。
+开发环境中，Vite 会把 `/api` 请求代理到后端 `8000` 端口。FastAPI 接口文档位于 [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)。
 
----
+## 配置
+
+后端优先从环境变量读取第三方服务配置：
+
+| 环境变量 | 用途 |
+|---|---|
+| `TUSHARE_TOKEN` | A 股/港股数据源 |
+| `POLYGON_API_KEY` | 美股数据源 |
+| `ALPHAVANTAGE_API_KEY` | 美股基本面、行情或新闻数据 |
+| `ALIBABA_CLOUD_ACCESS_KEY_ID` | 阿里云 OCR |
+| `ALIBABA_CLOUD_ACCESS_KEY_SECRET` | 阿里云 OCR |
+| `ALIYUN_OCR_ENDPOINT` | 阿里云 OCR Endpoint |
+| `ALLOWED_ORIGINS` | FastAPI CORS 允许来源 |
+
+前后端分离部署时，参考 `frontend/.env.example` 配置 `VITE_API_BASE_URL`。不要把真实 Key、服务器密码或用户数据提交到 Git。
 
 ## 项目结构
 
+```text
+backend/
+  main.py                  FastAPI 启动与路由装配
+  routers/
+    market.py              股票、板块、行情和市场日报接口
+    funds.py               基金发现、研究、比较和替代品接口
+    portfolio.py           持仓、交易、OCR、复盘和提醒接口
+  funds.py                 基金净值、风险、披露和比较领域逻辑
+  holdings.py              持仓解析、OCR 和组合分析
+  portfolio_review.py      FIFO、XIRR、行为、快照和归因
+  decision_center.py       持仓感知的规则化决策任务
+  data_fetch.py            A 股/港股/美股历史数据
+  market_daily.py          市场机会日报
+  sectors.py               行业、概念和热门股分析
+  storage.py               当前 SQLite 持久化
+  tests/                   后端回归与契约测试
+frontend/
+  src/App.jsx              顶层工作区导航
+  src/tabs/                总览、基金、市场、组合和研究页面
+  src/features/funds/      基金研究组件和状态管理
+  src/features/decision/   决策中心组件
+  src/api/                 按领域拆分的 API 客户端
+deploy/                    systemd 与 Nginx 配置模板
+docs/
+  industrial-agent-prd.md  工业级 Agent 升级 PRD
+ARCHITECTURE.md             当前代码架构约定
+DEPLOY.md                   云服务器部署说明
 ```
-backend/                 后端(Python / FastAPI)
-  main.py                API 接口:analyze / scan / backtest / presets / search_us
-  data_fetch.py          抓取三个市场行情(多专业源 + 自动降级 + 缓存)
-  analysis.py            技术指标 + 多因子打分模型 + 上涨概率
-  backtest.py            信号历史准确率回测
-  compare.py             单股 vs 大盘指数对比
-  multi_compare.py       多股横向对比(收益/波动/回撤/相关性)
-  fundamentals.py        基本面数据 + 评分(A股 BaoStock / 美股 AlphaVantage)
-  ml_model.py            机器学习预测(sklearn 梯度提升 + 样本外验证)
-  sentiment.py           新闻舆情情绪(A股 东财新闻 / 美股 AlphaVantage)
-  config.py              ★ 数据源 API Key 配置(在这里粘 token/key)
-  requirements.txt       后端依赖
-frontend/                前端(React / Vite)
-  src/App.jsx            主界面 + 标签页切换
-  src/tabs/AnalyzeTab.jsx   单股分析页
-  src/tabs/InsightSections.jsx 基本面/AI/新闻 三个板块
-  src/tabs/MultiCompareTab.jsx 多股对比页
-  src/tabs/ScanTab.jsx      批量扫描页
-  src/tabs/BacktestTab.jsx  信号回测页
-  src/CandleChart.jsx    K线图(lightweight-charts,含布林带)
-  src/ScoreRing.jsx      圆环评分仪表盘
-  src/api.js / helpers.js   接口封装 / 颜色辅助
-  vite.config.js         开发服务器 + /api 代理配置
-setup.bat                一键安装
-start.bat                一键启动
+
+## 测试与构建
+
+后端：
+
+```powershell
+Set-Location C:\Project\backend
+..\venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
----
+前端：
 
-## 数据源(专业多源 + 自动降级)
+```powershell
+Set-Location C:\Project\frontend
+npm run build
+```
 
-每个市场按优先级依次尝试,任一成功即返回;前面的源没配 Key 会自动跳过:
+## 部署
 
-| 市场 | 优先级顺序 |
-|------|-----------|
-| A股  | Tushare → **BaoStock(免费免Key,默认可用)** → 东方财富 → 新浪 |
-| 港股 | Tushare → 东方财富 → 新浪 |
-| 美股 | Polygon → Alpha Vantage → 东方财富 → 新浪 |
+生产环境推荐使用 Nginx 托管前端构建产物，并把 `/api` 反向代理到只监听 `127.0.0.1:8000` 的 FastAPI 服务。完整步骤见 [DEPLOY.md](DEPLOY.md)。
 
-**开箱即用**:A股 默认走 BaoStock(免费、无需任何配置)。
+## 工业级 Agent 升级
 
-**想接更专业的源**:去下面网站免费注册,把拿到的 token / Key 粘进 `backend/config.py`
-对应的引号里(留空则跳过该源):
+项目已经完成工业级 Agent 的产品和架构设计，实施范围包括：
 
-| 数据源 | 用途 | 注册地址 |
-|--------|------|---------|
-| Tushare Pro | A股 / 港股 | https://tushare.pro/register (注册送积分) |
-| Polygon.io | 美股 | https://polygon.io/ (有免费档) |
-| Alpha Vantage | 美股 | https://www.alphavantage.co/support/#api-key |
+- 登录、多租户、PostgreSQL 和行级数据隔离。
+- 可恢复的 Agent Run 状态机和异步工作流。
+- 统一工具协议、Provider Gateway 和真实数据治理。
+- Evidence 证据账本、Claim 引用和追加式审计链。
+- 策略注册、模型评测、Prompt Injection 防护和灰度发布。
+- 今日投资任务、基金购买前审查、替代品、组合风险和板块解释 Agent。
 
-> 配置后**重启后端**(关掉黑窗口、重新 `start.bat`)才生效。
-> Alpha Vantage 免费档为不复权日线、每天 25 次调用限制;Polygon 免费档限速 5 次/分钟。
+完整设计、需求编号、数据模型、API、SLO、评测门槛、迁移阶段和验收场景见：
 
-### 关于代理(重要)
+**[金融投资助手工业级 Agent 升级方案设计书（PRD）](docs/industrial-agent-prd.md)**
 
-国内数据源(东方财富/Tushare/新浪)代码里已设置**绕过系统代理直连**;
-海外源(Polygon/Alpha Vantage)仍走系统代理(在国内访问海外源通常正需要代理)。
-如果你用 Clash 等工具且 A股 仍报连接错误,可在其规则里把 `*.eastmoney.com`、
-`tushare.pro` 设为直连,或临时关闭系统代理。
+当前实现与目标架构之间仍有明确差距：尚未提供真实登录、多用户隔离、PostgreSQL、持久化 Agent 工作流和自动交易。README 和 UI 中不得把规划中的能力描述为已经上线。
 
----
+## 相关文档
 
-## 打分模型说明(多因子加权)
-
-以 50 分为中性基准,综合 **10 类技术因子**加减分,最终 0-100:
-
-1. **均线排列** — 多头/空头排列(价、MA5、MA20、MA60 的关系),权重最高
-2. **趋势力度** — MA20 斜率
-3. **ADX 强度** — 趋势是否够强,并按方向加减
-4. **MACD** — 动量方向
-5. **RSI** — 超买/超卖
-6. **KDJ** — 金叉/死叉、超买超卖
-7. **布林带** — 价格在带内位置(%B)
-8. **多周期动量** — 5 日 + 20 日涨跌幅
-9. **量价** — 量比 + OBV 资金流向
-10. **52 周位置** — 高位追高风险 / 低位低吸机会
-
-≥65 分 → 看涨;≤35 分 → 看跌;中间 → 中性/震荡。打分再经 logistic 映射成
-**估计上涨概率**。每项加减分都在界面透明列出。
-
-> ⚠️ 这套信号是否有效,**因股、因周期而异**,务必用「信号回测」实测,不要盲目依赖。
-
-### 指标计算位置
-- `analysis.py` — `add_indicators()` 算指标,`_evaluate()` 单日打分,`score()` 综合输出
-- `backtest.py` — 复用 `_evaluate()` 对历史逐日打分,统计命中率
-
----
-
-## API 接口
-
-| 接口 | 说明 |
-|------|------|
-| `GET /api/markets` | 支持的市场列表 |
-| `GET /api/presets` | 预设股票池(批量扫描用) |
-| `GET /api/analyze?market=A股&symbol=600519&months=12` | 抓数据 + 多因子打分 + 概率 + K线序列 |
-| `GET /api/compare?market=A股&symbol=600519&months=12` | 单股 vs 大盘指数对比 |
-| `POST /api/multi_compare` body: `{market, symbols:[...], months}` | 多股横向对比(归一化走势/收益/波动/回撤/相关性) |
-| `GET /api/backtest?market=A股&symbol=600519&horizon=20` | 信号历史准确率回测 |
-| `POST /api/scan`  body: `{market, symbols:[...], months}` | 批量扫描并按打分排序 |
-| `GET /api/fundamentals?market=A股&symbol=600519` | 基本面数据 + 评分 |
-| `GET /api/ml?market=A股&symbol=600519&horizon=10` | AI 模型预测 + 样本外准确率 |
-| `GET /api/news?market=A股&symbol=600519` | 近期新闻 + 情绪打分 |
-| `GET /api/search_us?keyword=AAPL` | 美股代码查找 |
+- [当前架构约定](ARCHITECTURE.md)
+- [云服务器部署说明](DEPLOY.md)
+- [工业级 Agent PRD](docs/industrial-agent-prd.md)
