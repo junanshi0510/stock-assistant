@@ -9,8 +9,9 @@ from typing import Any, Iterable
 
 
 EVALUATOR_ID = "fund_decision_outcome"
-EVALUATOR_VERSION = "1.0.0"
+EVALUATOR_VERSION = "1.1.0"
 _MILESTONES = (5, 20, 60, 120)
+PEER_COMPARATOR_TYPE = "provider_same_category_average"
 ACTIONABLE_DECISION_ACTIONS = frozenset({
     "consider_tranche",
     "wait",
@@ -39,7 +40,128 @@ def _return_pct(baseline: float, value: float) -> float:
     return round((value / baseline - 1) * 100, 4)
 
 
-def _interpret(action: str, return_pct: float | None, sample_count: int) -> dict[str, Any]:
+def _comparison_points(
+    peer_series: dict[str, Any] | None, key: str
+) -> dict[str, float]:
+    points: dict[str, float] = {}
+    for item in (peer_series or {}).get(key) or []:
+        observed_date = _date(item.get("date"))
+        value = _number(item.get("cumulative_return_pct"))
+        if observed_date is None or value is None or value <= -100:
+            continue
+        points[observed_date.isoformat()] = value
+    return points
+
+
+def _relative_return(fund_return_pct: float, peer_return_pct: float) -> float | None:
+    peer_gross = 1 + peer_return_pct / 100
+    if peer_gross <= 0:
+        return None
+    return round(((1 + fund_return_pct / 100) / peer_gross - 1) * 100, 4)
+
+
+def _peer_period(
+    *,
+    peer_lookup: dict[str, float],
+    fund_lookup: dict[str, float],
+    name: str,
+    source: str | None,
+    source_url: str | None,
+    baseline_as_of: str,
+    observed_as_of: str | None,
+    fund_return_pct: float | None,
+    unavailable_reason: str | None,
+) -> dict[str, Any]:
+    base = {
+        "type": PEER_COMPARATOR_TYPE,
+        "name": name or "同类平均",
+        "source": source,
+        "source_url": source_url,
+        "alignment": "exact_provider_date_only",
+    }
+    if not peer_lookup or not fund_lookup:
+        return {
+            **base,
+            "status": "unavailable",
+            "reason": unavailable_reason or "provider_comparable_series_missing",
+        }
+    baseline_peer_value = peer_lookup.get(baseline_as_of)
+    baseline_fund_value = fund_lookup.get(baseline_as_of)
+    if baseline_peer_value is None or baseline_fund_value is None:
+        return {
+            **base,
+            "status": "unavailable",
+            "reason": "baseline_date_not_in_provider_comparable_series",
+        }
+    baseline = {
+        "as_of": baseline_as_of,
+        "peer_cumulative_return_pct": round(baseline_peer_value, 4),
+        "fund_cumulative_return_pct": round(baseline_fund_value, 4),
+    }
+    if observed_as_of is None or fund_return_pct is None:
+        return {
+            **base,
+            "status": "pending",
+            "reason": "waiting_for_later_confirmed_nav",
+            "baseline": baseline,
+        }
+    observed_peer_value = peer_lookup.get(observed_as_of)
+    observed_fund_value = fund_lookup.get(observed_as_of)
+    if observed_peer_value is None or observed_fund_value is None:
+        return {
+            **base,
+            "status": "unavailable",
+            "reason": "observed_date_not_in_provider_comparable_series",
+            "baseline": baseline,
+        }
+    peer_baseline_gross = 1 + baseline_peer_value / 100
+    peer_observed_gross = 1 + observed_peer_value / 100
+    fund_baseline_gross = 1 + baseline_fund_value / 100
+    fund_observed_gross = 1 + observed_fund_value / 100
+    if min(
+        peer_baseline_gross,
+        peer_observed_gross,
+        fund_baseline_gross,
+        fund_observed_gross,
+    ) <= 0:
+        return {
+            **base,
+            "status": "unavailable",
+            "reason": "invalid_provider_comparable_cumulative_return",
+            "baseline": baseline,
+        }
+    peer_return = round(
+        (peer_observed_gross / peer_baseline_gross - 1) * 100, 4
+    )
+    provider_fund_return = round(
+        (fund_observed_gross / fund_baseline_gross - 1) * 100, 4
+    )
+    relative = _relative_return(provider_fund_return, peer_return)
+    return {
+        **base,
+        "status": "available",
+        "reason": None,
+        "baseline": baseline,
+        "observed": {
+            "as_of": observed_as_of,
+            "peer_cumulative_return_pct": round(observed_peer_value, 4),
+            "fund_cumulative_return_pct": round(observed_fund_value, 4),
+        },
+        "period_return_pct": peer_return,
+        "fund_return_pct": provider_fund_return,
+        "unit_nav_return_pct": round(fund_return_pct, 4),
+        "return_spread_pp": round(provider_fund_return - peer_return, 4),
+        "relative_excess_return_pct": relative,
+        "return_basis": "provider_comparable_cumulative_return_series",
+    }
+
+
+def _interpret(
+    action: str,
+    return_pct: float | None,
+    sample_count: int,
+    peer_comparison: dict[str, Any],
+) -> dict[str, Any]:
     if action not in ACTIONABLE_DECISION_ACTIONS:
         return {
             "status": "not_scored",
@@ -52,18 +174,49 @@ def _interpret(action: str, return_pct: float | None, sample_count: int) -> dict
             "label": "观察期不足",
             "reason": "至少需要 20 个后续确认净值样本，当前不提前宣布策略成功或失败。",
         }
-    if action == "consider_tranche":
+    peer_available = peer_comparison.get("status") == "available"
+    relative = _number(peer_comparison.get("relative_excess_return_pct"))
+    comparable_return = (
+        _number(peer_comparison.get("fund_return_pct"))
+        if peer_available
+        else return_pct
+    )
+    if action == "consider_tranche" and peer_available and relative is not None:
+        if comparable_return is not None and comparable_return > 0 and relative > 0:
+            status, label = "favorable_with_peer_edge", "上涨且暂时跑赢同类"
+            reason = "标的绝对收益和相对同类收益均为正；这是单次观察，不证明策略长期有效。"
+        elif comparable_return is not None and comparable_return > 0:
+            status, label = "positive_but_lagging_peer", "上涨但暂时跑输同类"
+            reason = "正收益主要不能解释为标的选择优势，同期同类平均表现更强。"
+        elif relative > 0:
+            status, label = "negative_but_peer_resilient", "下跌但暂时强于同类"
+            reason = "绝对方向不利，但跌幅小于同类平均；不能把相对抗跌写成盈利。"
+        else:
+            status, label = "adverse_and_lagging_peer", "下跌且暂时跑输同类"
+            reason = "绝对收益和相对同类收益均不利，需要进入策略复盘样本。"
+    elif action == "consider_tranche":
         status = "favorable" if return_pct > 0 else "adverse"
         label = "方向暂时有利" if return_pct > 0 else "方向暂时不利"
-        reason = "仅评价新增暴露后的绝对净值方向，尚未扣除费用或比较适配基准。"
+        reason = "只完成绝对净值方向评价；同类基准不可用，因此不评价相对表现。"
     elif action in {"wait", "do_not_add", "hold_no_add"}:
-        status = "capital_preserved" if return_pct < 0 else "opportunity_cost"
-        label = "回避动作暂时减少下行暴露" if return_pct < 0 else "回避动作产生机会成本"
-        reason = "只描述未新增暴露的市场后果，不等于用户真实收益。"
+        if peer_available and relative is not None and comparable_return is not None and comparable_return >= 0 and relative <= 0:
+            status, label = "limited_opportunity_cost", "上涨但弱于同类"
+            reason = "回避动作存在绝对机会成本，但标的同期没有跑赢同类；不推断用户真实收益。"
+        elif peer_available and relative is not None and comparable_return is not None and comparable_return < 0 and relative < 0:
+            status, label = "avoided_lagging_downside", "回避了下跌且弱于同类的标的"
+            reason = "标的绝对下跌并跑输同类；只评价未新增暴露的后果，不推断用户执行。"
+        else:
+            status = "capital_preserved" if return_pct < 0 else "opportunity_cost"
+            label = "回避动作暂时减少下行暴露" if return_pct < 0 else "回避动作产生机会成本"
+            reason = "只描述未新增暴露的市场后果，不等于用户真实收益。"
     else:
-        status = "avoided_loss" if return_pct < 0 else "opportunity_cost"
-        label = "降低暴露后暂时避免损失" if return_pct < 0 else "降低暴露后产生机会成本"
-        reason = "只评价被降低部分的市场方向，不推断用户是否实际执行。"
+        if peer_available and relative is not None and comparable_return is not None and comparable_return < 0 and relative < 0:
+            status, label = "avoided_lagging_loss", "降低了下跌且弱于同类的暴露"
+            reason = "标的绝对下跌并跑输同类；只评价被降低部分，不推断用户实际执行。"
+        else:
+            status = "avoided_loss" if return_pct < 0 else "opportunity_cost"
+            label = "降低暴露后暂时避免损失" if return_pct < 0 else "降低暴露后产生机会成本"
+            reason = "只评价被降低部分的市场方向，不推断用户是否实际执行。"
     return {"status": status, "label": label, "reason": reason}
 
 
@@ -74,6 +227,8 @@ def evaluate_fund_decision_outcome(
     baseline_nav: float,
     action: str,
     points: Iterable[dict[str, Any]],
+    peer_series: dict[str, Any] | None = None,
+    peer_unavailable_reason: str | None = None,
 ) -> dict[str, Any]:
     baseline_date = _date(baseline_as_of)
     baseline_value = _number(baseline_nav)
@@ -93,16 +248,47 @@ def evaluate_fund_decision_outcome(
 
     latest = observations[-1] if observations else None
     latest_return = _return_pct(baseline_value, latest["unit_nav"]) if latest else None
+    peer_lookup = _comparison_points(peer_series, "points")
+    fund_lookup = _comparison_points(peer_series, "fund_points")
+    peer_name = str((peer_series or {}).get("name") or "同类平均")
+    peer_source = (peer_series or {}).get("source")
+    peer_source_url = (peer_series or {}).get("source_url")
+    peer_comparison = _peer_period(
+        peer_lookup=peer_lookup,
+        fund_lookup=fund_lookup,
+        name=peer_name,
+        source=str(peer_source or "") or None,
+        source_url=str(peer_source_url or "") or None,
+        baseline_as_of=baseline_date.isoformat(),
+        observed_as_of=latest.get("date") if latest else None,
+        fund_return_pct=latest_return,
+        unavailable_reason=peer_unavailable_reason,
+    )
     milestones = []
     for count in _MILESTONES:
         if len(observations) >= count:
             item = observations[count - 1]
+            milestone_return = _return_pct(baseline_value, item["unit_nav"])
+            milestone_peer = _peer_period(
+                peer_lookup=peer_lookup,
+                fund_lookup=fund_lookup,
+                name=peer_name,
+                source=str(peer_source or "") or None,
+                source_url=str(peer_source_url or "") or None,
+                baseline_as_of=baseline_date.isoformat(),
+                observed_as_of=item["date"],
+                fund_return_pct=milestone_return,
+                unavailable_reason=peer_unavailable_reason,
+            )
             milestones.append({
                 "confirmed_nav_count": count,
                 "status": "observed",
                 "as_of": item["date"],
                 "unit_nav": item["unit_nav"],
-                "return_pct": _return_pct(baseline_value, item["unit_nav"]),
+                "return_pct": milestone_return,
+                "peer_return_pct": milestone_peer.get("period_return_pct"),
+                "relative_excess_return_pct": milestone_peer.get("relative_excess_return_pct"),
+                "peer_status": milestone_peer.get("status"),
             })
         else:
             milestones.append({
@@ -119,7 +305,18 @@ def evaluate_fund_decision_outcome(
         evaluation_status = "observing"
     else:
         evaluation_status = "evaluable"
-    interpretation = _interpret(str(action or ""), latest_return, len(observations))
+    interpretation = _interpret(
+        str(action or ""), latest_return, len(observations), peer_comparison
+    )
+    peer_available = peer_comparison.get("status") in {"available", "pending"}
+    limitations = [
+        "fees_tax_fx_and_user_execution_are_not_included",
+        "historical_outcome_does_not_prove_future_strategy_edge",
+        "provider_peer_average_is_not_contractual_benchmark",
+        "single_outcome_cannot_establish_strategy_edge",
+    ]
+    if not peer_available:
+        limitations.append("absolute_nav_return_is_not_excess_return")
 
     return {
         "evaluator_id": EVALUATOR_ID,
@@ -142,6 +339,7 @@ def evaluate_fund_decision_outcome(
             "calendar_days": ((_date(latest["date"]) - baseline_date).days if latest else 0),
             "return_pct": latest_return,
         },
+        "peer_comparison": peer_comparison,
         "milestones": milestones,
         "interpretation": interpretation,
         "method": {
@@ -149,13 +347,13 @@ def evaluate_fund_decision_outcome(
             "observations": "confirmed_nav_dates_strictly_after_baseline",
             "minimum_directional_sample": 20,
             "costs": "not_included",
-            "benchmark": "not_included",
+            "benchmark": PEER_COMPARATOR_TYPE,
+            "benchmark_alignment": "exact_provider_date_only",
+            "benchmark_return_formula": "(1 + observed_cumulative_return) / (1 + baseline_cumulative_return) - 1",
+            "relative_return_formula": "(1 + provider_fund_period_return) / (1 + peer_period_return) - 1",
+            "unit_nav_return": "reported_separately_and_not_mixed_with_comparable_return",
             "execution": "user_execution_not_inferred",
         },
-        "limitations": [
-            "absolute_nav_return_is_not_excess_return",
-            "fees_tax_fx_and_user_execution_are_not_included",
-            "historical_outcome_does_not_prove_future_strategy_edge",
-        ],
-        "policy": "结果评估只使用原 Run 保存的确认净值基线和之后的真实确认净值；不回写原结论，不把短样本或用户未执行的动作包装成盈利证明。",
+        "limitations": limitations,
+        "policy": "结果评估只使用原 Run 保存的确认净值基线、之后的真实确认净值和来源原生同类平均序列；同类日期必须精确对齐，缺失时不选择其他指数兜底。结果不回写原结论，也不把单次样本或用户未执行的动作包装成盈利证明。",
     }

@@ -12,6 +12,12 @@ function pct(value) {
   return `${number > 0 ? '+' : ''}${number.toFixed(2)}%`
 }
 
+function pp(value) {
+  if (value == null || Number.isNaN(Number(value))) return '-'
+  const number = Number(value)
+  return `${number > 0 ? '+' : ''}${number.toFixed(2)}`
+}
+
 const STATUS_LABEL = {
   pending: '等待后续确认净值',
   observing: '持续观察中',
@@ -86,11 +92,37 @@ export default function DecisionOutcomeView({
             <div><span>评估状态</span><b>{STATUS_LABEL[evaluation.status] || evaluation.status}</b></div>
             <div><span>原决策基线</span><b>{nav(evaluation.baseline?.unit_nav)}</b><small>{evaluation.baseline?.as_of || '-'}</small></div>
             <div><span>最新确认净值</span><b>{nav(evaluation.observed?.unit_nav)}</b><small>{evaluation.observed?.as_of || '暂无后续净值'}</small></div>
-            <div><span>基线后绝对变化</span><b className={Number(evaluation.observed?.return_pct) < 0 ? 'delta-neg' : ''}>{pct(evaluation.observed?.return_pct)}</b><small>{evaluation.observed?.confirmed_nav_count || 0} 个确认净值样本</small></div>
+            <div><span>单位净值变化</span><b className={Number(evaluation.observed?.return_pct) < 0 ? 'delta-neg' : ''}>{pct(evaluation.observed?.return_pct)}</b><small>未含分红 · {evaluation.observed?.confirmed_nav_count || 0} 个样本</small></div>
           </div>
           <div className="agent-outcome-interpretation">
             <Scale size={16} aria-hidden="true" />
             <div><b>{evaluation.interpretation?.label || '-'}</b><p>{evaluation.interpretation?.reason}</p></div>
+          </div>
+          <div className={`agent-outcome-peer ${evaluation.peer_comparison?.status || 'unavailable'}`}>
+            <div className="agent-outcome-peer-head">
+              <div>
+                <span>来源原生同类基准</span>
+                <b>{evaluation.peer_comparison?.name || '同类平均'}</b>
+              </div>
+              <small>
+                {evaluation.peer_comparison?.status === 'available'
+                  ? '日期精确对齐'
+                  : evaluation.peer_comparison?.status === 'pending'
+                    ? '等待后续净值'
+                    : '相对评价不可用'}
+              </small>
+            </div>
+            {evaluation.peer_comparison?.status === 'available' ? (
+              <div className="agent-outcome-peer-grid">
+                <div><span>同类区间收益</span><b>{pct(evaluation.peer_comparison?.period_return_pct)}</b></div>
+                <div><span>基金同口径收益</span><b>{pct(evaluation.peer_comparison?.fund_return_pct)}</b></div>
+                <div><span>收益差</span><b>{pp(evaluation.peer_comparison?.return_spread_pp)}</b><small>个百分点</small></div>
+                <div><span>相对超额</span><b>{pct(evaluation.peer_comparison?.relative_excess_return_pct)}</b></div>
+              </div>
+            ) : (
+              <p>{evaluation.peer_comparison?.reason || '来源未返回可精确对齐的同类序列，没有选择其他指数替代。'}</p>
+            )}
+            <p>同类平均不是基金合同业绩基准；单次相对表现不能证明 Agent 具备持续超额能力。</p>
           </div>
           <div className="agent-outcome-milestones">
             {(evaluation.milestones || []).map((item) => (
@@ -98,6 +130,9 @@ export default function DecisionOutcomeView({
                 <span>{item.confirmed_nav_count} 个净值样本</span>
                 <b>{pct(item.return_pct)}</b>
                 <small>{item.as_of || '等待数据'}</small>
+                {item.peer_status === 'available' && (
+                  <small>同类 {pct(item.peer_return_pct)} · 相对 {pct(item.relative_excess_return_pct)}</small>
+                )}
               </div>
             ))}
           </div>

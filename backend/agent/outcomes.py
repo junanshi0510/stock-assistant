@@ -30,7 +30,7 @@ class OutcomeEvaluationError(RuntimeError):
 
 class DecisionOutcomeService:
     TOOL_NAME = "fund.decision_outcome.get"
-    TOOL_VERSION = "1.0.0"
+    TOOL_VERSION = "1.1.0"
 
     def __init__(self, repository: AgentRepository, registry: ToolRegistry) -> None:
         self.repository = repository
@@ -225,6 +225,11 @@ class DecisionOutcomeService:
             "audit_chain_head": source_audit.get("chain_head"),
         }
         as_of = str(outcome.get("provider_as_of") or baseline["baseline_as_of"])
+        quality_status = str(
+            (outcome.get("quality") or {}).get("status") or "complete"
+        )
+        if quality_status not in {"complete", "partial"}:
+            quality_status = "partial"
         evidence, created = self.repository.add_post_run_evidence(
             run_id,
             evidence_type="outcome_observation",
@@ -234,7 +239,7 @@ class DecisionOutcomeService:
             source_url=str(outcome.get("source_url") or "") or None,
             as_of=as_of,
             schema_version=str(outcome.get("evaluator_version") or self.TOOL_VERSION),
-            quality_status="complete",
+            quality_status=quality_status,
             payload=outcome,
             actor_type=actor_type,
             actor_id=actor_id,

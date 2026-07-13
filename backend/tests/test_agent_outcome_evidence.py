@@ -157,6 +157,32 @@ class AgentOutcomeEvidenceTests(unittest.TestCase):
         self.assertEqual(first["evaluation"]["payload_sha256"], second["evaluation"]["payload_sha256"])
         self.assertNotIn("recomputed_but_not_persisted", second["evaluation"])
 
+    def test_partial_peer_quality_is_persisted_on_evidence(self):
+        outcome = {
+            **_outcome(),
+            "evaluator_version": "1.1.0",
+            "peer_comparison": {
+                "status": "unavailable",
+                "reason": "baseline_date_not_in_provider_comparable_series",
+            },
+            "quality": {"status": "partial"},
+        }
+        with (
+            patch.object(agent_router, "repository", self.repository),
+            patch.object(
+                agent_router.DecisionOutcomeService,
+                "_invoke_tool",
+                return_value=outcome,
+            ),
+        ):
+            result = agent_router.evaluate_agent_run(self.run_id)
+
+        evidence = self.repository.get_evidence(
+            self.run_id, result["evaluation"]["evidence_id"]
+        )
+        self.assertEqual(evidence["quality_status"], "partial")
+        self.assertTrue(evidence["integrity_verified"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -92,8 +92,8 @@ def build_default_registry() -> ToolRegistry:
     ))
     registry.register(ToolDefinition(
         name="fund.decision_outcome.get",
-        version="1.0.0",
-        description="使用原 Run 保存的确认净值基线和之后的真实确认净值评估决策后果。",
+        version="1.1.0",
+        description="使用原 Run 确认净值、后续真实净值和来源原生同类平均评估绝对与相对结果。",
         risk_level="R0",
         timeout_seconds=45,
         handler=lambda payload: fund_service.get_fund_decision_outcome(

@@ -497,6 +497,83 @@ def _fund_fact_sheet(code: str) -> dict:
     }
 
 
+def _fund_peer_comparison_series(code: str) -> dict:
+    """Read the provider-native same-category average without guessing a proxy."""
+    text = _fetch_detail_js(code)
+    name_match = re.search(r'var\s+fS_name\s*=\s*"([^"]*)"', text)
+    fund_name = str(name_match.group(1) if name_match else "").strip()
+    if not fund_name:
+        raise RuntimeError("东方财富基金详情页缺少可校验的基金名称")
+    grand_total = _extract_var(text, "Data_grandTotal")
+    if not isinstance(grand_total, list):
+        raise RuntimeError("东方财富基金详情页缺少累计收益比较序列")
+    peer_item = next(
+        (
+            item
+            for item in grand_total
+            if isinstance(item, dict) and str(item.get("name") or "").strip() == "同类平均"
+        ),
+        None,
+    )
+    if peer_item is None:
+        raise RuntimeError("东方财富基金详情页没有明确标记的同类平均序列")
+
+    def normalized_name(value: str) -> str:
+        return re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]", "", str(value or "")).upper()
+
+    normalized_fund_name = normalized_name(fund_name)
+    fund_candidates = []
+    for item in grand_total:
+        if not isinstance(item, dict):
+            continue
+        candidate_name = normalized_name(item.get("name") or "")
+        if candidate_name == normalized_fund_name or (
+            min(len(candidate_name), len(normalized_fund_name)) >= 6
+            and (
+                normalized_fund_name.startswith(candidate_name)
+                or candidate_name.startswith(normalized_fund_name)
+            )
+        ):
+            fund_candidates.append(item)
+    if len(fund_candidates) != 1:
+        raise RuntimeError("东方财富累计收益序列无法与基金名称唯一匹配")
+    fund_item = fund_candidates[0]
+
+    def parse_points(item: dict) -> list[dict]:
+        values = {}
+        for point in item.get("data") or []:
+            if not isinstance(point, list) or len(point) < 2:
+                continue
+            observed_date = _date_from_ms(point[0])
+            value = _num(point[1])
+            if observed_date and value is not None and value > -100:
+                values[observed_date] = round(value, 6)
+        return [
+            {"date": observed_date, "cumulative_return_pct": values[observed_date]}
+            for observed_date in sorted(values)
+        ]
+
+    peer_rows = parse_points(peer_item)
+    fund_rows = parse_points(fund_item)
+    if len(peer_rows) < 2 or len(fund_rows) < 2:
+        raise RuntimeError("东方财富基金与同类累计收益序列有效点不足")
+    return {
+        "type": "provider_same_category_average",
+        "name": "同类平均",
+        "source": "东方财富基金详情页 Data_grandTotal",
+        "source_url": f"https://fund.eastmoney.com/{code}.html",
+        "fund_name": fund_name,
+        "fund_series_name": str(fund_item.get("name") or "").strip(),
+        "series_start": max(peer_rows[0]["date"], fund_rows[0]["date"]),
+        "series_end": min(peer_rows[-1]["date"], fund_rows[-1]["date"]),
+        "observation_count": len(peer_rows),
+        "fund_observation_count": len(fund_rows),
+        "points": peer_rows,
+        "fund_points": fund_rows,
+        "method": "同类序列必须明确命名为同类平均；基金序列必须与页面基金名称唯一前缀匹配。两条累计收益序列使用同口径计算，不按位置猜测，不以单位净值或市场指数替代。",
+    }
+
+
 def _rank_row(parts: list[str], rank: int, category_key: str) -> dict:
     ret_1w = _num(parts[7] if len(parts) > 7 else None)
     ret_1m = _num(parts[8] if len(parts) > 8 else None)
@@ -968,21 +1045,54 @@ def get_fund_decision_outcome(
         {"date": str(row["date"]), "unit_nav": _num(row["unit_nav"])}
         for _, row in history.iterrows()
     ]
+    peer_series = None
+    peer_unavailable_reason = None
+    try:
+        peer_series = _fund_peer_comparison_series(code)
+    except Exception as error:
+        peer_unavailable_reason = f"provider_peer_series_unavailable:{error}"
     result = evaluate_fund_decision_outcome(
         code=code,
         baseline_as_of=baseline_as_of,
         baseline_nav=baseline_nav,
         action=action,
         points=points,
+        peer_series=peer_series,
+        peer_unavailable_reason=peer_unavailable_reason,
     )
     provider_as_of = str(history.iloc[-1]["date"]) if not history.empty else str(baseline_as_of)
+    peer_status = (result.get("peer_comparison") or {}).get("status")
     result.update({
-        "source": "东方财富基金净值走势 / 天天基金历史净值",
+        "source": (
+            "东方财富基金确认净值 + 东方财富基金详情页同类平均"
+            if peer_series is not None
+            else "东方财富基金确认净值"
+        ),
         "source_url": f"https://fund.eastmoney.com/{code}.html",
         "provider_as_of": provider_as_of,
+        "source_refs": [
+            {
+                "provider": "东方财富基金净值走势 / 天天基金历史净值",
+                "fields": ["确认单位净值", "确认净值日期"],
+                "as_of": provider_as_of,
+            },
+            {
+                "provider": "东方财富基金详情页 Data_grandTotal",
+                "fields": ["同类平均累计收益"],
+                "available": peer_series is not None,
+                "as_of": (peer_series or {}).get("series_end"),
+            },
+        ],
         "quality": {
+            "status": "complete" if peer_status in {"available", "pending"} else "partial",
             "confirmed_nav_only": True,
             "provider_observation_count": len(history),
+            "peer_comparator_status": peer_status,
+            "peer_provider_observation_count": (peer_series or {}).get("observation_count", 0),
+            "fund_provider_observation_count": (peer_series or {}).get("fund_observation_count", 0),
+            "peer_series_start": (peer_series or {}).get("series_start"),
+            "peer_series_end": (peer_series or {}).get("series_end"),
+            "no_proxy_fallback": True,
         },
     })
     return result
