@@ -26,6 +26,13 @@ const HORIZON_OPTIONS = [
   { value: 'long', label: '长期（5 年以上）' },
 ]
 
+const FUND_MARKET_OPTIONS = [
+  { value: 'mainland', label: '内地市场' },
+  { value: 'hong_kong', label: '港股市场' },
+  { value: 'united_states', label: '美国市场' },
+  { value: 'global', label: '全球及其他海外' },
+]
+
 const PRIORITY_META = {
   high: { label: '优先处理', icon: AlertTriangle },
   medium: { label: '需要复盘', icon: CircleAlert },
@@ -62,6 +69,8 @@ export default function DecisionCenter({ data, loading, error, onRefresh, onNavi
     horizon: 'mid_long',
     monthly_budget: '',
     max_single_ratio: '35',
+    allowed_fund_markets: ['mainland'],
+    accept_fx_risk: false,
   })
 
   const profile = data?.profile
@@ -76,11 +85,22 @@ export default function DecisionCenter({ data, loading, error, onRefresh, onNavi
       horizon: profile.horizon || 'mid_long',
       monthly_budget: profile.monthly_budget ?? '',
       max_single_ratio: String(profile.max_single_ratio ?? 35),
+      allowed_fund_markets: profile.allowed_fund_markets?.length ? profile.allowed_fund_markets : ['mainland'],
+      accept_fx_risk: Boolean(profile.accept_fx_risk),
     })
   }, [profile])
 
   function updateForm(field, value) {
     setForm((current) => ({ ...current, [field]: value }))
+  }
+
+  function toggleFundMarket(value) {
+    setForm((current) => {
+      const selected = new Set(current.allowed_fund_markets)
+      if (selected.has(value)) selected.delete(value)
+      else selected.add(value)
+      return { ...current, allowed_fund_markets: [...selected] }
+    })
   }
 
   async function saveProfile() {
@@ -92,6 +112,8 @@ export default function DecisionCenter({ data, loading, error, onRefresh, onNavi
         horizon: form.horizon,
         monthly_budget: form.monthly_budget === '' ? null : Number(form.monthly_budget),
         max_single_ratio: Number(form.max_single_ratio),
+        allowed_fund_markets: form.allowed_fund_markets,
+        accept_fx_risk: form.accept_fx_risk,
       })
       setEditing(false)
       onRefresh()
@@ -147,6 +169,8 @@ export default function DecisionCenter({ data, loading, error, onRefresh, onNavi
             <span>投资期限 <b>{HORIZON_OPTIONS.find((item) => item.value === profile?.horizon)?.label || '-'}</b></span>
             <span>单品上限 <b>{profile?.configured ? `${profile.max_single_ratio}%` : '未设置'}</b></span>
             <span>月度预算 <b>{profile?.configured ? formatBudget(profile.monthly_budget) : '未设置'}</b></span>
+            <span>基金市场 <b>{profile?.configured ? (profile.allowed_fund_markets || []).map((value) => FUND_MARKET_OPTIONS.find((item) => item.value === value)?.label || value).join('、') : '未设置'}</b></span>
+            <span>汇率风险 <b>{profile?.configured ? (profile.accept_fx_risk ? '已确认接受' : '未接受') : '未设置'}</b></span>
           </div>
         )}
         {editing && (
@@ -171,8 +195,31 @@ export default function DecisionCenter({ data, loading, error, onRefresh, onNavi
               <span>每月新增投入预算（可选）</span>
               <input type="number" min="0" step="100" placeholder="例如 2000" value={form.monthly_budget} onChange={(event) => updateForm('monthly_budget', event.target.value)} />
             </label>
+            <fieldset className="decision-market-field">
+              <legend>允许投资的基金市场</legend>
+              <div className="decision-market-options">
+                {FUND_MARKET_OPTIONS.map((item) => (
+                  <label key={item.value}>
+                    <input
+                      type="checkbox"
+                      checked={form.allowed_fund_markets.includes(item.value)}
+                      onChange={() => toggleFundMarket(item.value)}
+                    />
+                    <span>{item.label}</span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+            <label className="decision-fx-toggle">
+              <input
+                type="checkbox"
+                checked={form.accept_fx_risk}
+                onChange={(event) => updateForm('accept_fx_risk', event.target.checked)}
+              />
+              <span>我接受跨境基金的汇率波动、海外休市和净值确认滞后风险</span>
+            </label>
             <div className="decision-profile-actions">
-              <button onClick={saveProfile} disabled={saving}>{saving ? '保存中' : '保存约束'}</button>
+              <button onClick={saveProfile} disabled={saving || form.allowed_fund_markets.length === 0}>{saving ? '保存中' : '保存约束'}</button>
               <button className="ghost" onClick={() => setEditing(false)} disabled={saving}>取消</button>
             </div>
             {saveError && <div className="error">{saveError}</div>}

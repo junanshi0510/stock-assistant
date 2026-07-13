@@ -55,6 +55,11 @@ def get_portfolio_context(payload: dict[str, Any]) -> dict[str, Any]:
             "horizon": profile.get("horizon") if profile_configured else None,
             "monthly_budget": _number(profile.get("monthly_budget")) if profile_configured else None,
             "max_single_ratio": _number(profile.get("max_single_ratio")) if profile_configured else None,
+            "allowed_fund_markets": (
+                list(profile.get("allowed_fund_markets") or [])
+                if profile_configured else []
+            ),
+            "accept_fx_risk": bool(profile.get("accept_fx_risk")) if profile_configured else False,
             "updated_at": profile.get("updated_at"),
         },
         "portfolio": {

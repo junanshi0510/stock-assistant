@@ -27,6 +27,7 @@ import {
 } from '../api/agent'
 import AssetLevelRecurrenceView from '../components/AssetLevelRecurrenceView'
 import PersonalizedDecisionView from '../components/PersonalizedDecisionView'
+import FundMarketProfileView from '../components/FundMarketProfileView'
 
 const TERMINAL = new Set(['completed', 'partial', 'failed', 'cancelled', 'abstained'])
 const EMPTY_HISTORY_FILTERS = { code: '', status: '' }
@@ -55,6 +56,7 @@ const STEP_LABELS = {
   'fund.alternatives.get': '同类替代候选',
   'portfolio.context.get': '真实持仓与投资约束',
   'fund.personalized_decision.evaluate': '个人风险门禁与金额策略',
+  'fund.market_profile.get': '真实基金投资市场识别',
 }
 
 const STRATEGY_DECISION = {
@@ -352,7 +354,7 @@ export default function AgentTab() {
   const progress = useMemo(() => {
     if (!run) return { completed: 0, total: 0 }
     const completed = (run.steps || []).filter((item) => ['succeeded', 'partial', 'failed'].includes(item.status)).length
-    const requested = 1 + (run.input?.include_portfolio_context === false ? 0 : 2)
+    const requested = 2 + (run.input?.include_portfolio_context === false ? 0 : 2)
       + Number(Boolean(run.input?.include_estimate))
       + Number(Boolean(run.input?.include_disclosure_changes))
       + Number(Boolean(run.input?.include_alternatives))
@@ -736,6 +738,10 @@ export default function AgentTab() {
 
           {result.personalized_decision && (
             <PersonalizedDecisionView decision={result.personalized_decision} onOpenEvidence={openEvidence} />
+          )}
+
+          {result.market_profile && (
+            <FundMarketProfileView profile={result.market_profile} onOpenEvidence={openEvidence} />
           )}
 
           {result.strategy && (

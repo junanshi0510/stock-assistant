@@ -131,6 +131,12 @@ class AgentWorkflowRunner:
             tool_version="1.0.0",
             required=True,
             input_payload={"code": code, "months": months},
+        ), WorkflowStep(
+            key="fund_market_profile",
+            tool_name="fund.market_profile.get",
+            tool_version="1.0.0",
+            required=True,
+            input_payload={"code": code},
         )]
         if payload.get("include_portfolio_context", True):
             steps.append(WorkflowStep(
@@ -410,6 +416,15 @@ class AgentWorkflowRunner:
                         facts.append(item)
 
         personalized_decision = None
+        market_profile = None
+        market_payload = outputs.get("fund_market_profile") or {}
+        market_evidence = evidence.get("fund_market_profile") or {}
+        if market_payload:
+            market_profile = dict(market_payload)
+            market_profile["evidence_id"] = market_evidence.get("id")
+            market_profile["evidence_ids"] = (
+                [market_evidence["id"]] if market_evidence.get("id") else []
+            )
         decision_payload = outputs.get("personalized_decision") or {}
         decision_evidence = evidence.get("personalized_decision") or {}
         if decision_payload:
@@ -418,6 +433,7 @@ class AgentWorkflowRunner:
             personalized_decision["evidence_ids"] = [
                 item for item in (
                     (evidence.get("fund_analysis") or {}).get("id"),
+                    (evidence.get("fund_market_profile") or {}).get("id"),
                     (evidence.get("portfolio_context") or {}).get("id"),
                     decision_evidence.get("id"),
                 ) if item
@@ -544,7 +560,7 @@ class AgentWorkflowRunner:
             headline += " 部分真实数据暂不可用，结论范围已收窄。"
 
         return {
-            "schema_version": "fund_deep_research.v2",
+            "schema_version": "fund_deep_research.v3",
             "generated_at": _now(),
             "intent": "fund_deep_research",
             "scope": {
@@ -575,6 +591,7 @@ class AgentWorkflowRunner:
             },
             "facts": facts,
             "strategy": strategy_result,
+            "market_profile": market_profile,
             "personalized_decision": personalized_decision,
             "level_recurrence": level_recurrence_result,
             "risk_review": {
@@ -630,9 +647,15 @@ class AgentWorkflowRunner:
         if "fund_analysis" not in outputs or "fund_analysis" not in evidence:
             raise RequiredToolError("基金核心分析没有形成可验证 Evidence")
 
-        if "portfolio_context" in outputs and "portfolio_context" in evidence:
+        if (
+            "portfolio_context" in outputs
+            and "portfolio_context" in evidence
+            and "fund_market_profile" in outputs
+            and "fund_market_profile" in evidence
+        ):
             source_evidence_ids = [
                 evidence["fund_analysis"]["id"],
+                evidence["fund_market_profile"]["id"],
                 evidence["portfolio_context"]["id"],
             ]
             decision_step = WorkflowStep(
@@ -647,6 +670,7 @@ class AgentWorkflowRunner:
                 },
                 runtime_input_payload={
                     "analysis": outputs["fund_analysis"],
+                    "market_profile": outputs["fund_market_profile"],
                     "context": outputs["portfolio_context"],
                     "planned_amount": payload.get("planned_amount"),
                     "input_evidence_ids": source_evidence_ids,

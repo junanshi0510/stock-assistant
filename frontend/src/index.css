@@ -2848,6 +2848,43 @@ tbody tr:hover { background: #f0f8f6; }
 .decision-profile-form .field input,
 .decision-profile-form .field select { width: 100%; }
 
+.decision-market-field {
+  grid-column: 1 / -1;
+  min-width: 0;
+  margin: 0;
+  padding: 10px 0 0;
+  border: 0;
+  border-top: 1px solid #d7e6e4;
+}
+
+.decision-market-field legend {
+  padding: 0;
+  color: #536a72;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.decision-market-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin-top: 9px;
+}
+
+.decision-market-options label,
+.decision-fx-toggle {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 7px;
+  color: #344b54;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.decision-market-options input,
+.decision-fx-toggle input { flex: 0 0 auto; margin-top: 2px; }
+.decision-fx-toggle { grid-column: 1 / -1; }
+
 .decision-profile-actions {
   display: flex;
   align-items: flex-end;
@@ -3598,7 +3635,8 @@ tbody tr:hover { background: #f0f8f6; }
 .agent-audit-detail,
 .agent-comparison-panel,
 .agent-strategy-panel,
-.agent-personal-decision {
+.agent-personal-decision,
+.agent-market-profile {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--panel);
@@ -3613,7 +3651,8 @@ tbody tr:hover { background: #f0f8f6; }
 .agent-audit-detail,
 .agent-comparison-panel,
 .agent-strategy-panel,
-.agent-personal-decision { padding: 20px; }
+.agent-personal-decision,
+.agent-market-profile { padding: 20px; }
 
 .agent-run-head,
 .agent-section-head {
@@ -3779,6 +3818,13 @@ tbody tr:hover { background: #f0f8f6; }
 .agent-personal-metrics small { margin-top: 5px; color: var(--muted); font-size: 9px; line-height: 1.4; }
 .agent-personal-evidence-row { display: flex; align-items: flex-start; gap: 7px; margin-top: 12px; padding: 10px 0; border-block: 1px solid var(--border); color: var(--muted); font-size: 10px; line-height: 1.5; }
 .agent-personal-evidence-row svg { flex: 0 0 auto; margin-top: 1px; color: #1e6f91; }
+.agent-personal-market { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+.agent-personal-market > div { min-width: 0; padding: 10px 11px; border-top: 2px solid #7aa9b8; background: #f4f8f9; }
+.agent-personal-market span,
+.agent-personal-market small { display: block; }
+.agent-personal-market span { color: var(--faint); font-size: 9.5px; }
+.agent-personal-market b { display: block; margin-top: 5px; font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
+.agent-personal-market small { margin-top: 5px; color: var(--muted); font-size: 8.5px; line-height: 1.45; overflow-wrap: anywhere; }
 .agent-personal-gates { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 7px; margin-top: 12px; }
 .agent-personal-gates > div { display: flex; align-items: flex-start; gap: 7px; min-width: 0; padding: 9px; border-top: 2px solid var(--border-strong); background: #f8fafb; }
 .agent-personal-gates > div.pass { border-top-color: #087d68; }
@@ -3796,6 +3842,17 @@ tbody tr:hover { background: #f0f8f6; }
 .agent-personal-gates small { margin-top: 4px; color: var(--muted); font-size: 8.5px; line-height: 1.4; overflow-wrap: anywhere; }
 .agent-personal-missing { margin-top: 12px; padding: 9px 10px; border-left: 2px solid #956300; background: #fff9ea; color: #7a5200; font-size: 10px; }
 .agent-personal-policy { margin: 9px 0 0; color: var(--faint); font-size: 9.5px; line-height: 1.5; }
+.agent-market-profile { border-top: 3px solid #3c7c67; }
+.agent-market-summary { display: grid; grid-template-columns: auto repeat(4, minmax(0, 1fr)); gap: 12px; align-items: center; margin-top: 14px; padding: 12px; background: #f3f8f6; }
+.agent-market-summary > svg { color: #22735d; }
+.agent-market-summary div { min-width: 0; }
+.agent-market-summary span { display: block; color: var(--faint); font-size: 9.5px; }
+.agent-market-summary b { display: block; margin-top: 4px; font-size: 11px; overflow-wrap: anywhere; }
+.agent-market-benchmarks { margin-top: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.agent-market-benchmarks span { display: block; color: var(--faint); font-size: 9.5px; }
+.agent-market-benchmarks b { display: block; margin-top: 5px; font-size: 10.5px; line-height: 1.45; overflow-wrap: anywhere; }
+.agent-market-policy { display: flex; align-items: flex-start; gap: 7px; margin: 10px 0 0; color: var(--muted); font-size: 9.5px; line-height: 1.5; }
+.agent-market-policy svg { flex: 0 0 auto; margin-top: 1px; color: #956300; }
 
 .level-recurrence-view { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); }
 .agent-result-section .level-recurrence-view { margin-top: 0; padding-top: 0; border-top: 0; }
@@ -3962,6 +4019,7 @@ tbody tr:hover { background: #f0f8f6; }
   .agent-strategy-condition { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .agent-strategy-horizons { grid-template-columns: 1fr; }
   .agent-personal-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .agent-personal-market { grid-template-columns: 1fr 1fr; }
   .agent-personal-gates { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 
@@ -3980,6 +4038,8 @@ tbody tr:hover { background: #f0f8f6; }
   .agent-comparison-overview > div:last-child { grid-column: 1 / -1; }
   .agent-strategy-gates { grid-template-columns: 1fr; }
   .agent-personal-action { grid-template-columns: 1fr; }
+  .agent-personal-market { grid-template-columns: 1fr; }
+  .agent-market-summary { grid-template-columns: auto 1fr 1fr; }
   .agent-personal-gates { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .level-recurrence-summary { grid-template-columns: 1fr; }
   .level-recurrence-result { border-top: 1px solid var(--border); border-left: 0; }
@@ -3994,7 +4054,9 @@ tbody tr:hover { background: #f0f8f6; }
   .agent-audit-detail,
   .agent-comparison-panel,
   .agent-strategy-panel,
-  .agent-personal-decision { padding: 15px; }
+  .agent-personal-decision,
+  .agent-market-profile { padding: 15px; }
+  .agent-market-summary { grid-template-columns: auto 1fr; }
   .agent-history-panel { padding: 15px; }
   .agent-launcher .field,
   .agent-launcher .field input,

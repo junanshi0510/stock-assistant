@@ -20,6 +20,14 @@ const ACTION_TONE = {
   hold_no_add: 'negative',
   setup_required: 'unavailable',
   budget_required: 'unavailable',
+  market_data_required: 'unavailable',
+}
+
+const MARKET_LABELS = {
+  mainland: '内地市场',
+  hong_kong: '港股市场',
+  united_states: '美国市场',
+  global: '全球及其他海外',
 }
 
 export default function PersonalizedDecisionView({ decision, onOpenEvidence }) {
@@ -28,6 +36,7 @@ export default function PersonalizedDecisionView({ decision, onOpenEvidence }) {
   const portfolio = decision.portfolio || {}
   const budget = decision.budget || {}
   const history = decision.historical_context || {}
+  const market = decision.market_context || {}
   const tone = ACTION_TONE[action.action] || 'mixed'
 
   return (
@@ -68,6 +77,24 @@ export default function PersonalizedDecisionView({ decision, onOpenEvidence }) {
         </span>
       </div>
 
+      <div className="agent-personal-market">
+        <div>
+          <span>基金投资市场</span>
+          <b>{market.label || '待确认'}{market.is_qdii ? ' · QDII' : ''}</b>
+          <small>{market.confirmed_nav_lag || '以确认净值日期为准'}</small>
+        </div>
+        <div>
+          <span>你的市场权限</span>
+          <b>{(market.allowed_markets || []).map((item) => MARKET_LABELS[item] || item).join('、') || '-'}</b>
+          <small>{market.currency_risk ? (market.accept_fx_risk ? '已确认汇率风险' : '尚未确认汇率风险') : '无需额外汇率确认'}</small>
+        </div>
+        <div>
+          <span>详情页比较序列</span>
+          <b>{(market.benchmark_names || []).slice(0, 3).join('、') || '-'}</b>
+          <small>{market.estimate_policy || '盘中估值不替代确认净值'}</small>
+        </div>
+      </div>
+
       <div className="agent-personal-gates">
         {(decision.gates || []).map((gate) => {
           const Icon = gate.status === 'pass' ? CircleCheck : gate.status === 'block' ? ShieldAlert : CircleAlert
@@ -86,6 +113,7 @@ export default function PersonalizedDecisionView({ decision, onOpenEvidence }) {
             investment_profile: '投资约束',
             confirmed_holding_amounts: '完整持仓金额',
             planned_or_monthly_budget: '计划投入或月度预算',
+            fund_market_identification: '基金投资市场证据',
           }[item] || item)).join('、')}
         </div>
       )}

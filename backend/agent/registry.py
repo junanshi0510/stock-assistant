@@ -82,6 +82,14 @@ def build_default_registry() -> ToolRegistry:
         handler=lambda payload: fund_service.get_fund_estimate(str(payload["code"])),
     ))
     registry.register(ToolDefinition(
+        name="fund.market_profile.get",
+        version="1.0.0",
+        description="读取真实基金类型和详情页基准，识别内地、港股、美股、全球或跨市场暴露。",
+        risk_level="R0",
+        timeout_seconds=25,
+        handler=lambda payload: fund_service.get_fund_market_profile(str(payload["code"])),
+    ))
+    registry.register(ToolDefinition(
         name="fund.disclosure_changes.get",
         version="1.0.0",
         description="比较两个真实且不同的基金定期报告披露期。",
@@ -120,6 +128,7 @@ def build_default_registry() -> ToolRegistry:
             **evaluate_personalized_fund_decision(
                 payload["analysis"],
                 payload["context"],
+                payload["market_profile"],
                 planned_amount=payload.get("planned_amount"),
             ),
             "input_evidence_ids": payload.get("input_evidence_ids") or [],

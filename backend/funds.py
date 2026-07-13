@@ -28,6 +28,7 @@ import akshare as ak
 from akshare.utils import demjson
 
 from strategies.fund_conditioned_forward import evaluate_conditioned_forward_strategy
+from strategies.fund_market_profile import build_fund_market_profile
 from strategies.asset_level_recurrence import (
     evaluate_fund_level_recurrence,
     unavailable_level_recurrence,
@@ -205,7 +206,7 @@ def _date_from_ms(value) -> str:
     if num is None:
         return ""
     try:
-        return dt.datetime.utcfromtimestamp(num / 1000).date().isoformat()
+        return dt.datetime.fromtimestamp(num / 1000, dt.timezone.utc).date().isoformat()
     except (OSError, OverflowError, ValueError):
         return ""
 
@@ -906,6 +907,49 @@ def _fund_search_one(code: str) -> dict | None:
         if item.get("code") == code:
             return item
     return result.get("items", [None])[0] if result.get("items") else None
+
+
+def get_fund_market_profile(code: str) -> dict:
+    """Return an auditable market classification from real provider metadata."""
+    code = str(code or "").strip()
+    if not re.fullmatch(r"\d{6}", code):
+        raise ValueError("基金代码需要是 6 位数字")
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="fund-market-profile") as pool:
+        info_future = pool.submit(_fund_search_one, code)
+        fact_sheet_future = pool.submit(_fund_fact_sheet, code)
+        info = info_future.result()
+        fact_sheet = fact_sheet_future.result()
+    if not info or info.get("code") != code:
+        raise RuntimeError("东方财富基金代码库未返回该基金的真实类型信息")
+    benchmark_names = [
+        str(item.get("name") or "")
+        for item in ((fact_sheet.get("benchmark_comparison") or {}).get("series") or [])
+        if item.get("name")
+    ]
+    result = build_fund_market_profile(
+        code=code,
+        name=str(info.get("name") or fact_sheet.get("name") or ""),
+        fund_type=str(info.get("type") or ""),
+        benchmark_names=benchmark_names,
+    )
+    result.update({
+        "source": "东方财富基金代码搜索库 + 东方财富基金详情页",
+        "source_url": f"https://fund.eastmoney.com/{code}.html",
+        "source_refs": [
+            {
+                "provider": "东方财富基金代码搜索库",
+                "url": "https://fund.eastmoney.com/js/fundcode_search.js",
+                "fields": ["基金代码", "基金名称", "基金类型"],
+            },
+            {
+                "provider": "东方财富基金详情页",
+                "url": f"https://fund.eastmoney.com/{code}.html",
+                "fields": ["累计收益比较序列名称"],
+                "available": bool(fact_sheet),
+            },
+        ],
+    })
+    return result
 
 
 def _category_from_fund_type(fund_type: str) -> str:

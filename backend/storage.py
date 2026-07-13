@@ -92,6 +92,8 @@ def _get_conn():
                 horizon          TEXT NOT NULL,
                 monthly_budget   REAL,
                 max_single_ratio REAL NOT NULL,
+                allowed_fund_markets TEXT NOT NULL DEFAULT '["mainland"]',
+                accept_fx_risk   INTEGER NOT NULL DEFAULT 0,
                 updated_at       TEXT NOT NULL
             )
             """
@@ -146,6 +148,18 @@ def _get_conn():
         )
         _ensure_column(_conn, "holdings", "yesterday_profit", "REAL")
         _ensure_column(_conn, "portfolio_transactions", "source", "TEXT")
+        _ensure_column(
+            _conn,
+            "investment_profiles",
+            "allowed_fund_markets",
+            "TEXT NOT NULL DEFAULT '[\"mainland\"]'",
+        )
+        _ensure_column(
+            _conn,
+            "investment_profiles",
+            "accept_fx_risk",
+            "INTEGER NOT NULL DEFAULT 0",
+        )
         _conn.commit()
     return _conn
 
@@ -245,6 +259,8 @@ _PROFILE_DEFAULTS = {
     "horizon": "mid_long",
     "monthly_budget": None,
     "max_single_ratio": 35.0,
+    "allowed_fund_markets": ["mainland"],
+    "accept_fx_risk": False,
 }
 
 
@@ -253,7 +269,8 @@ def get_investment_profile(user_id: str = "default") -> dict:
     with _lock:
         row = _get_conn().execute(
             """
-            SELECT risk, horizon, monthly_budget, max_single_ratio, updated_at
+            SELECT risk, horizon, monthly_budget, max_single_ratio,
+                   allowed_fund_markets, accept_fx_risk, updated_at
             FROM investment_profiles
             WHERE user_id=?
             """,
@@ -261,7 +278,16 @@ def get_investment_profile(user_id: str = "default") -> dict:
         ).fetchone()
     if row is None:
         return {**_PROFILE_DEFAULTS, "configured": False, "updated_at": None}
-    return {**dict(row), "configured": True}
+    result = dict(row)
+    try:
+        allowed_markets = json.loads(result.get("allowed_fund_markets") or "[]")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        allowed_markets = []
+    result["allowed_fund_markets"] = [
+        str(item) for item in allowed_markets if isinstance(item, str)
+    ]
+    result["accept_fx_risk"] = bool(result.get("accept_fx_risk"))
+    return {**result, "configured": True}
 
 
 def save_investment_profile(profile: dict, user_id: str = "default") -> dict:
@@ -273,6 +299,8 @@ def save_investment_profile(profile: dict, user_id: str = "default") -> dict:
         str(profile["horizon"]),
         profile.get("monthly_budget"),
         float(profile["max_single_ratio"]),
+        json.dumps(profile.get("allowed_fund_markets") or [], ensure_ascii=True),
+        1 if profile.get("accept_fx_risk") else 0,
         now,
     )
     with _lock:
@@ -280,14 +308,17 @@ def save_investment_profile(profile: dict, user_id: str = "default") -> dict:
         conn.execute(
             """
             INSERT INTO investment_profiles (
-                user_id, risk, horizon, monthly_budget, max_single_ratio, updated_at
+                user_id, risk, horizon, monthly_budget, max_single_ratio,
+                allowed_fund_markets, accept_fx_risk, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id) DO UPDATE SET
                 risk=excluded.risk,
                 horizon=excluded.horizon,
                 monthly_budget=excluded.monthly_budget,
                 max_single_ratio=excluded.max_single_ratio,
+                allowed_fund_markets=excluded.allowed_fund_markets,
+                accept_fx_risk=excluded.accept_fx_risk,
                 updated_at=excluded.updated_at
             """,
             values,

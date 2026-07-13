@@ -51,6 +51,8 @@ def _context(*, configured=True, total=10000, target_amount=1000, target_ratio=1
             "horizon": "mid_long",
             "monthly_budget": 1000,
             "max_single_ratio": max_ratio,
+            "allowed_fund_markets": ["mainland"],
+            "accept_fx_risk": False,
         },
         "portfolio": {
             "holding_count": 3,
@@ -66,10 +68,27 @@ def _context(*, configured=True, total=10000, target_amount=1000, target_ratio=1
     }
 
 
+def _market(primary="mainland", *, resolution="identified", qdii=False):
+    permission = [] if resolution != "identified" else [primary]
+    return {
+        "resolution_status": resolution,
+        "fund": {"is_qdii": qdii},
+        "market": {
+            "primary": primary,
+            "label": {"mainland": "中国内地", "hong_kong": "中国香港", "united_states": "美国"}.get(primary, "待确认"),
+            "required_permissions": permission,
+            "cross_border": primary != "mainland",
+            "currency_risk": primary != "mainland",
+        },
+        "benchmark_names": ["沪深300" if primary == "mainland" else "恒生科技指数"],
+        "valuation": {"confirmed_nav_lag": "以确认净值日为准"},
+    }
+
+
 class PersonalizedFundDecisionTests(unittest.TestCase):
     def test_missing_profile_abstains_without_amount(self):
         result = evaluate_personalized_fund_decision(
-            _analysis(), _context(configured=False), planned_amount=2000
+            _analysis(), _context(configured=False), _market(), planned_amount=2000
         )
 
         self.assertEqual(result["status"], "abstained")
@@ -103,6 +122,7 @@ class PersonalizedFundDecisionTests(unittest.TestCase):
         result = evaluate_personalized_fund_decision(
             _analysis(),
             _context(total=10000, target_amount=5000, target_ratio=50, max_ratio=35),
+            _market(),
             planned_amount=1000,
         )
 
@@ -112,7 +132,7 @@ class PersonalizedFundDecisionTests(unittest.TestCase):
 
     def test_positive_history_within_limits_returns_auditable_tranche(self):
         result = evaluate_personalized_fund_decision(
-            _analysis(), _context(), planned_amount=1000
+            _analysis(), _context(), _market(), planned_amount=1000
         )
 
         self.assertEqual(result["strategy_id"], STRATEGY_ID)
@@ -125,7 +145,7 @@ class PersonalizedFundDecisionTests(unittest.TestCase):
 
     def test_negative_historical_condition_blocks_averaging_down(self):
         result = evaluate_personalized_fund_decision(
-            _analysis(decision="avoid_for_now"), _context(), planned_amount=1000
+            _analysis(decision="avoid_for_now"), _context(), _market(), planned_amount=1000
         )
 
         self.assertEqual(result["decision"]["action"], "wait")
@@ -136,7 +156,7 @@ class PersonalizedFundDecisionTests(unittest.TestCase):
         context = _context()
         context["profile"]["risk"] = "stable"
         result = evaluate_personalized_fund_decision(
-            _analysis(risk_band="进攻型"), context, planned_amount=1000
+            _analysis(risk_band="进攻型"), context, _market(), planned_amount=1000
         )
 
         self.assertEqual(result["decision"]["action"], "do_not_add")
@@ -147,11 +167,50 @@ class PersonalizedFundDecisionTests(unittest.TestCase):
         context = _context()
         context["profile"]["horizon"] = "short"
         result = evaluate_personalized_fund_decision(
-            _analysis(), context, planned_amount=1000
+            _analysis(), context, _market(), planned_amount=1000
         )
 
         self.assertEqual(result["decision"]["action"], "do_not_add")
         self.assertIsNone(result["budget"]["allowed_full_amount"])
+
+    def test_hong_kong_fund_requires_permission_and_fx_acknowledgement(self):
+        context = _context()
+        result = evaluate_personalized_fund_decision(
+            _analysis(), context, _market("hong_kong", qdii=True), planned_amount=1000
+        )
+
+        self.assertEqual(result["decision"]["action"], "do_not_add")
+        self.assertIsNone(result["budget"]["allowed_full_amount"])
+        blocked = {item["code"] for item in result["gates"] if item["status"] == "block"}
+        self.assertIn("fund_market_permission", blocked)
+        self.assertIn("foreign_exchange_risk", blocked)
+
+    def test_hong_kong_fund_can_reach_tranche_only_after_explicit_consent(self):
+        context = _context()
+        context["profile"]["allowed_fund_markets"].append("hong_kong")
+        context["profile"]["accept_fx_risk"] = True
+        result = evaluate_personalized_fund_decision(
+            _analysis(), context, _market("hong_kong", qdii=True), planned_amount=1000
+        )
+
+        self.assertEqual(result["decision"]["action"], "consider_tranche")
+        self.assertEqual(result["market_context"]["primary"], "hong_kong")
+        self.assertEqual(result["budget"]["first_tranche_amount"], 250)
+
+    def test_unresolved_qdii_market_blocks_amount(self):
+        context = _context()
+        context["profile"]["allowed_fund_markets"] = ["mainland", "hong_kong", "united_states", "global"]
+        context["profile"]["accept_fx_risk"] = True
+        result = evaluate_personalized_fund_decision(
+            _analysis(),
+            context,
+            _market("unknown_cross_border", resolution="insufficient", qdii=True),
+            planned_amount=1000,
+        )
+
+        self.assertEqual(result["decision"]["action"], "market_data_required")
+        self.assertIsNone(result["budget"]["allowed_full_amount"])
+        self.assertIn("fund_market_identification", result["missing_requirements"])
 
     def test_portfolio_context_only_reads_confirmed_storage_fields(self):
         holdings = [{

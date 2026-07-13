@@ -47,6 +47,7 @@ def _required_reduction(total: float, current: float, ratio: float) -> float:
 def evaluate_personalized_fund_decision(
     analysis: dict[str, Any],
     context: dict[str, Any],
+    market_profile: dict[str, Any] | None = None,
     *,
     planned_amount: float | None = None,
 ) -> dict[str, Any]:
@@ -54,6 +55,8 @@ def evaluate_personalized_fund_decision(
     portfolio = context.get("portfolio") or {}
     target = context.get("target_holding") or {}
     strategy = analysis.get("conditioned_forward") or {}
+    market_profile = market_profile or {}
+    market = market_profile.get("market") or {}
     metrics = analysis.get("metrics") or {}
     timing = analysis.get("timing") or {}
 
@@ -71,6 +74,8 @@ def evaluate_personalized_fund_decision(
     fund_risk = _fund_risk_level(analysis)
     user_risk = str(profile.get("risk") or "") if configured else ""
     horizon = str(profile.get("horizon") or "") if configured else ""
+    allowed_markets = set(profile.get("allowed_fund_markets") or []) if configured else set()
+    accept_fx_risk = bool(profile.get("accept_fx_risk")) if configured else False
     strategy_decision = str(strategy.get("decision") or "data_required")
     confidence = str((strategy.get("confidence") or {}).get("level") or "unavailable")
     timing_score = _number(timing.get("score"))
@@ -94,6 +99,62 @@ def evaluate_personalized_fund_decision(
     })
     if not holdings_ready:
         missing.append("confirmed_holding_amounts")
+
+    market_resolution = str(market_profile.get("resolution_status") or "insufficient")
+    market_primary = str(market.get("primary") or "unknown_cross_border")
+    required_markets = set(market.get("required_permissions") or [])
+    market_unresolved = market_resolution != "identified" or not required_markets
+    missing_market_permissions = sorted(required_markets - allowed_markets) if configured else []
+    market_permission_block = configured and bool(missing_market_permissions)
+    currency_risk = bool(market.get("currency_risk"))
+    fx_block = configured and currency_risk and not accept_fx_risk
+    gates.append({
+        "code": "fund_market_identified",
+        "status": "block" if market_unresolved else "pass",
+        "label": "投资市场识别",
+        "detail": (
+            "真实基金元数据尚不能确认底层市场"
+            if market_unresolved else
+            f"已识别为 {market.get('label') or market_primary}"
+        ),
+    })
+    if market_unresolved:
+        missing.append("fund_market_identification")
+    gates.append({
+        "code": "fund_market_permission",
+        "status": (
+            "pending" if not configured or market_unresolved
+            else "block" if market_permission_block
+            else "pass"
+        ),
+        "label": "市场投资权限",
+        "detail": (
+            "配置投资档案后确认是否允许该基金市场"
+            if not configured else
+            f"未允许市场：{', '.join(missing_market_permissions)}"
+            if market_permission_block else
+            f"允许市场：{', '.join(sorted(allowed_markets)) or '-'}"
+        ),
+    })
+    gates.append({
+        "code": "foreign_exchange_risk",
+        "status": (
+            "pending" if not configured
+            else "block" if fx_block
+            else "pass"
+        ),
+        "label": "汇率风险",
+        "detail": (
+            "待在投资档案中明确确认是否接受汇率风险"
+            if not configured and currency_risk else
+            "配置投资档案后确认汇率风险"
+            if not configured else
+            "该基金存在跨境汇率风险，但用户尚未确认接受"
+            if fx_block else
+            "已确认接受汇率风险" if currency_risk and accept_fx_risk else
+            "未识别到必须单独确认的汇率风险"
+        ),
+    })
 
     risk_block = (
         configured
@@ -153,7 +214,11 @@ def evaluate_personalized_fund_decision(
     label = "持有并复核"
     rationale = "当前证据不足以支持新增投入，保持观察并等待下一次确认净值。"
     reduction = None
-    if missing:
+    if "fund_market_identification" in missing:
+        action = "market_data_required"
+        label = "等待确认基金投资市场"
+        rationale = "真实元数据只能确认该基金属于跨境产品，但无法确认主要投资市场，系统拒绝生成金额。"
+    elif missing:
         action = "setup_required"
         label = "先补齐个人决策资料"
         rationale = "缺少真实投资约束或完整持仓金额，系统拒绝生成个性化金额。"
@@ -162,6 +227,10 @@ def evaluate_personalized_fund_decision(
         label = "降低集中度"
         reduction = _required_reduction(total, current, max_ratio) if total is not None else None
         rationale = "目标基金已超过你设置的单品仓位上限，不应继续加仓。"
+    elif market_permission_block or fx_block:
+        action = "do_not_add"
+        label = "不新增投入"
+        rationale = "基金投资市场不在你允许的范围内，或跨境汇率风险尚未得到你的明确确认。"
     elif risk_block or horizon_block:
         action = "do_not_add"
         label = "不新增投入"
@@ -240,6 +309,20 @@ def evaluate_personalized_fund_decision(
             "user_horizon": horizon or None,
             "fund_risk": fund_risk,
         },
+        "market_context": {
+            "resolution_status": market_resolution,
+            "primary": market_primary,
+            "label": market.get("label"),
+            "is_qdii": bool((market_profile.get("fund") or {}).get("is_qdii")),
+            "cross_border": bool(market.get("cross_border")),
+            "currency_risk": currency_risk,
+            "required_permissions": sorted(required_markets),
+            "allowed_markets": sorted(allowed_markets),
+            "accept_fx_risk": accept_fx_risk,
+            "benchmark_names": market_profile.get("benchmark_names") or [],
+            "confirmed_nav_lag": (market_profile.get("valuation") or {}).get("confirmed_nav_lag"),
+            "estimate_policy": (market_profile.get("valuation") or {}).get("intraday_estimate_policy"),
+        },
         "historical_context": {
             "decision": strategy_decision,
             "confidence": confidence,
@@ -259,6 +342,7 @@ def evaluate_personalized_fund_decision(
             "amount": "min(planned_or_monthly_budget, maximum_additional_by_position_limit)",
             "tranche": "four_tranches_for_medium_confidence_otherwise_five",
             "loss_handling": "never_average_down_only_because_current_profit_is_negative",
+            "cross_market": "market_permission_and_fx_acknowledgement_are_required_before_amount",
         },
-        "policy": "这是基于已确认持仓、用户约束和历史统计的决策检查，不保证收益，不自动下单；缺少关键个人数据时必须拒绝给金额。当前持仓存储仍是单用户迁移账本，多用户开放前必须完成登录、授权与数据隔离。",
+        "policy": "这是基于已确认持仓、真实基金市场画像、用户约束和历史统计的决策检查，不保证收益，不自动下单；跨境市场未识别、市场未获允许或汇率风险未确认时不得给新增金额。当前持仓存储仍是单用户迁移账本，多用户开放前必须完成登录、授权与数据隔离。",
     }

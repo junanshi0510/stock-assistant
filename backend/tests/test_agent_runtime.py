@@ -199,6 +199,29 @@ def _alternatives(_payload):
     }
 
 
+def _market_profile(_payload):
+    return {
+        "status": "available",
+        "source": "真实基金市场元数据测试快照",
+        "source_url": "https://example.test/fund/001480",
+        "resolution_status": "identified",
+        "fund": {"code": "001480", "name": "测试基金", "fund_type": "混合型", "is_qdii": False},
+        "market": {
+            "primary": "mainland",
+            "label": "中国内地或未明确跨境",
+            "detected_markets": [],
+            "required_permissions": ["mainland"],
+            "cross_border": False,
+            "currency_risk": False,
+        },
+        "valuation": {
+            "confirmed_nav_lag": "以基金管理人确认净值日为准",
+            "intraday_estimate_policy": "估值不替代确认净值",
+        },
+        "benchmark_names": ["沪深300"],
+    }
+
+
 def _portfolio_context(_payload):
     return {
         "status": "available",
@@ -210,6 +233,8 @@ def _portfolio_context(_payload):
             "horizon": "mid_long",
             "monthly_budget": 1000,
             "max_single_ratio": 35,
+            "allowed_fund_markets": ["mainland"],
+            "accept_fx_risk": False,
         },
         "portfolio": {
             "holding_count": 2,
@@ -231,6 +256,7 @@ def _personalized_decision(payload):
     result = evaluate_personalized_fund_decision(
         payload["analysis"],
         payload["context"],
+        payload["market_profile"],
         planned_amount=payload.get("planned_amount"),
     )
     result["input_evidence_ids"] = payload.get("input_evidence_ids") or []
@@ -247,6 +273,7 @@ def _registry(
     timeout_overrides = timeout_overrides or {}
     for name, timeout, handler in (
         ("fund.analysis.get", 45, analysis_handler),
+        ("fund.market_profile.get", 25, _market_profile),
         ("fund.estimate.get", 20, estimate_handler),
         ("fund.disclosure_changes.get", 45, _disclosure),
         ("fund.alternatives.get", 120, alternatives_handler),
@@ -311,17 +338,18 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(request.months, 60)
         steps = AgentWorkflowRunner(self.repository, _registry())._fund_steps({"code": "001480"})
         self.assertEqual(steps[0].input_payload["months"], 60)
-        self.assertEqual(steps[1].key, "portfolio_context")
+        self.assertEqual(steps[1].key, "fund_market_profile")
+        self.assertEqual(steps[2].key, "portfolio_context")
 
     def test_completed_run_persists_claims_evidence_and_hash_chained_audit(self):
         run = self._run()
 
         self.assertEqual(run["status"], "completed")
-        self.assertEqual(len(run["steps"]), 6)
-        self.assertEqual(len(run["evidence"]), 6)
+        self.assertEqual(len(run["steps"]), 7)
+        self.assertEqual(len(run["evidence"]), 7)
         self.assertGreaterEqual(len(run["claims"]), 11)
         self.assertEqual(run["result"]["fund"]["code"], "001480")
-        self.assertEqual(run["result"]["schema_version"], "fund_deep_research.v2")
+        self.assertEqual(run["result"]["schema_version"], "fund_deep_research.v3")
         self.assertEqual(run["result"]["alternatives"][0]["code"], "000001")
         self.assertEqual(
             run["result"]["strategy"]["strategy_id"],
@@ -341,7 +369,7 @@ class AgentRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(
             len(run["result"]["personalized_decision"]["evidence_ids"]),
-            3,
+            4,
         )
         estimate_step = next(item for item in run["steps"] if item["step_key"] == "fund_estimate")
         estimate_evidence = next(
@@ -433,11 +461,11 @@ class AgentRuntimeTests(unittest.TestCase):
         estimate_step = next(item for item in run["steps"] if item["step_key"] == "fund_estimate")
         self.assertEqual(estimate_step["status"], "failed")
         self.assertEqual(estimate_step["error_code"], "TOOL_TIMEOUT")
-        self.assertEqual(len(run["evidence"]), 3)
+        self.assertEqual(len(run["evidence"]), 4)
 
         release_handler.set()
         time.sleep(0.05)
-        self.assertEqual(len(self.repository.get_run(run["id"])["evidence"]), 3)
+        self.assertEqual(len(self.repository.get_run(run["id"])["evidence"]), 4)
 
     def test_running_tool_can_be_cancelled_without_becoming_a_failure(self):
         def slow_analysis(payload):

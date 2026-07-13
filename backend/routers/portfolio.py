@@ -3,6 +3,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
+from typing import Literal
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
@@ -55,6 +56,10 @@ class InvestmentProfileRequest(BaseModel):
     horizon: str = "mid_long"
     monthly_budget: float | None = Field(default=None, ge=0)
     max_single_ratio: float = Field(default=35, ge=10, le=80)
+    allowed_fund_markets: list[
+        Literal["mainland", "hong_kong", "united_states", "global"]
+    ] = Field(default_factory=lambda: ["mainland"], min_length=1, max_length=4)
+    accept_fx_risk: bool = False
 
 
 class PortfolioTransactionRequest(BaseModel):
