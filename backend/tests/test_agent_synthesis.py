@@ -112,6 +112,16 @@ class _TruncatedGateway(_Gateway):
         }
 
 
+class _SequenceGateway(_Gateway):
+    def __init__(self, outputs):
+        super().__init__(outputs[0])
+        self.outputs = outputs
+
+    def invoke_structured(self, **kwargs):
+        self.output = self.outputs[min(len(self.calls), len(self.outputs) - 1)]
+        return super().invoke_structured(**kwargs)
+
+
 def _context():
     return {
         "schema_version": "fund_synthesis_context.v1",
@@ -168,6 +178,29 @@ class InvestmentSynthesisTests(unittest.TestCase):
         self.assertEqual(result["invocation"]["finish_reason"], "length")
         self.assertEqual(result["invocation"]["output_chars"], 17)
         self.assertNotIn("text", result["invocation"])
+        self.assertEqual(len(result["invocation_attempts"]), 2)
+
+    def test_quality_failure_gets_one_bounded_repair_attempt(self):
+        first = _model_output()
+        first["answer"] = "近阶段收益为 12.3%，需要继续研究。"
+        gateway = _SequenceGateway([first, _model_output()])
+        service = InvestmentSynthesisService(gateway)
+        context = _context()
+
+        result = service.synthesize({
+            "context": context,
+            "context_sha256": __import__("hashlib").sha256(
+                json.dumps(context, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest(),
+        })
+
+        self.assertEqual(result["status"], "available")
+        self.assertEqual(len(gateway.calls), 2)
+        self.assertEqual(len(result["invocation_attempts"]), 2)
+        self.assertIn(
+            "model_repeated_unverified_exact_financial_number",
+            gateway.calls[1]["system_prompt"],
+        )
 
     def test_unknown_evidence_reference_is_blocked(self):
         gateway = _Gateway(_model_output("ev_unknown"), private_context_enabled=False)
