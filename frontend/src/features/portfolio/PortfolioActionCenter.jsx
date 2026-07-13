@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   AlertTriangle,
+  BookOpenCheck,
   ChevronRight,
   FileText,
   Layers3,
+  Pencil,
   RefreshCw,
+  Save,
   ShieldCheck,
   Trash2,
   Upload,
@@ -30,9 +33,22 @@ function deltaClass(value) {
 
 function actionTone(action) {
   if (action === 'reduce_review') return 'critical'
-  if (['pause_add', 'risk_review'].includes(action)) return 'warning'
+  if (['pause_add', 'risk_review', 'thesis_review'].includes(action)) return 'warning'
   if (action === 'data_required') return 'blocked'
   return 'normal'
+}
+
+const THESIS_ROLES = [
+  ['core_growth', '核心增长'],
+  ['satellite_growth', '卫星增强'],
+  ['defensive', '防守稳定'],
+  ['income', '现金流'],
+  ['diversifier', '分散风险'],
+  ['tactical', '阶段机会'],
+]
+
+function holdingKey(item) {
+  return `${item?.asset_type || ''}:${item?.market || ''}:${item?.code || ''}`
 }
 
 function priorityLabel(priority) {
@@ -77,7 +93,171 @@ function fallbackRows(items, total) {
   }))
 }
 
-function HoldingDetail({ row, report, onClose, onDelete }) {
+function HoldingThesisSection({ row, record, assessment, saving, onSave }) {
+  const payload = record?.payload || {}
+  const [editing, setEditing] = useState(!record)
+  const [message, setMessage] = useState('')
+  const [form, setForm] = useState({
+    role: '',
+    thesis_summary: '',
+    expected_holding_months: '',
+    review_date: '',
+    max_loss_pct: '',
+    max_drawdown_pct: '',
+    add_condition: '',
+    exit_condition: '',
+  })
+
+  useEffect(() => {
+    const current = record?.payload || {}
+    setForm({
+      role: current.role || '',
+      thesis_summary: current.thesis_summary || '',
+      expected_holding_months: current.expected_holding_months ?? '',
+      review_date: current.review_date || '',
+      max_loss_pct: current.max_loss_pct ?? '',
+      max_drawdown_pct: current.max_drawdown_pct ?? '',
+      add_condition: current.add_condition || '',
+      exit_condition: current.exit_condition || '',
+    })
+    setEditing(!record)
+    setMessage('')
+  }, [record?.id, row.asset_type, row.market, row.code])
+
+  function update(field, value) {
+    setForm((current) => ({ ...current, [field]: value }))
+  }
+
+  const canSave = Boolean(
+    form.role
+    && form.thesis_summary.trim().length >= 12
+    && Number(form.expected_holding_months) >= 1
+    && form.review_date
+    && Number(form.max_loss_pct) >= 1
+    && Number(form.max_drawdown_pct) >= 1
+    && form.add_condition.trim().length >= 6
+    && form.exit_condition.trim().length >= 6
+  )
+
+  async function submit(event) {
+    event.preventDefault()
+    setMessage('')
+    try {
+      await onSave({
+        asset_type: row.asset_type,
+        market: row.market || '',
+        code: row.code,
+        ...form,
+        expected_holding_months: Number(form.expected_holding_months),
+        max_loss_pct: Number(form.max_loss_pct),
+        max_drawdown_pct: Number(form.max_drawdown_pct),
+      })
+      setEditing(false)
+      setMessage('已保存新版本；旧行动报告已失效。')
+    } catch (error) {
+      setMessage(error?.message || '持有逻辑保存失败')
+    }
+  }
+
+  const assessmentLabel = assessment?.label || (record ? '等待刷新行动报告' : '尚未建立计划')
+
+  return (
+    <section className="portfolio-detail-section thesis-section">
+      <div className="thesis-section-head">
+        <div>
+          <h4><BookOpenCheck size={16} /> 持有逻辑与退出纪律</h4>
+          <span className={`thesis-review-status ${assessment?.status || 'pending'}`}>{assessmentLabel}</span>
+        </div>
+        {record && !editing && (
+          <button type="button" className="ghost compact-action" onClick={() => setEditing(true)}>
+            <Pencil size={15} /> 修订计划
+          </button>
+        )}
+      </div>
+
+      {!editing && record ? (
+        <div className="thesis-read-view">
+          <dl className="portfolio-detail-facts">
+            <div><dt>组合角色</dt><dd>{payload.role_label || '-'}</dd></div>
+            <div><dt>计划持有</dt><dd>{payload.expected_holding_months || '-'} 个月</dd></div>
+            <div><dt>下次复核</dt><dd>{payload.review_date || '-'}</dd></div>
+            <div><dt>持仓亏损边界</dt><dd>-{percent(payload.max_loss_pct)}</dd></div>
+            <div><dt>标的回撤边界</dt><dd>-{percent(payload.max_drawdown_pct)}</dd></div>
+            <div><dt>版本</dt><dd>v{record.version_no || '-'} · {record.integrity_verified ? '哈希已验证' : '完整性失败'}</dd></div>
+          </dl>
+          <div className="thesis-statement">
+            <span>买入与持有逻辑</span>
+            <p>{payload.thesis_summary}</p>
+          </div>
+          <div className="thesis-condition-grid">
+            <div><span>新增条件</span><p>{payload.add_condition}</p></div>
+            <div><span>退出条件</span><p>{payload.exit_condition}</p></div>
+          </div>
+          {assessment?.breaches?.length > 0 && (
+            <div className="thesis-breach-list">
+              {assessment.breaches.map((item) => (
+                <div key={item.code}>
+                  <AlertTriangle size={15} />
+                  <span>{item.label}</span>
+                  <b>{percent(item.actual, true)} / 边界 {percent(item.limit, true)}</b>
+                </div>
+              ))}
+            </div>
+          )}
+          <small className="thesis-version-hash">{record.payload_sha256?.slice(0, 16) || '-'}…</small>
+        </div>
+      ) : (
+        <form className="thesis-form" onSubmit={submit}>
+          <label>
+            <span>组合角色</span>
+            <select value={form.role} onChange={(event) => update('role', event.target.value)} required>
+              <option value="">请选择</option>
+              {THESIS_ROLES.map(([value, label]) => <option value={value} key={value}>{label}</option>)}
+            </select>
+          </label>
+          <label className="thesis-form-wide">
+            <span>买入与持有逻辑</span>
+            <textarea value={form.thesis_summary} onChange={(event) => update('thesis_summary', event.target.value)} maxLength={600} required />
+          </label>
+          <label>
+            <span>计划持有月数</span>
+            <input type="number" min="1" max="240" value={form.expected_holding_months} onChange={(event) => update('expected_holding_months', event.target.value)} required />
+          </label>
+          <label>
+            <span>下次复核日期</span>
+            <input type="date" value={form.review_date} onChange={(event) => update('review_date', event.target.value)} required />
+          </label>
+          <label>
+            <span>最大可接受持仓亏损 %</span>
+            <input type="number" min="1" max="80" step="0.1" value={form.max_loss_pct} onChange={(event) => update('max_loss_pct', event.target.value)} required />
+          </label>
+          <label>
+            <span>最大可接受标的回撤 %</span>
+            <input type="number" min="1" max="80" step="0.1" value={form.max_drawdown_pct} onChange={(event) => update('max_drawdown_pct', event.target.value)} required />
+          </label>
+          <label className="thesis-form-wide">
+            <span>允许新增的前提</span>
+            <textarea value={form.add_condition} onChange={(event) => update('add_condition', event.target.value)} maxLength={600} required />
+          </label>
+          <label className="thesis-form-wide">
+            <span>需要退出或降低仓位的条件</span>
+            <textarea value={form.exit_condition} onChange={(event) => update('exit_condition', event.target.value)} maxLength={600} required />
+          </label>
+          <div className="thesis-form-actions thesis-form-wide">
+            {record && <button type="button" className="ghost" onClick={() => setEditing(false)}>取消</button>}
+            <button type="submit" disabled={!canSave || saving}>
+              <Save size={15} /> {saving ? '保存中' : '保存新版本'}
+            </button>
+          </div>
+          <p className="thesis-policy thesis-form-wide">自由文本条件由你人工确认；系统只自动核验复核日期、持仓亏损和真实净值回撤，不自动交易。</p>
+        </form>
+      )}
+      {message && <div className="thesis-save-message">{message}</div>}
+    </section>
+  )
+}
+
+function HoldingDetail({ row, report, thesisRecord, thesisSaving, onSaveThesis, onClose, onDelete }) {
   useEffect(() => {
     function onKeyDown(event) {
       if (event.key === 'Escape') onClose()
@@ -118,6 +298,14 @@ function HoldingDetail({ row, report, onClose, onDelete }) {
           <p>{decision.rationale || '-'}</p>
           {decision.review_amount != null && <b>复核超限金额约 {money(decision.review_amount)}</b>}
         </div>
+
+        <HoldingThesisSection
+          row={row}
+          record={thesisRecord}
+          assessment={row.thesis_review}
+          saving={thesisSaving}
+          onSave={onSaveThesis}
+        />
 
         <section className="portfolio-detail-section">
           <h4>持仓事实</h4>
@@ -204,6 +392,9 @@ export default function PortfolioActionCenter({
   onRefresh,
   onOpenImport,
   onDelete,
+  theses,
+  thesisSaving,
+  onSaveThesis,
 }) {
   const [selectedCode, setSelectedCode] = useState(null)
   const total = useMemo(
@@ -214,6 +405,11 @@ export default function PortfolioActionCenter({
   const activeReport = reportCurrent ? report : null
   const rows = activeReport?.holdings?.length ? activeReport.holdings : fallbackRows(items, total)
   const selected = rows.find((row) => `${row.asset_type}:${row.market}:${row.code}` === selectedCode) || null
+  const thesisMap = useMemo(
+    () => new Map((theses?.items || []).map((item) => [holdingKey(item), item])),
+    [theses],
+  )
+  const selectedThesis = selected ? thesisMap.get(holdingKey(selected)) || null : null
   const summary = activeReport?.summary || {
     holding_count: items.length,
     total_amount: total || null,
@@ -361,7 +557,15 @@ export default function PortfolioActionCenter({
       )}
 
       {selected && (
-        <HoldingDetail row={selected} report={activeReport} onClose={() => setSelectedCode(null)} onDelete={onDelete} />
+        <HoldingDetail
+          row={selected}
+          report={activeReport}
+          thesisRecord={selectedThesis}
+          thesisSaving={thesisSaving}
+          onSaveThesis={onSaveThesis}
+          onClose={() => setSelectedCode(null)}
+          onDelete={onDelete}
+        />
       )}
     </>
   )

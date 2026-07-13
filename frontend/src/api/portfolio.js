@@ -135,6 +135,23 @@ export function fetchRebalanceReview() {
   return getJson('/api/portfolio/rebalance')
 }
 
+export function fetchHoldingTheses() {
+  return getJson('/api/portfolio/theses')
+}
+
+export function saveHoldingThesis(payload) {
+  return getJson('/api/portfolio/theses', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export function fetchHoldingThesisHistory(assetType, market, code, limit = 20) {
+  const query = new URLSearchParams({ market, limit: String(limit) })
+  return getJson(`/api/portfolio/theses/${encodeURIComponent(assetType)}/${encodeURIComponent(code)}?${query.toString()}`)
+}
+
 export function fetchLatestPortfolioActionReport() {
   return getJson('/api/portfolio/action-reports/latest')
 }

@@ -50,6 +50,8 @@ EXPECTED_OPERATIONS = {
     "/api/portfolio/behavior": {"GET"},
     "/api/portfolio/attribution": {"GET"},
     "/api/portfolio/rebalance": {"GET"},
+    "/api/portfolio/theses": {"GET", "POST"},
+    "/api/portfolio/theses/{asset_type}/{code}": {"GET"},
     "/api/portfolio/action-reports": {"GET", "POST"},
     "/api/portfolio/action-reports/latest": {"GET"},
     "/api/portfolio/action-reports/{report_id}": {"GET"},

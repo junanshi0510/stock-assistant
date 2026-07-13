@@ -12,13 +12,14 @@ import math
 from typing import Any, Callable
 
 import holdings as holdings_mod
+import holding_thesis
 import portfolio_review
 import storage
 from portfolio_exposure import sha256_payload
 
 
-SCHEMA_VERSION = "portfolio_action_report.v1"
-RULESET_VERSION = "portfolio_action_rules.v1"
+SCHEMA_VERSION = "portfolio_action_report.v2"
+RULESET_VERSION = "portfolio_action_rules.v2"
 MAX_FUNDS = 8
 
 _ACTION_ORDER = {
@@ -70,6 +71,14 @@ def _asset_key(item: dict[str, Any]) -> tuple[str, str]:
     return str(item.get("asset_type") or ""), str(item.get("code") or "")
 
 
+def _thesis_key(item: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(item.get("asset_type") or ""),
+        str(item.get("market") or ""),
+        str(item.get("code") or ""),
+    )
+
+
 def _safe_call(provider: Callable[[], dict[str, Any]]) -> tuple[dict[str, Any], str | None]:
     try:
         value = provider()
@@ -78,6 +87,16 @@ def _safe_call(provider: Callable[[], dict[str, Any]]) -> tuple[dict[str, Any], 
         return value, None
     except Exception as exc:
         return {}, str(exc)[:240]
+
+
+def _safe_list_call(provider: Callable[[], list[dict[str, Any]]]) -> tuple[list[dict[str, Any]], str | None]:
+    try:
+        value = provider()
+        if not isinstance(value, list):
+            raise TypeError("工具返回格式不是列表")
+        return value, None
+    except Exception as exc:
+        return [], str(exc)[:240]
 
 
 def _evidence(label: str, value: Any, source: str) -> dict[str, Any]:
@@ -130,6 +149,7 @@ def build_action_report(
     ledger_provider: Callable[[], dict[str, Any]] | None = None,
     performance_provider: Callable[[], dict[str, Any]] | None = None,
     rebalance_provider: Callable[[], dict[str, Any]] | None = None,
+    theses_provider: Callable[[], list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """Build a deterministic report from confirmed holdings and real providers."""
     max_funds = max(2, min(MAX_FUNDS, int(max_funds)))
@@ -139,6 +159,7 @@ def build_action_report(
     ledger_provider = ledger_provider or portfolio_review.ledger_overview
     performance_provider = performance_provider or portfolio_review.cashflow_performance
     rebalance_provider = rebalance_provider or portfolio_review.rebalance_review
+    theses_provider = theses_provider or holding_thesis.latest_theses
 
     items = holdings_provider()
     profile = profile_provider()
@@ -147,6 +168,9 @@ def build_action_report(
     ledger, ledger_error = _safe_call(ledger_provider)
     performance, performance_error = _safe_call(performance_provider)
     rebalance, rebalance_error = _safe_call(rebalance_provider)
+    theses, theses_error = _safe_list_call(theses_provider)
+    relevant_theses = holding_thesis.theses_for_holdings(theses, items)
+    theses_hash = holding_thesis.theses_sha256(relevant_theses)
 
     total_amount = sum(max(0.0, _number(item.get("amount")) or 0.0) for item in items)
     amount_complete = bool(items) and all(
@@ -172,6 +196,11 @@ def build_action_report(
     }
     ledger_by_key = {
         _asset_key(row): row for row in ledger.get("positions") or []
+    }
+    thesis_by_key = {
+        _thesis_key(row): row
+        for row in relevant_theses
+        if row.get("state") == "active"
     }
 
     overlap = insights.get("overlap") or {}
@@ -216,6 +245,7 @@ def build_action_report(
         trend = trend_by_code.get(code)
         rebalance_row = rebalance_by_key.get(key) or {}
         ledger_row = ledger_by_key.get(key)
+        thesis_record = thesis_by_key.get(_thesis_key(item))
         overlap_rows = overlap_by_code.get(code) or []
         high_overlap = [
             row for row in overlap_rows if row.get("level") in {"高度重合", "中度重合"}
@@ -224,6 +254,22 @@ def build_action_report(
         historical_drawdown = _number((trend or {}).get("max_drawdown"))
         current_drawdown = _number((trend or {}).get("current_drawdown"))
         drawdown_limit = _number(profile.get("max_drawdown_pct")) if profile_configured else None
+        thesis_assessment = (
+            {
+                "status": "source_unavailable",
+                "label": "持有逻辑数据源不可用",
+                "review_due": False,
+                "breaches": [],
+                "evidence": [],
+                "error": theses_error,
+            }
+            if theses_error
+            else holding_thesis.evaluate_thesis(
+                thesis_record,
+                holding=item,
+                trend=trend,
+            )
+        )
 
         evidence = [
             _evidence("已确认金额", _round(amount), "用户确认持仓"),
@@ -236,6 +282,13 @@ def build_action_report(
                 _evidence("基金净值日期", trend.get("as_of"), trend.get("source") or "基金真实净值"),
                 _evidence("近3月收益", trend.get("return_3m"), trend.get("source") or "基金真实净值"),
                 _evidence("当前回撤", trend.get("current_drawdown"), trend.get("source") or "基金真实净值"),
+            ])
+        if thesis_record:
+            thesis_payload = thesis_record.get("payload") or {}
+            evidence.extend([
+                _evidence("持有逻辑版本", thesis_record.get("version_no"), "不可变持有逻辑版本库"),
+                _evidence("组合角色", thesis_payload.get("role_label"), "用户确认持有逻辑"),
+                _evidence("下次复核日期", thesis_payload.get("review_date"), "用户确认持有逻辑"),
             ])
 
         blockers = []
@@ -286,6 +339,44 @@ def build_action_report(
                 blockers=blockers,
             )
             evidence.append(_evidence("数据缺口", error, "真实基金数据源"))
+        elif thesis_assessment.get("status") == "source_unavailable":
+            decision = _decision(
+                "data_required",
+                "持有逻辑数据恢复前不操作",
+                "持有逻辑版本库未成功返回，系统无法确认原计划或风险边界。",
+                blockers=["holding_thesis_source_unavailable"],
+            )
+            evidence.append(_evidence("数据缺口", theses_error, "持有逻辑版本库"))
+        elif thesis_assessment.get("status") == "unavailable":
+            decision = _decision(
+                "data_required",
+                "持有逻辑完整性失败",
+                "持有逻辑版本或哈希校验失败，修复前不使用其中的风险边界。",
+                blockers=["holding_thesis_integrity_failed"],
+            )
+        elif thesis_assessment.get("status") == "missing":
+            decision = _decision(
+                "thesis_review",
+                "补充持有逻辑与退出纪律",
+                "尚未记录为什么持有、计划多久以及何时退出；先建立计划，再讨论新增资金。",
+                blockers=["holding_thesis_missing"],
+            )
+        elif thesis_assessment.get("status") == "risk_limit_breached":
+            decision = _decision(
+                "thesis_review",
+                "纪律边界触发，立即复核",
+                "当前真实证据已触及你预先确认的亏损或回撤边界；这要求复核原逻辑，不等于自动卖出。",
+                blockers=[
+                    str(breach.get("code"))
+                    for breach in thesis_assessment.get("breaches") or []
+                ],
+            )
+        elif thesis_assessment.get("status") == "review_due":
+            decision = _decision(
+                "thesis_review",
+                "持有逻辑到期复核",
+                "已经到达你设定的复核日期；应按原加仓和退出条件逐项核对，不能因当前盈亏跳过。",
+            )
         elif current_drawdown is not None and current_drawdown <= -10:
             decision = _decision(
                 "thesis_review",
@@ -318,6 +409,14 @@ def build_action_report(
             "rebalance": rebalance_row or None,
             "trend": trend,
             "ledger": ledger_row,
+            "thesis": ({
+                "id": thesis_record.get("id"),
+                "version_no": thesis_record.get("version_no"),
+                "payload_sha256": thesis_record.get("payload_sha256"),
+                "integrity_verified": thesis_record.get("integrity_verified"),
+                "payload": thesis_record.get("payload") or {},
+            } if thesis_record else None),
+            "thesis_review": thesis_assessment,
             "overlap": overlap_rows,
             "evidence": evidence,
         })
@@ -369,6 +468,25 @@ def build_action_report(
             [row["code"]],
         ))
 
+    breached_thesis_rows = [
+        row for row in holding_rows
+        if (row.get("thesis_review") or {}).get("status") == "risk_limit_breached"
+    ]
+    for row in breached_thesis_rows[:4]:
+        breaches = (row.get("thesis_review") or {}).get("breaches") or []
+        steps.append(_strategy_step(
+            f"thesis-risk-review-{row['code']}",
+            "high",
+            f"按预设纪律复核 {row['name']}",
+            "逐条检查原持有逻辑、真实风险证据和退出条件；确认逻辑是否仍成立，再决定保持、暂停新增或调整。",
+            "风险边界是在买入前或情绪稳定时设定的复核触发器，用它约束临场冲动，但不将阈值直接转换为卖出指令。",
+            [
+                _evidence(item.get("label") or item.get("code"), item.get("actual"), item.get("source") or "持有逻辑复核")
+                for item in breaches
+            ],
+            [row["code"]],
+        ))
+
     high_pairs = [pair for pair in pairwise if pair.get("level") in {"高度重合", "中度重合"}]
     for pair in high_pairs[:4]:
         a = str(pair.get("fund_a") or "")
@@ -382,6 +500,36 @@ def build_action_report(
                 _evidence("共同产业重合", pair.get("industry_overlap_weight"), "基金定期报告"),
             ],
             [a, b],
+        ))
+
+    missing_thesis_rows = [
+        row for row in holding_rows
+        if (row.get("thesis_review") or {}).get("status") == "missing"
+    ]
+    if missing_thesis_rows:
+        steps.append(_strategy_step(
+            "complete-holding-theses",
+            "medium",
+            "补齐持有逻辑与退出纪律",
+            "为每只持仓确认组合角色、计划期限、复核日期、最大可接受亏损与回撤、加仓条件和退出条件。",
+            "没有事先定义的持有和退出规则，盈利后容易过度集中，亏损后也容易把情绪当成策略。",
+            [_evidence("缺少持有逻辑", len(missing_thesis_rows), "不可变持有逻辑版本库")],
+            [row["code"] for row in missing_thesis_rows[:8]],
+        ))
+
+    due_thesis_rows = [
+        row for row in holding_rows
+        if (row.get("thesis_review") or {}).get("status") == "review_due"
+    ]
+    if due_thesis_rows:
+        steps.append(_strategy_step(
+            "review-due-theses",
+            "medium",
+            "完成到期的持有逻辑复核",
+            "按保存的加仓与退出条件逐项核对，并将确认后的新计划保存为下一版本。",
+            "定期复核用于判断目标、期限或风险承受能力是否变化，而不是根据热门板块追涨切换。",
+            [_evidence("到期复核数量", len(due_thesis_rows), "用户确认复核日期")],
+            [row["code"] for row in due_thesis_rows[:8]],
         ))
 
     ledger_summary = ledger.get("summary") or {}
@@ -433,6 +581,7 @@ def build_action_report(
         {"scope": "交易账本", "error": ledger_error},
         {"scope": "现金流收益", "error": performance_error},
         {"scope": "再平衡", "error": rebalance_error},
+        {"scope": "持有逻辑", "error": theses_error},
     ]
     source_errors.extend(
         {"scope": row.get("code") or "基金", "error": row.get("error")}
@@ -460,6 +609,7 @@ def build_action_report(
         "as_of": max(as_of_values) if as_of_values else None,
         "status": status,
         "holdings_sha256": holdings_hash,
+        "theses_sha256": theses_hash,
         "profile_version_id": profile_version_id,
         "policy": "报告只排序风险控制与证据补全动作，不承诺盈利，不把短期涨跌直接转换为买卖指令。",
         "objective": "提高费用后、风险调整后的长期盈利概率，同时限制单一产品和重复暴露造成的不可控损失。",
@@ -473,11 +623,20 @@ def build_action_report(
             "high_priority_count": sum(step["priority"] == "high" for step in steps),
             "medium_priority_count": sum(step["priority"] == "medium" for step in steps),
             "high_overlap_pair_count": len(high_pairs),
+            "thesis_active_count": None if theses_error else len(thesis_by_key),
+            "thesis_missing_count": None if theses_error else len(missing_thesis_rows),
+            "thesis_review_due_count": len(due_thesis_rows),
+            "thesis_breach_count": len(breached_thesis_rows),
         },
         "readiness": {
             "status": status,
             "amount_complete": amount_complete,
             "profile_configured": profile_configured,
+            "thesis_status": "unavailable" if theses_error else (
+                "complete" if not missing_thesis_rows else "incomplete"
+            ),
+            "thesis_active_count": None if theses_error else len(thesis_by_key),
+            "thesis_missing_count": None if theses_error else len(missing_thesis_rows),
             "ledger_status": "unavailable" if ledger_error else (
                 "incomplete" if int(ledger_summary.get("transaction_count") or 0) == 0 else "available"
             ),
@@ -494,6 +653,7 @@ def build_action_report(
             "guardrails": [
                 "不因单日涨跌或浮亏比例自动买卖。",
                 "新增资金必须先通过已激活投资政策、真实数据和重复暴露检查。",
+                "用户填写的自由文本加仓和退出条件只供人工核对，不冒充机器已验证信号。",
                 "减仓金额只表示相对用户上限的超出部分，执行前仍需核对赎回费、税费和流动性。",
                 "真实来源失败时停止对应结论，不使用模拟数据或替代值补齐。",
             ],
@@ -527,12 +687,19 @@ def build_action_report(
                 "summary": performance.get("summary") or {},
                 "reasons": performance.get("reasons") or [],
             },
+            "holding_theses": {
+                "schema_version": holding_thesis.SCHEMA_VERSION,
+                "snapshot_sha256": theses_hash,
+                "active_count": None if theses_error else len(thesis_by_key),
+                "missing_count": None if theses_error else len(missing_thesis_rows),
+            },
         },
         "method": {
             "allocation": "只使用用户确认的持仓金额计算，不按基金名称估算仓位。",
             "overlap": "共同持股和行业重合只来自基金定期报告；披露期会随每只基金一并展示。",
-            "action_order": "数据完整性 > 用户风险边界 > 单品超限 > 中高重复暴露 > 回撤复核 > 保持纪律。",
+            "action_order": "数据完整性 > 用户风险边界 > 单品超限 > 中高重复暴露 > 预设持有纪律 > 回撤复核 > 保持纪律。",
             "profitability": "通过减少无意集中、重复暴露、无效换手和收益口径错误来提高长期盈利概率，而不是预测必然上涨。",
+            "thesis": "结构化阈值使用用户确认持仓和基金真实净值核验；自由文本条件始终标记为人工核对。",
         },
     }
 
@@ -553,14 +720,23 @@ def load_action_report(report_id: str, *, user_id: str = "default") -> dict[str,
     if not item or not isinstance(item.get("payload"), dict):
         return None
     integrity = storage.verify_portfolio_action_report(report_id, user_id=user_id)
-    current_holdings_hash = action_holdings_sha256(storage.list_holdings(user_id=user_id))
+    current_holdings = storage.list_holdings(user_id=user_id)
+    current_holdings_hash = action_holdings_sha256(current_holdings)
+    current_theses_hash = holding_thesis.theses_sha256(holding_thesis.theses_for_holdings(
+        holding_thesis.latest_theses(user_id=user_id),
+        current_holdings,
+    ))
     profile = storage.get_investment_profile(user_id=user_id)
     current_profile_version_id = profile.get("profile_version_id") if profile.get("configured") else None
     reasons = []
     if item.get("holdings_sha256") != current_holdings_hash:
         reasons.append("holdings_changed")
+    if item.get("theses_sha256") != current_theses_hash:
+        reasons.append("holding_theses_changed")
     if item.get("profile_version_id") != current_profile_version_id:
         reasons.append("investment_policy_changed")
+    if item.get("schema_version") != SCHEMA_VERSION or item.get("ruleset_version") != RULESET_VERSION:
+        reasons.append("report_rules_changed")
     if not integrity.get("verified"):
         reasons.append("integrity_failed")
     return {

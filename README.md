@@ -8,6 +8,16 @@
 
 ## 最近更新
 
+### 2026-07-13：版本化持有逻辑与退出纪律
+
+- 每只基金或股票可在持仓详情中保存组合角色、买入与持有逻辑、计划持有月数、复核日期、最大可接受持仓亏损、最大可接受标的回撤、允许新增的前提和退出条件。
+- 每次保存都创建不可变版本，记录内容 SHA-256、前一版本 ID 与前一版本哈希；SQLite 触发器禁止修改或删除历史版本。
+- 持有逻辑绑定具体持仓记录 ID。删除后重新添加同代码资产时，旧计划不会被误用。
+- 组合行动报告升级到 `portfolio_action_report.v2`，使用用户确认的持仓收益率和基金真实净值回撤检查预设边界，区分计划缺失、复核到期、纪律边界触发和计划内持有。
+- 自由文本加仓与退出条件始终标记为人工核对，不冒充机器已验证信号，也不会自动下单。逻辑版本变化会立即使旧行动报告失效。
+- 新增 `GET/POST /api/portfolio/theses` 和单资产版本历史接口；桌面端及 390px 手机端无横向溢出。
+- 本次后端全量回归 212 项通过，前端生产构建和浏览器控制台检查通过。
+
 ### 2026-07-13：DeepSeek 模型接入
 
 - LLM Gateway 新增一等供应商 `deepseek`，支持专用 `DEEPSEEK_API_KEY`、官方 `https://api.deepseek.com` 端点和 Chat Completions JSON Output。
@@ -288,6 +298,7 @@ backend/
     synthesis.py           证据上下文、结构化模型协议与质量门禁
     workflow.py            确定性基金研究工作流、超时与取消
     worker.py              可恢复、受控并发的迁移期单进程 Worker
+  holding_thesis.py        持有逻辑版本、计划边界与真实证据复核
   strategies/
     asset_level_recurrence.py   股票实时价/基金估值历史到达指标 1.0.0
     fund_conditioned_forward.py  基金当前条件历史前瞻策略 1.0.0

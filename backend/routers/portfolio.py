@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 import analysis
 import data_fetch
 import decision_center
+import holding_thesis
 import holdings_import
 import holdings as holdings_mod
 import monitor
@@ -109,6 +110,27 @@ class PortfolioExposureSnapshotRequest(BaseModel):
 
 class PortfolioActionReportRequest(BaseModel):
     max_funds: int = Field(default=8, ge=2, le=8)
+
+
+class HoldingThesisRequest(BaseModel):
+    asset_type: Literal["fund", "stock"]
+    market: str = Field(default="", max_length=40)
+    code: str = Field(min_length=1, max_length=32)
+    role: Literal[
+        "core_growth",
+        "satellite_growth",
+        "defensive",
+        "income",
+        "diversifier",
+        "tactical",
+    ]
+    thesis_summary: str = Field(min_length=12, max_length=600)
+    expected_holding_months: int = Field(ge=1, le=240)
+    review_date: date
+    max_loss_pct: float = Field(ge=1, le=80)
+    max_drawdown_pct: float = Field(ge=1, le=80)
+    add_condition: str = Field(min_length=6, max_length=600)
+    exit_condition: str = Field(min_length=6, max_length=600)
 
 
 class PortfolioTransactionImportRequest(BaseModel):
@@ -401,6 +423,41 @@ def get_portfolio_rebalance():
         return portfolio_review.rebalance_review()
     except Exception as error:
         raise HTTPException(status_code=502, detail=f"组合再平衡复盘失败:{error}")
+
+
+@router.get("/api/portfolio/theses")
+def get_holding_theses():
+    return holding_thesis.list_with_coverage()
+
+
+@router.post("/api/portfolio/theses")
+def create_holding_thesis(req: HoldingThesisRequest):
+    try:
+        return holding_thesis.save_thesis(req.model_dump(mode="json"))
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.get("/api/portfolio/theses/{asset_type}/{code}")
+def get_holding_thesis_history(
+    asset_type: Literal["fund", "stock"],
+    code: str,
+    market: str = Query(default="", max_length=40),
+    limit: int = Query(default=20, ge=1, le=100),
+):
+    latest = storage.get_latest_holding_thesis(asset_type, market, code)
+    if latest is None:
+        raise HTTPException(status_code=404, detail="该持仓尚未建立持有逻辑")
+    return {
+        "latest": latest,
+        "versions": storage.list_holding_thesis_versions(
+            asset_type,
+            market,
+            code,
+            limit=limit,
+        ),
+        "verification": storage.verify_holding_thesis_chain(asset_type, market, code),
+    }
 
 
 @router.get("/api/portfolio/action-reports")

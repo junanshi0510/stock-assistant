@@ -5,10 +5,12 @@ import {
   createPortfolioActionReport,
   deleteHolding,
   fetchHoldings,
+  fetchHoldingTheses,
   fetchLatestPortfolioActionReport,
   parseHoldingsText,
   previewHoldingsFile,
   saveHoldings,
+  saveHoldingThesis,
   uploadHoldingScreenshot,
 } from '../api/portfolio'
 
@@ -42,6 +44,8 @@ export default function HoldingsTab() {
   const [loading, setLoading] = useState(false)
   const [actionReport, setActionReport] = useState(null)
   const [actionReportLoading, setActionReportLoading] = useState(false)
+  const [theses, setTheses] = useState(null)
+  const [thesisSaving, setThesisSaving] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
   const [ocrLoading, setOcrLoading] = useState(false)
   const [fileLoading, setFileLoading] = useState(false)
@@ -76,9 +80,18 @@ export default function HoldingsTab() {
     }
   }
 
+  async function loadTheses() {
+    try {
+      setTheses(await fetchHoldingTheses())
+    } catch (e) {
+      setError(e.message)
+    }
+  }
+
   useEffect(() => {
     loadHoldings()
     loadLatestActionReport()
+    loadTheses()
   }, [])
 
   function updateParsed(index, key, value) {
@@ -161,7 +174,7 @@ export default function HoldingsTab() {
       const result = await saveHoldings(rows)
       setData({ items: result.items, summary: result.summary })
       resetMaintenance()
-      await loadLatestActionReport()
+      await Promise.all([loadLatestActionReport(), loadTheses()])
     } catch (e) {
       setError(e.message)
     }
@@ -171,7 +184,7 @@ export default function HoldingsTab() {
     setError('')
     try {
       await deleteHolding(id)
-      await Promise.all([loadHoldings(), loadLatestActionReport()])
+      await Promise.all([loadHoldings(), loadLatestActionReport(), loadTheses()])
     } catch (e) {
       setError(e.message)
       throw e
@@ -190,6 +203,21 @@ export default function HoldingsTab() {
     }
   }
 
+  async function doSaveThesis(payload) {
+    setThesisSaving(true)
+    setError('')
+    try {
+      const result = await saveHoldingThesis(payload)
+      await Promise.all([loadTheses(), loadLatestActionReport()])
+      return result
+    } catch (e) {
+      setError(e.message || '持有逻辑保存失败')
+      throw e
+    } finally {
+      setThesisSaving(false)
+    }
+  }
+
   return (
     <>
       <PortfolioActionCenter
@@ -199,6 +227,9 @@ export default function HoldingsTab() {
         onRefresh={refreshActionReport}
         onOpenImport={() => setImportOpen((open) => !open)}
         onDelete={doDelete}
+        theses={theses}
+        thesisSaving={thesisSaving}
+        onSaveThesis={doSaveThesis}
       />
 
       {error && <div className="error portfolio-page-error">{error}</div>}

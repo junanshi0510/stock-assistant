@@ -291,12 +291,59 @@ def _get_conn():
                 schema_version     TEXT NOT NULL,
                 ruleset_version    TEXT NOT NULL,
                 holdings_sha256    TEXT NOT NULL,
+                theses_sha256      TEXT,
                 profile_version_id TEXT,
                 status             TEXT NOT NULL,
                 payload_json       TEXT NOT NULL,
                 payload_sha256     TEXT NOT NULL,
                 created_at         TEXT NOT NULL
             )
+            """
+        )
+        _conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS holding_thesis_versions (
+                id                      TEXT PRIMARY KEY,
+                user_id                 TEXT NOT NULL DEFAULT 'default',
+                asset_type              TEXT NOT NULL,
+                market                  TEXT NOT NULL,
+                code                    TEXT NOT NULL,
+                version_no              INTEGER NOT NULL,
+                schema_version          TEXT NOT NULL,
+                state                   TEXT NOT NULL,
+                payload_json            TEXT NOT NULL,
+                payload_sha256          TEXT NOT NULL,
+                previous_version_id     TEXT,
+                previous_payload_sha256 TEXT,
+                created_at              TEXT NOT NULL,
+                UNIQUE(user_id, asset_type, market, code, version_no)
+            )
+            """
+        )
+        _conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_holding_thesis_latest
+            ON holding_thesis_versions(
+                user_id, asset_type, market, code, version_no DESC
+            )
+            """
+        )
+        _conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_holding_thesis_immutable
+            BEFORE UPDATE ON holding_thesis_versions
+            BEGIN
+                SELECT RAISE(ABORT, 'holding thesis version is immutable');
+            END
+            """
+        )
+        _conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_holding_thesis_no_delete
+            BEFORE DELETE ON holding_thesis_versions
+            BEGIN
+                SELECT RAISE(ABORT, 'holding thesis history cannot be deleted');
+            END
             """
         )
         _conn.execute(
@@ -316,6 +363,7 @@ def _get_conn():
         )
         _ensure_column(_conn, "holdings", "yesterday_profit", "REAL")
         _ensure_column(_conn, "portfolio_transactions", "source", "TEXT")
+        _ensure_column(_conn, "portfolio_action_reports", "theses_sha256", "TEXT")
         _ensure_column(
             _conn,
             "investment_profiles",
@@ -1539,6 +1587,216 @@ def verify_portfolio_exposure_snapshot(snapshot_id: str, user_id: str = "default
     }
 
 
+# ==================== 持有逻辑版本 ====================
+
+def _holding_thesis_from_row(row) -> dict | None:
+    if row is None:
+        return None
+    item = dict(row)
+    payload = _decode_json(item.pop("payload_json", None), None)
+    item["payload"] = payload
+    item["integrity_verified"] = bool(
+        isinstance(payload, dict)
+        and payload_sha256(payload) == item.get("payload_sha256")
+    )
+    return item
+
+
+def append_holding_thesis_version(payload: dict, user_id: str = "default") -> dict:
+    """Append one immutable holding-thesis revision and link it to its predecessor."""
+    if not isinstance(payload, dict):
+        raise TypeError("holding thesis payload must be an object")
+    asset_type = str(payload.get("asset_type") or "").strip()
+    market = str(payload.get("market") or "").strip()
+    code = str(payload.get("code") or "").strip()
+    schema_version = str(payload.get("schema_version") or "").strip()
+    state = str(payload.get("state") or "").strip()
+    if not asset_type or not code or not schema_version or state not in {"active", "archived"}:
+        raise ValueError("holding thesis metadata is incomplete")
+    normalized_payload = dict(payload)
+    normalized_payload.update({
+        "asset_type": asset_type,
+        "market": market,
+        "code": code,
+        "schema_version": schema_version,
+        "state": state,
+    })
+    payload_json = canonical_json(normalized_payload)
+    digest = payload_sha256(normalized_payload)
+    version_id = f"thesis_{uuid.uuid4().hex}"
+    created_at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+    with _lock:
+        conn = _get_conn()
+        previous = conn.execute(
+            """
+            SELECT id, version_no, payload_sha256
+            FROM holding_thesis_versions
+            WHERE user_id=? AND asset_type=? AND market=? AND code=?
+            ORDER BY version_no DESC
+            LIMIT 1
+            """,
+            (user_id, asset_type, market, code),
+        ).fetchone()
+        version_no = int(previous["version_no"] if previous else 0) + 1
+        conn.execute(
+            """
+            INSERT INTO holding_thesis_versions (
+                id, user_id, asset_type, market, code, version_no,
+                schema_version, state, payload_json, payload_sha256,
+                previous_version_id, previous_payload_sha256, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                version_id,
+                user_id,
+                asset_type,
+                market,
+                code,
+                version_no,
+                schema_version,
+                state,
+                payload_json,
+                digest,
+                previous["id"] if previous else None,
+                previous["payload_sha256"] if previous else None,
+                created_at,
+            ),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM holding_thesis_versions WHERE id=? AND user_id=?",
+            (version_id, user_id),
+        ).fetchone()
+    return _holding_thesis_from_row(row)
+
+
+def get_latest_holding_thesis(
+    asset_type: str,
+    market: str,
+    code: str,
+    user_id: str = "default",
+) -> dict | None:
+    with _lock:
+        row = _get_conn().execute(
+            """
+            SELECT * FROM holding_thesis_versions
+            WHERE user_id=? AND asset_type=? AND market=? AND code=?
+            ORDER BY version_no DESC
+            LIMIT 1
+            """,
+            (user_id, str(asset_type), str(market), str(code)),
+        ).fetchone()
+    return _holding_thesis_from_row(row)
+
+
+def list_latest_holding_theses(user_id: str = "default") -> list[dict]:
+    with _lock:
+        rows = _get_conn().execute(
+            """
+            SELECT current.*
+            FROM holding_thesis_versions AS current
+            WHERE current.user_id=?
+              AND current.version_no=(
+                  SELECT MAX(candidate.version_no)
+                  FROM holding_thesis_versions AS candidate
+                  WHERE candidate.user_id=current.user_id
+                    AND candidate.asset_type=current.asset_type
+                    AND candidate.market=current.market
+                    AND candidate.code=current.code
+              )
+            ORDER BY current.created_at DESC, current.rowid DESC
+            """,
+            (user_id,),
+        ).fetchall()
+    return [_holding_thesis_from_row(row) for row in rows]
+
+
+def list_holding_thesis_versions(
+    asset_type: str,
+    market: str,
+    code: str,
+    user_id: str = "default",
+    *,
+    limit: int = 50,
+) -> list[dict]:
+    limit = max(1, min(100, int(limit)))
+    with _lock:
+        rows = _get_conn().execute(
+            """
+            SELECT * FROM holding_thesis_versions
+            WHERE user_id=? AND asset_type=? AND market=? AND code=?
+            ORDER BY version_no DESC
+            LIMIT ?
+            """,
+            (user_id, str(asset_type), str(market), str(code), limit),
+        ).fetchall()
+    return [_holding_thesis_from_row(row) for row in rows]
+
+
+def verify_holding_thesis_chain(
+    asset_type: str,
+    market: str,
+    code: str,
+    user_id: str = "default",
+) -> dict:
+    # Verification must cover the whole append-only chain. The paginated API is
+    # intentionally capped, but using it here would misclassify revision 101 as
+    # a broken first link because its predecessor is outside the page.
+    with _lock:
+        rows = _get_conn().execute(
+            """
+            SELECT * FROM holding_thesis_versions
+            WHERE user_id=? AND asset_type=? AND market=? AND code=?
+            ORDER BY version_no ASC
+            """,
+            (user_id, str(asset_type), str(market), str(code)),
+        ).fetchall()
+    versions = [_holding_thesis_from_row(row) for row in rows]
+    previous = None
+    reason = None
+    failing_version_id = None
+    for expected_no, item in enumerate(versions, start=1):
+        payload = item.get("payload")
+        identity_matches = bool(
+            isinstance(payload, dict)
+            and payload.get("asset_type") == item.get("asset_type")
+            and payload.get("market") == item.get("market")
+            and payload.get("code") == item.get("code")
+            and payload.get("schema_version") == item.get("schema_version")
+            and payload.get("state") == item.get("state")
+        )
+        if item.get("version_no") != expected_no:
+            reason = "version_sequence_invalid"
+        elif not item.get("integrity_verified"):
+            reason = "payload_hash_invalid"
+        elif not identity_matches:
+            reason = "payload_identity_invalid"
+        elif previous is None and (
+            item.get("previous_version_id") is not None
+            or item.get("previous_payload_sha256") is not None
+        ):
+            reason = "unexpected_previous_version"
+        elif previous is not None and (
+            item.get("previous_version_id") != previous.get("id")
+            or item.get("previous_payload_sha256") != previous.get("payload_sha256")
+        ):
+            reason = "previous_version_mismatch"
+        if reason:
+            failing_version_id = item.get("id")
+            break
+        previous = item
+    return {
+        "verified": reason is None,
+        "asset_type": str(asset_type),
+        "market": str(market),
+        "code": str(code),
+        "version_count": len(versions),
+        "chain_head": previous.get("payload_sha256") if previous else None,
+        "failing_version_id": failing_version_id,
+        "reason": reason,
+    }
+
+
 # ==================== 持仓行动报告 ====================
 
 def save_portfolio_action_report(payload: dict, user_id: str = "default") -> dict:
@@ -1548,7 +1806,13 @@ def save_portfolio_action_report(payload: dict, user_id: str = "default") -> dic
     schema_version = str(payload.get("schema_version") or "")
     ruleset_version = str(payload.get("ruleset_version") or "")
     holdings_hash = str(payload.get("holdings_sha256") or "")
-    if not schema_version or not ruleset_version or len(holdings_hash) != 64:
+    theses_hash = str(payload.get("theses_sha256") or "")
+    if (
+        not schema_version
+        or not ruleset_version
+        or len(holdings_hash) != 64
+        or len(theses_hash) != 64
+    ):
         raise ValueError("portfolio action report metadata is incomplete")
     payload_json, digest = _exposure_payload_sha256(payload)
     report_id = f"portfolio_action_{uuid.uuid4().hex}"
@@ -1558,9 +1822,9 @@ def save_portfolio_action_report(payload: dict, user_id: str = "default") -> dic
         conn.execute(
             """
             INSERT INTO portfolio_action_reports (
-                id, user_id, schema_version, ruleset_version, holdings_sha256,
+                id, user_id, schema_version, ruleset_version, holdings_sha256, theses_sha256,
                 profile_version_id, status, payload_json, payload_sha256, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 report_id,
@@ -1568,6 +1832,7 @@ def save_portfolio_action_report(payload: dict, user_id: str = "default") -> dic
                 schema_version,
                 ruleset_version,
                 holdings_hash,
+                theses_hash,
                 payload.get("profile_version_id"),
                 str(payload.get("status") or "partial"),
                 payload_json,
@@ -1579,7 +1844,7 @@ def save_portfolio_action_report(payload: dict, user_id: str = "default") -> dic
         row = conn.execute(
             """
             SELECT id, user_id, schema_version, ruleset_version, holdings_sha256,
-                   profile_version_id, status, payload_sha256, created_at
+                   theses_sha256, profile_version_id, status, payload_sha256, created_at
             FROM portfolio_action_reports WHERE id=?
             """,
             (report_id,),
@@ -1595,7 +1860,7 @@ def get_portfolio_action_report(
 ) -> dict | None:
     fields = """
         id, user_id, schema_version, ruleset_version, holdings_sha256,
-        profile_version_id, status, payload_sha256, created_at
+        theses_sha256, profile_version_id, status, payload_sha256, created_at
     """
     if include_payload:
         fields += ", payload_json"
@@ -1625,7 +1890,7 @@ def list_portfolio_action_reports(
         rows = _get_conn().execute(
             """
             SELECT id, user_id, schema_version, ruleset_version, holdings_sha256,
-                   profile_version_id, status, payload_sha256, created_at
+                   theses_sha256, profile_version_id, status, payload_sha256, created_at
             FROM portfolio_action_reports
             WHERE user_id=?
             ORDER BY created_at DESC, rowid DESC
@@ -1646,6 +1911,8 @@ def verify_portfolio_action_report(report_id: str, user_id: str = "default") -> 
         reason = "payload_hash_mismatch"
     elif item["payload"].get("holdings_sha256") != item.get("holdings_sha256"):
         reason = "holdings_hash_mismatch"
+    elif item["payload"].get("theses_sha256") != item.get("theses_sha256"):
+        reason = "theses_hash_mismatch"
     elif item["payload"].get("schema_version") != item.get("schema_version"):
         reason = "schema_version_mismatch"
     elif item["payload"].get("ruleset_version") != item.get("ruleset_version"):

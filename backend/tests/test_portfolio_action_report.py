@@ -14,6 +14,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 import portfolio_action_report  # noqa: E402
+import holding_thesis  # noqa: E402
 import storage  # noqa: E402
 
 
@@ -92,7 +93,7 @@ def insights() -> dict:
 
 
 class PortfolioActionReportTests(unittest.TestCase):
-    def build(self, *, configured=True, source=None):
+    def build(self, *, configured=True, source=None, theses=None):
         return portfolio_action_report.build_action_report(
             holdings_provider=lambda: [holding("000001", 7000, profit=-300), holding("000002", 3000, profit=100)],
             profile_provider=lambda: profile(configured),
@@ -105,6 +106,7 @@ class PortfolioActionReportTests(unittest.TestCase):
                     {"asset_type": "fund", "code": "000002", "current_ratio": 30, "max_single_ratio": 50, "excess_amount": 0},
                 ]
             },
+            theses_provider=lambda: theses or [],
         )
 
     def test_cap_breach_and_real_overlap_create_ordered_reviews(self):
@@ -150,6 +152,7 @@ class PortfolioActionReportTests(unittest.TestCase):
             ledger_provider=lambda: {"summary": {}, "positions": []},
             performance_provider=lambda: {"status": "unavailable", "summary": {}, "reasons": []},
             rebalance_provider=lambda: {"allocations": []},
+            theses_provider=lambda: [],
         )
 
         self.assertEqual(result["status"], "blocked")
@@ -178,6 +181,7 @@ class PortfolioActionReportStorageTests(unittest.TestCase):
             "schema_version": portfolio_action_report.SCHEMA_VERSION,
             "ruleset_version": portfolio_action_report.RULESET_VERSION,
             "holdings_sha256": portfolio_action_report.action_holdings_sha256(storage.list_holdings()),
+            "theses_sha256": holding_thesis.theses_sha256([]),
             "profile_version_id": None,
             "status": "blocked",
             "holdings": [],
