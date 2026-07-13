@@ -283,6 +283,37 @@ def _get_conn():
             END
             """
         )
+        _conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS portfolio_action_reports (
+                id                 TEXT PRIMARY KEY,
+                user_id            TEXT NOT NULL DEFAULT 'default',
+                schema_version     TEXT NOT NULL,
+                ruleset_version    TEXT NOT NULL,
+                holdings_sha256    TEXT NOT NULL,
+                profile_version_id TEXT,
+                status             TEXT NOT NULL,
+                payload_json       TEXT NOT NULL,
+                payload_sha256     TEXT NOT NULL,
+                created_at         TEXT NOT NULL
+            )
+            """
+        )
+        _conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_portfolio_action_report_history
+            ON portfolio_action_reports(user_id, created_at DESC)
+            """
+        )
+        _conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_portfolio_action_report_immutable
+            BEFORE UPDATE ON portfolio_action_reports
+            BEGIN
+                SELECT RAISE(ABORT, 'portfolio action report is immutable');
+            END
+            """
+        )
         _ensure_column(_conn, "holdings", "yesterday_profit", "REAL")
         _ensure_column(_conn, "portfolio_transactions", "source", "TEXT")
         _ensure_column(
@@ -1503,6 +1534,127 @@ def verify_portfolio_exposure_snapshot(snapshot_id: str, user_id: str = "default
     return {
         "verified": reason is None,
         "snapshot_id": snapshot_id,
+        "payload_sha256": digest,
+        "reason": reason,
+    }
+
+
+# ==================== 持仓行动报告 ====================
+
+def save_portfolio_action_report(payload: dict, user_id: str = "default") -> dict:
+    """Persist an immutable portfolio decision review for later audit."""
+    if not isinstance(payload, dict):
+        raise TypeError("portfolio action report payload must be an object")
+    schema_version = str(payload.get("schema_version") or "")
+    ruleset_version = str(payload.get("ruleset_version") or "")
+    holdings_hash = str(payload.get("holdings_sha256") or "")
+    if not schema_version or not ruleset_version or len(holdings_hash) != 64:
+        raise ValueError("portfolio action report metadata is incomplete")
+    payload_json, digest = _exposure_payload_sha256(payload)
+    report_id = f"portfolio_action_{uuid.uuid4().hex}"
+    created_at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+    with _lock:
+        conn = _get_conn()
+        conn.execute(
+            """
+            INSERT INTO portfolio_action_reports (
+                id, user_id, schema_version, ruleset_version, holdings_sha256,
+                profile_version_id, status, payload_json, payload_sha256, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                report_id,
+                user_id,
+                schema_version,
+                ruleset_version,
+                holdings_hash,
+                payload.get("profile_version_id"),
+                str(payload.get("status") or "partial"),
+                payload_json,
+                digest,
+                created_at,
+            ),
+        )
+        conn.commit()
+        row = conn.execute(
+            """
+            SELECT id, user_id, schema_version, ruleset_version, holdings_sha256,
+                   profile_version_id, status, payload_sha256, created_at
+            FROM portfolio_action_reports WHERE id=?
+            """,
+            (report_id,),
+        ).fetchone()
+    return dict(row)
+
+
+def get_portfolio_action_report(
+    report_id: str,
+    user_id: str = "default",
+    *,
+    include_payload: bool = True,
+) -> dict | None:
+    fields = """
+        id, user_id, schema_version, ruleset_version, holdings_sha256,
+        profile_version_id, status, payload_sha256, created_at
+    """
+    if include_payload:
+        fields += ", payload_json"
+    with _lock:
+        row = _get_conn().execute(
+            f"SELECT {fields} FROM portfolio_action_reports WHERE id=? AND user_id=?",
+            (report_id, user_id),
+        ).fetchone()
+    if not row:
+        return None
+    item = dict(row)
+    if include_payload:
+        try:
+            item["payload"] = json.loads(item.pop("payload_json"))
+        except (TypeError, json.JSONDecodeError):
+            item["payload"] = None
+    return item
+
+
+def list_portfolio_action_reports(
+    user_id: str = "default",
+    *,
+    limit: int = 20,
+) -> list[dict]:
+    limit = max(1, min(100, int(limit)))
+    with _lock:
+        rows = _get_conn().execute(
+            """
+            SELECT id, user_id, schema_version, ruleset_version, holdings_sha256,
+                   profile_version_id, status, payload_sha256, created_at
+            FROM portfolio_action_reports
+            WHERE user_id=?
+            ORDER BY created_at DESC, rowid DESC
+            LIMIT ?
+            """,
+            (user_id, limit),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def verify_portfolio_action_report(report_id: str, user_id: str = "default") -> dict:
+    item = get_portfolio_action_report(report_id, user_id=user_id, include_payload=True)
+    if not item or not isinstance(item.get("payload"), dict):
+        return {"verified": False, "report_id": report_id, "reason": "report_not_found_or_invalid"}
+    _, digest = _exposure_payload_sha256(item["payload"])
+    reason = None
+    if digest != item.get("payload_sha256"):
+        reason = "payload_hash_mismatch"
+    elif item["payload"].get("holdings_sha256") != item.get("holdings_sha256"):
+        reason = "holdings_hash_mismatch"
+    elif item["payload"].get("schema_version") != item.get("schema_version"):
+        reason = "schema_version_mismatch"
+    elif item["payload"].get("ruleset_version") != item.get("ruleset_version"):
+        reason = "ruleset_version_mismatch"
+    elif item["payload"].get("profile_version_id") != item.get("profile_version_id"):
+        reason = "profile_version_mismatch"
+    return {
+        "verified": reason is None,
+        "report_id": report_id,
         "payload_sha256": digest,
         "reason": reason,
     }

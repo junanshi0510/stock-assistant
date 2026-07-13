@@ -135,6 +135,22 @@ export function fetchRebalanceReview() {
   return getJson('/api/portfolio/rebalance')
 }
 
+export function fetchLatestPortfolioActionReport() {
+  return getJson('/api/portfolio/action-reports/latest')
+}
+
+export function createPortfolioActionReport(maxFunds = 8) {
+  return getJson('/api/portfolio/action-reports', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ max_funds: maxFunds }),
+  })
+}
+
+export function fetchPortfolioActionReports(limit = 20) {
+  return getJson(`/api/portfolio/action-reports?limit=${encodeURIComponent(limit)}`)
+}
+
 export function fetchPortfolioSnapshots(limit = 24) {
   return getJson(`/api/portfolio/snapshots?limit=${encodeURIComponent(limit)}`)
 }

@@ -15,6 +15,7 @@ import holdings_import
 import holdings as holdings_mod
 import monitor
 import portfolio_exposure
+import portfolio_action_report
 import portfolio_review
 import storage
 import transaction_import
@@ -104,6 +105,10 @@ class PortfolioSnapshotRequest(BaseModel):
 
 class PortfolioExposureSnapshotRequest(BaseModel):
     target_code: str | None = Field(default=None, pattern=r"^\d{6}$")
+
+
+class PortfolioActionReportRequest(BaseModel):
+    max_funds: int = Field(default=8, ge=2, le=8)
 
 
 class PortfolioTransactionImportRequest(BaseModel):
@@ -396,6 +401,38 @@ def get_portfolio_rebalance():
         return portfolio_review.rebalance_review()
     except Exception as error:
         raise HTTPException(status_code=502, detail=f"组合再平衡复盘失败:{error}")
+
+
+@router.get("/api/portfolio/action-reports")
+def get_portfolio_action_reports(limit: int = Query(default=20, ge=1, le=100)):
+    items = storage.list_portfolio_action_reports(limit=limit)
+    return {"items": items, "count": len(items)}
+
+
+@router.post("/api/portfolio/action-reports")
+def create_portfolio_action_report(req: PortfolioActionReportRequest):
+    try:
+        return portfolio_action_report.refresh_action_report(max_funds=req.max_funds)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=502, detail=f"真实持仓行动报告生成失败:{error}") from error
+
+
+@router.get("/api/portfolio/action-reports/latest")
+def get_latest_portfolio_action_report():
+    result = portfolio_action_report.load_latest_action_report()
+    if result is None:
+        return {"status": "not_generated", "report": None, "binding": {"current": False, "reasons": ["report_not_generated"]}}
+    return result
+
+
+@router.get("/api/portfolio/action-reports/{report_id}")
+def get_portfolio_action_report(report_id: str):
+    result = portfolio_action_report.load_action_report(report_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="持仓行动报告不存在")
+    return result
 
 
 @router.get("/api/portfolio/snapshots")

@@ -17,7 +17,9 @@ import json
 import os
 import re
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from io import BytesIO
+from time import monotonic
 
 import storage
 
@@ -28,6 +30,7 @@ _FUND_META_CACHE: dict[str, dict] = {}
 _FUND_SEARCH_ROWS: list[dict] | None = None
 _FUND_SEARCH_URL = "https://fund.eastmoney.com/js/fundcode_search.js"
 _INLINE_VALUE_RE = re.compile(r"[-+]?\d+(?:[,，]\d{3})*(?:\.\d+)?%?")
+_INSIGHTS_DEADLINE_SECONDS = max(10, min(60, int(os.environ.get("HOLDINGS_INSIGHTS_DEADLINE_SECONDS", "30"))))
 
 
 def _num(text):
@@ -620,6 +623,8 @@ def holdings_insights(max_funds: int = 6) -> dict:
 
     fund_trends = []
     fund_errors = []
+    overlap = None
+    overlap_error = None
     if fund_codes:
         try:
             import funds as funds_mod
@@ -627,10 +632,23 @@ def holdings_insights(max_funds: int = 6) -> dict:
             funds_mod = None
             fund_errors.append({"scope": "fund_module", "error": str(exc)[:160]})
         if funds_mod:
-            for item in selected_funds:
+            pool = ThreadPoolExecutor(
+                max_workers=min(5, len(selected_funds) + (1 if len(fund_codes) >= 2 else 0)),
+                thread_name_prefix="holding-insights",
+            )
+            trend_jobs = [
+                (item, pool.submit(funds_mod.analyze_fund, str(item.get("code")), months=36))
+                for item in selected_funds
+            ]
+            overlap_job = (
+                pool.submit(funds_mod.analyze_fund_overlap, fund_codes)
+                if len(fund_codes) >= 2 else None
+            )
+            deadline = monotonic() + _INSIGHTS_DEADLINE_SECONDS
+            for item, job in trend_jobs:
                 code = str(item.get("code"))
                 try:
-                    data = funds_mod.analyze_fund(code, months=36)
+                    data = job.result(timeout=max(0, deadline - monotonic()))
                     metrics = data.get("metrics") or {}
                     fund_trends.append({
                         "code": code,
@@ -651,17 +669,24 @@ def holdings_insights(max_funds: int = 6) -> dict:
                         "daily_return": (data.get("latest") or {}).get("daily_return"),
                         "source": data.get("source"),
                     })
+                except TimeoutError:
+                    job.cancel()
+                    fund_errors.append({
+                        "code": code,
+                        "name": item.get("name") or "",
+                        "error": f"真实基金趋势在 {_INSIGHTS_DEADLINE_SECONDS} 秒整体截止时间内未返回",
+                    })
                 except Exception as exc:
                     fund_errors.append({"code": code, "name": item.get("name") or "", "error": str(exc)[:160]})
-
-    overlap = None
-    overlap_error = None
-    if len(fund_codes) >= 2:
-        try:
-            import funds as funds_mod
-            overlap = funds_mod.analyze_fund_overlap(fund_codes)
-        except Exception as exc:
-            overlap_error = str(exc)[:200]
+            if overlap_job is not None:
+                try:
+                    overlap = overlap_job.result(timeout=max(0, deadline - monotonic()))
+                except TimeoutError:
+                    overlap_job.cancel()
+                    overlap_error = f"真实基金重合度在 {_INSIGHTS_DEADLINE_SECONDS} 秒整体截止时间内未返回"
+                except Exception as exc:
+                    overlap_error = str(exc)[:200]
+            pool.shutdown(wait=False, cancel_futures=True)
 
     notes = []
     if total_amount <= 0:
