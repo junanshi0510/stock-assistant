@@ -404,4 +404,68 @@ Agent 策略区域新增 Cohort 状态带：
 
 ## 21. 生产部署验收
 
-本节将在 GitHub 提交、生产数据库备份、云端迁移和真实生产回填完成后追加，不使用本地结果替代生产证据。
+- 功能提交：`0f3c43e`。
+- 部署目录：`/opt/stock-assistant`。
+- 部署前在线备份：`/opt/stock-assistant-backups/stock_assistant-pre-comparable-cohorts-20260713T074449Z.db`。
+- 备份权限：`600`。
+- 备份校验：源库和备份库均为 `integrity=ok`；对象数量及 17 个 Run、62 条 Evidence、2 条 Shadow Enrollment 完全一致。
+- 服务器隔离数据库全量测试：`177 passed`。
+- 前端生产构建：`1840` 个模块。
+- 生产依赖审计：`npm audit --omit=dev` 为 0 个漏洞。
+- 开发构建链仍有上一轮记录的 2 个 Vite/esbuild 告警；生产只部署静态产物，不运行 Vite 开发服务器。
+- Nginx 配置检查通过，API 与 Nginx 服务均为 active。
+- 公网页面和分层报告 API 均返回 HTTP 200，并加载本次资源哈希。
+
+### 21.1 旧样本迁移
+
+服务启动日志：
+
+```text
+策略 Shadow Cohort 回填:created=2 failed=0
+```
+
+使用部署前备份和部署后生产库逐字段比较：
+
+- 两条原 Enrollment 的 ID、Run ID、状态和 `signal_snapshot_sha256` 完全不变。
+- 部署前 Cohort：0；部署后 Cohort：2。
+- 部署前 Cohort Evidence：0；部署后 Cohort Evidence：2。
+- 部署前后数据库均为 `integrity=ok`。
+
+旧生产 Run：
+
+| Run | Enrollment 状态 | 市场 | 资产 | 载体 | 周期 | 信号状态 | Cohort 校验 |
+|---|---|---|---|---|---|---|---|
+| `run_4857f68bcde94aec9c25e3ded60542e1` | `scheduled` | 香港 | 权益 | QDII | 6m/126 | MA60 下方 + 深回撤 | 通过 |
+| `run_6b526785d3df40cb99128b78e3615406` | `excluded` | 香港 | 权益 | QDII | 6m/126 | MA60 下方 + 深回撤 | 通过 |
+
+两条 Cohort 都拥有独立 Evidence、SHA-256 和唯一 `strategy.shadow.cohort.bound` 审计事件。第二条仍保持非重叠排除，没有因为新增分类被重新纳入样本。
+
+### 21.2 生产三市场真实验证
+
+新增两个只读研究 Run：
+
+| Run | 基金 | 市场 | 资产 | 载体 | 信号 | Enrollment |
+|---|---|---|---|---|---|---|
+| `run_16f73f10549e4136b495a1d970824879` | `001480` 财通成长优选混合 A | 内地 | 混合 | 境内 | MA60 上方 + 深回撤 | `scheduled` |
+| `run_d5082912f3004b3a82e66a63793b9f8f` | `040046` 华安纳斯达克 100 ETF 联接 QDII A | 美国 | 权益 | QDII | MA60 上方 + 接近高点 | `scheduled` |
+
+两条 Run 均为 `fund_deep_research.v4`、状态 `completed`，Cohort Evidence 和审计验证通过。
+
+### 21.3 最终生产状态
+
+- Shadow Enrollment：4 条，其中 `scheduled=3`、`excluded=1`。
+- Cohort：4 条。
+- Cohort Evidence：4 条。
+- Cohort 审计绑定事件：4 条。
+- Cohort 缺失：0。
+- Cohort 完整性失败：0。
+- 市场分布：香港 2、内地 1、美国 1。
+- 资产分布：权益 3、混合 1。
+- Shadow Outcome Evidence：0。
+- 报告协议：`strategy_shadow_report@1.1.0`。
+- `cross_cohort_pooling=forbidden`。
+- 汇总 metrics：`null`。
+- 数据库最终 `PRAGMA integrity_check=ok`。
+- 最近服务日志没有 `Traceback`、`ERROR` 或 `Exception`。
+
+该结果证明生产系统已经真实区分 A 股相关基金、香港基金和美国 QDII，而不是把三个市场合并成一个看似更好看的策略胜率。观察窗口尚未到达，因此没有提前生成任何 Outcome 或收益结论。
