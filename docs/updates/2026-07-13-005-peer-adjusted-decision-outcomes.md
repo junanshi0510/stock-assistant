@@ -305,4 +305,82 @@ build passed
 
 ## 18. 生产部署与验证
 
-本节在云端部署完成后追加真实提交、服务、接口、资源和日志验证结果。
+### 18.1 部署记录
+
+- 业务提交：`200957d feat: benchmark decision outcomes against peers`
+- 部署目录：`/opt/stock-assistant`
+- 部署后云端 Git HEAD：`200957d`
+- 部署后工作区：`clean`
+- 部署前通过 SQLite Online Backup 创建备份：`/opt/stock-assistant-backups/stock_assistant-20260713-131203.db`
+- 备份大小：2,002,944 bytes；备份数据库 `integrity_check=ok`，共 52 个数据库对象。
+- 后端、前端静态资源和 Nginx 配置部署完成；`stock-assistant-api`、`nginx` 均为 `active`。
+
+### 18.2 云端构建与全量回归
+
+云端后端全量测试：
+
+```text
+Ran 135 tests in 6.845s
+OK
+```
+
+测试期间设置 `AGENT_WORKER_ENABLED=0`，防止测试进程启动持久化 Worker；市场监控只执行一次空自选扫描，没有写入生产决策。
+
+云端前端生产构建：
+
+```text
+1840 modules transformed
+build passed in 4.67s
+```
+
+首页、新版 Agent 静态资源和真实 Run 结果接口均从公网返回 HTTP 200：
+
+- `/`
+- `/assets/AgentTab-lO73fqbA.js`
+- `/assets/index-hiJdstPA.css`
+- `/api/v1/agent/runs/{run_id}/evaluations`
+
+### 18.3 云端真实数据复核
+
+云端使用与本地相同的精确日期和真实来源重新计算，结果一致：
+
+| 基金 | 覆盖市场/类型 | 单位净值变化 | 基金同口径收益 | 同类收益 | 收益差 | 相对超额 | 质量 |
+|---|---|---:|---:|---:|---:|---:|---|
+| 013403 华夏恒生科技 ETF 联接 C | 港股 QDII | -3.5000% | -3.4949% | -0.0809% | -3.4140 个百分点 | -3.4168% | complete |
+| 014089 永赢稳健增强债券 C | 债券 | -0.5834% | -0.5822% | -0.5018% | -0.0804 个百分点 | -0.0808% | complete |
+| 001056 华银健康生活主题灵活配置 | A 股混合 | -4.3994% | -4.4080% | -1.0276% | -3.3804 个百分点 | -3.4155% | complete |
+
+三个样本均满足：
+
+- 基线日 `2026-05-27` 和观察日 `2026-07-09` 在基金、同类两条序列中精确对齐。
+- 每条基金和同类序列各包含 120 个来源观测点。
+- `return_basis=provider_comparable_cumulative_return_series`。
+- `no_proxy_fallback=true`，没有用市场指数或最近日期补齐。
+
+### 18.4 生产 Evidence 与幂等验证
+
+在已有真实 Run `run_e842159e11004bf2a0ffcd906faa883d` 上调用新版评估两次：
+
+- 第一次创建 `fund_decision_outcome@1.1.0` Evidence：`ev_44e83464bdcd4a178e5d3a94d04dba6c`。
+- 第二次返回同一个 Evidence，`created=false`，未重复写入。
+- 新 Evidence 哈希：`1a5819bb7af891727a554bdb634d4ca8289651951167766e940ca6fe2b828384`。
+- 原 `fund_decision_outcome@1.0.0` Evidence 仍存在；接口返回同一 Run 的 1.0.0 与 1.1.0 共两份 Outcome，旧版未被覆盖。
+- 两份 Outcome 的 `integrity_verified=true`。
+- 仓储层 `verify_run_evidence_integrity` 返回 `verified=true`；该 Run 共 6 条 Evidence，无失败对象。
+- 审计链共 19 个连续事件，`verified=true`，无失败序号。
+- 生产数据库 `PRAGMA integrity_check=ok`，全库共 50 条 Agent Evidence。
+
+该 Run 的基线日期已经是来源最新确认净值日 `2026-07-09`，因此没有后续确认净值。新版结果正确保持：
+
+- `status=pending`
+- `interpretation.status=not_scored`
+- `decision.action=setup_required`
+- `decision.actionable=false`
+- 同类基线精确可用：基金累计收益 -19.37%，同类平均累计收益 -1.22%。
+- 基金和同类来源观测点各 120 个，质量为 `complete`。
+
+这次生产验收只新增派生的结果 Evidence，没有修改原 Run、用户持仓、交易记录或资产数据。当前生产库没有有效 IPS，也没有自动 Outcome Schedule，因此系统没有把非方向性研究结果包装成买卖建议或自动交易动作。
+
+### 18.5 日志与运行状态
+
+服务重启后，市场监控、Agent Worker 和 Outcome Worker 正常启动。生产日志记录了两次评估 POST 和后续查询均为 HTTP 200；从部署时刻到验收结束没有出现 Traceback、未处理异常或数据迁移错误。
