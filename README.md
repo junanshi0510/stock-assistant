@@ -8,6 +8,15 @@
 
 ## 最近更新
 
+### 2026-07-13：DeepSeek 模型接入
+
+- LLM Gateway 新增一等供应商 `deepseek`，支持专用 `DEEPSEEK_API_KEY`、官方 `https://api.deepseek.com` 端点和 Chat Completions JSON Output。
+- 部署默认推荐 `deepseek-v4-flash`；需要更深推理时可选择 `deepseek-v4-pro`。模型 ID 必须显式配置，不会静默切换模型。
+- DeepSeek 默认关闭思考模式以控制批量基金任务的延迟，可通过 `LLM_THINKING_MODE=enabled` 开启，并用 `LLM_REASONING_EFFORT=high|max` 控制推理强度。
+- 网关会确保提示中包含 JSON 输出要求，并对 HTTP 429/5xx、连接异常、非 JSON 响应和成功但空内容做限定次数重试；失败后明确返回不可用，不生成兜底研判。
+- API Key 只从服务器环境读取，模型状态、Run 结果、Evidence 和审计事件均不返回密钥。个人组合上下文仍默认禁止发送给外部模型。
+- 本次后端全量回归 205 项通过，前端生产构建通过。
+
 ### 2026-07-13：投资 Agent 批量基金研究
 
 - Agent 新增父级 Batch，单次支持 2-6 只不同基金；批次和全部子 Run 在同一个 SQLite 事务内创建，重复提交由 Batch 级 `Idempotency-Key` 去重。
@@ -237,18 +246,32 @@ npm run dev
 | `AGENT_WORKER_POLL_SECONDS` | 内置 Worker 轮询间隔；默认 `0.75` 秒 |
 | `AGENT_WORKER_CONCURRENCY` | 单进程 Run Worker 并发数；默认 `2`，代码硬上限 `4` |
 | `FUND_HTTP_TRUST_ENV` | 基金请求是否使用环境代理；设为 `0`/`direct` 时强制直连 |
-| `LLM_PROVIDER` | `openai`、`dashscope` 或 `openai_compatible`；不配置时禁用模型合成 |
+| `LLM_PROVIDER` | `openai`、`dashscope`、`deepseek` 或 `openai_compatible`；不配置时禁用模型合成 |
 | `LLM_MODEL` | 明确批准的模型 ID，不提供隐式默认值 |
-| `LLM_API_KEY` | 通用模型密钥；OpenAI/DashScope 也可分别使用下面的专用变量 |
+| `LLM_API_KEY` | 通用模型密钥；内置供应商优先使用下面的专用变量 |
 | `OPENAI_API_KEY` | `LLM_PROVIDER=openai` 时的 OpenAI API Key |
 | `DASHSCOPE_API_KEY` | `LLM_PROVIDER=dashscope` 时的阿里云百炼 API Key |
-| `LLM_BASE_URL` | 可选自定义 HTTPS Base URL；OpenAI 和 DashScope 有公开默认值 |
+| `DEEPSEEK_API_KEY` | `LLM_PROVIDER=deepseek` 时的 DeepSeek API Key |
+| `LLM_BASE_URL` | 可选自定义 HTTPS Base URL；OpenAI、DashScope 和 DeepSeek 有公开默认值 |
 | `LLM_API_STYLE` | `responses` 或 `chat_completions`；OpenAI 默认 Responses，其余默认 Chat Completions |
+| `LLM_THINKING_MODE` | DeepSeek 思考模式：`disabled`（默认）或 `enabled` |
+| `LLM_REASONING_EFFORT` | DeepSeek 开启思考模式后的推理强度：`high` 或 `max`，可不配置 |
 | `LLM_PRIVATE_CONTEXT_ENABLED` | 是否允许去标识化的聚合组合摘要离开本服务；默认 `false` |
 | `LLM_DATA_REGION` | 记录模型处理地域，例如 `cn-beijing` 或 `ap-southeast-1` |
 | `LLM_TIMEOUT_SECONDS` | 模型请求时限，默认 75 秒 |
 
 前后端分离部署时，参考 `frontend/.env.example` 配置 `VITE_API_BASE_URL`。不要把真实 Key、服务器密码或用户数据提交到 Git。
+
+DeepSeek 最小配置如下。当前项目不使用即将停用的旧模型别名：
+
+```dotenv
+LLM_PROVIDER=deepseek
+LLM_MODEL=deepseek-v4-flash
+DEEPSEEK_API_KEY=只写入服务器环境文件
+LLM_THINKING_MODE=disabled
+LLM_DATA_REGION=cn
+LLM_PRIVATE_CONTEXT_ENABLED=false
+```
 
 ## 项目结构
 

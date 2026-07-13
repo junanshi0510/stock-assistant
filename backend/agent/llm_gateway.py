@@ -52,14 +52,14 @@ def _sha256(value: str) -> str:
 
 
 def _provider_key(provider: str) -> str:
-    explicit = os.getenv("LLM_API_KEY", "").strip()
-    if explicit:
-        return explicit
+    dedicated = ""
     if provider == "openai":
-        return os.getenv("OPENAI_API_KEY", "").strip()
-    if provider == "dashscope":
-        return os.getenv("DASHSCOPE_API_KEY", "").strip()
-    return ""
+        dedicated = os.getenv("OPENAI_API_KEY", "").strip()
+    elif provider == "dashscope":
+        dedicated = os.getenv("DASHSCOPE_API_KEY", "").strip()
+    elif provider == "deepseek":
+        dedicated = os.getenv("DEEPSEEK_API_KEY", "").strip()
+    return dedicated or os.getenv("LLM_API_KEY", "").strip()
 
 
 def _default_base_url(provider: str) -> str:
@@ -67,6 +67,8 @@ def _default_base_url(provider: str) -> str:
         return "https://api.openai.com/v1"
     if provider == "dashscope":
         return "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    if provider == "deepseek":
+        return "https://api.deepseek.com"
     return ""
 
 
@@ -83,6 +85,8 @@ class ModelGatewayConfig:
     retry_count: int
     private_context_enabled: bool
     data_region: str
+    thinking_mode: str = ""
+    reasoning_effort: str = ""
 
     @classmethod
     def from_env(cls) -> "ModelGatewayConfig":
@@ -90,6 +94,11 @@ class ModelGatewayConfig:
         api_style = os.getenv("LLM_API_STYLE", "").strip().lower()
         if not api_style:
             api_style = "responses" if provider == "openai" else "chat_completions"
+        thinking_mode = os.getenv("LLM_THINKING_MODE", "").strip().lower()
+        if provider == "deepseek" and not thinking_mode:
+            # Deterministic evidence synthesis is the default; deployments can
+            # explicitly enable thinking for deeper, slower model reasoning.
+            thinking_mode = "disabled"
         return cls(
             provider=provider,
             model=os.getenv("LLM_MODEL", "").strip(),
@@ -102,20 +111,33 @@ class ModelGatewayConfig:
             retry_count=_bounded_int("LLM_RETRY_COUNT", 2, 0, 3),
             private_context_enabled=_env_bool("LLM_PRIVATE_CONTEXT_ENABLED", False),
             data_region=os.getenv("LLM_DATA_REGION", "unspecified").strip() or "unspecified",
+            thinking_mode=thinking_mode,
+            reasoning_effort=os.getenv("LLM_REASONING_EFFORT", "").strip().lower(),
         )
 
     def missing_fields(self) -> list[str]:
         missing = []
-        if self.provider not in {"openai", "dashscope", "openai_compatible"}:
+        if self.provider not in {"openai", "dashscope", "deepseek", "openai_compatible"}:
             missing.append("LLM_PROVIDER")
         if not self.model:
             missing.append("LLM_MODEL")
         if not self.base_url:
             missing.append("LLM_BASE_URL")
         if not self.api_key:
-            missing.append("LLM_API_KEY")
+            missing.append("DEEPSEEK_API_KEY" if self.provider == "deepseek" else "LLM_API_KEY")
         if self.api_style not in {"responses", "chat_completions"}:
             missing.append("LLM_API_STYLE")
+        if self.provider == "deepseek" and self.api_style != "chat_completions":
+            if "LLM_API_STYLE" not in missing:
+                missing.append("LLM_API_STYLE")
+        if self.provider == "deepseek" and self.thinking_mode not in {"enabled", "disabled"}:
+            missing.append("LLM_THINKING_MODE")
+        if (
+            self.provider == "deepseek"
+            and self.reasoning_effort
+            and self.reasoning_effort not in {"high", "max"}
+        ):
+            missing.append("LLM_REASONING_EFFORT")
         return missing
 
     @property
@@ -150,6 +172,8 @@ class LLMGateway:
             "data_region": self.config.data_region,
             "private_context_enabled": self.config.private_context_enabled,
             "strict_schema_requested": self.config.api_style == "responses",
+            "thinking_mode": self.config.thinking_mode or None,
+            "reasoning_effort": self.config.reasoning_effort or None,
             "missing": missing,
             "reason": (
                 None
@@ -213,11 +237,17 @@ class LLMGateway:
             raise ModelInvocationError(
                 f"模型上下文超过部署上限:{len(user_json)}>{self.config.max_input_chars}"
             )
-        input_hash = _sha256(system_prompt + "\n" + user_json)
+        provider_system_prompt = system_prompt
+        if self.config.api_style == "chat_completions" and "json" not in system_prompt.lower():
+            provider_system_prompt = (
+                system_prompt.rstrip()
+                + "\nReturn exactly one valid JSON object and no Markdown or extra text."
+            )
+        input_hash = _sha256(provider_system_prompt + "\n" + user_json)
         if self.config.api_style == "responses":
             body = {
                 "model": self.config.model,
-                "instructions": system_prompt,
+                "instructions": provider_system_prompt,
                 "input": [{
                     "role": "user",
                     "content": [{"type": "input_text", "text": user_json}],
@@ -237,20 +267,28 @@ class LLMGateway:
             body = {
                 "model": self.config.model,
                 "messages": [
-                    {"role": "system", "content": system_prompt},
+                    {"role": "system", "content": provider_system_prompt},
                     {"role": "user", "content": user_json},
                 ],
                 "response_format": {"type": "json_object"},
                 "max_tokens": self.config.max_output_tokens,
                 "stream": False,
             }
+            if self.config.provider == "deepseek":
+                body["thinking"] = {"type": self.config.thinking_mode}
+                if (
+                    self.config.thinking_mode == "enabled"
+                    and self.config.reasoning_effort
+                ):
+                    body["reasoning_effort"] = self.config.reasoning_effort
 
         headers = {
             "Authorization": f"Bearer {self.config.api_key}",
             "Content-Type": "application/json",
         }
         started = time.monotonic()
-        response = None
+        envelope: dict[str, Any] | None = None
+        text = ""
         last_error: Exception | None = None
         for attempt in range(self.config.retry_count + 1):
             try:
@@ -260,20 +298,45 @@ class LLMGateway:
                     json=body,
                     timeout=self.config.timeout_seconds,
                 )
-                if response.status_code < 400:
-                    break
-                retryable = response.status_code == 429 or response.status_code >= 500
-                if not retryable or attempt >= self.config.retry_count:
+                if response.status_code >= 400:
+                    retryable = response.status_code == 429 or response.status_code >= 500
                     detail = ""
                     try:
-                        envelope = response.json()
-                        detail = str((envelope.get("error") or {}).get("message") or "")
+                        error_envelope = response.json()
+                        detail = str((error_envelope.get("error") or {}).get("message") or "")
                     except Exception:
                         detail = ""
-                    raise ModelInvocationError(
+                    if detail and self.config.api_key:
+                        detail = detail.replace(self.config.api_key, "[REDACTED]")
+                    last_error = ModelInvocationError(
                         f"模型提供者返回 HTTP {response.status_code}"
                         + (f":{detail[:180]}" if detail else "")
                     )
+                    if not retryable or attempt >= self.config.retry_count:
+                        raise last_error
+                else:
+                    try:
+                        candidate = response.json()
+                    except ValueError as error:
+                        last_error = ModelInvocationError("模型提供者返回的不是 JSON 响应")
+                        if attempt >= self.config.retry_count:
+                            raise last_error from error
+                    else:
+                        if self.config.api_style == "responses":
+                            candidate_text, refusal = self._responses_text(candidate)
+                        else:
+                            candidate_text, refusal = self._chat_text(candidate)
+                        if refusal:
+                            raise ModelInvocationError(
+                                f"模型拒绝本次结构化研判:{refusal[:180]}"
+                            )
+                        if candidate_text:
+                            envelope = candidate
+                            text = candidate_text
+                            break
+                        last_error = ModelInvocationError("模型提供者没有返回结构化文本")
+                        if attempt >= self.config.retry_count:
+                            raise last_error
             except ModelInvocationError:
                 raise
             except (requests.Timeout, requests.ConnectionError) as error:
@@ -285,21 +348,10 @@ class LLMGateway:
             if attempt < self.config.retry_count:
                 self._sleep(min(4.0, 0.6 * (2 ** attempt) + random.random() * 0.2))
 
-        if response is None:
+        if envelope is None or not text:
+            if isinstance(last_error, ModelInvocationError):
+                raise last_error
             raise ModelInvocationError("模型提供者没有返回响应") from last_error
-        try:
-            envelope = response.json()
-        except ValueError as error:
-            raise ModelInvocationError("模型提供者返回的不是 JSON 响应") from error
-
-        if self.config.api_style == "responses":
-            text, refusal = self._responses_text(envelope)
-        else:
-            text, refusal = self._chat_text(envelope)
-        if refusal:
-            raise ModelInvocationError(f"模型拒绝本次结构化研判:{refusal[:180]}")
-        if not text:
-            raise ModelInvocationError("模型提供者没有返回结构化文本")
 
         usage = envelope.get("usage") or {}
         input_tokens = usage.get("input_tokens", usage.get("prompt_tokens"))

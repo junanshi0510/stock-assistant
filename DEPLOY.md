@@ -289,7 +289,7 @@ curl -s http://127.0.0.1:8000/api/v1/agent/batches?limit=1
 未配置模型时，Agent 会继续完成真实数据和确定性风险门禁，但明确显示
 `model_not_configured`，不会用模板文本冒充模型研判。
 
-建议在阿里云服务器使用百炼按量付费 API Key，并通过独立环境文件保存密钥：
+可以在阿里云服务器调用 DeepSeek 官方 API。密钥只写入独立环境文件，不写入代码、Git、systemd unit 或聊天记录：
 
 ```bash
 sudo install -d -m 750 /etc/stock-assistant
@@ -298,12 +298,17 @@ sudo nano /etc/stock-assistant/stock-assistant.env
 ```
 
 ```dotenv
-LLM_PROVIDER=dashscope
-LLM_MODEL=qwen-plus
-DASHSCOPE_API_KEY=你的百炼按量付费API-Key
-LLM_DATA_REGION=cn-beijing
+LLM_PROVIDER=deepseek
+LLM_MODEL=deepseek-v4-flash
+DEEPSEEK_API_KEY=你的DeepSeek-API-Key
+LLM_THINKING_MODE=disabled
+LLM_DATA_REGION=cn
 LLM_PRIVATE_CONTEXT_ENABLED=false
 ```
+
+`deepseek-v4-flash` 适合默认批量研判；需要更强推理且能接受更高延迟时，可改为
+`deepseek-v4-pro`，并设置 `LLM_THINKING_MODE=enabled`。不要使用即将停用的
+`deepseek-chat` 或 `deepseek-reasoner` 旧别名。
 
 确认 `/etc/systemd/system/stock-assistant-api.service` 的 `[Service]` 包含：
 
@@ -321,3 +326,6 @@ curl -s http://127.0.0.1:8000/api/v1/agent/model/status
 
 只有返回 `"configured": true` 才代表模型已接通。当前没有登录和多租户隔离，必须保持
 `LLM_PRIVATE_CONTEXT_ENABLED=false`；此时个人持仓只在本机确定性门禁中使用，不会发送给模型。
+
+再执行一次受控基金研究任务，并在 Run 详情中确认 `model.status=available`、模型 ID、
+响应 ID、Token 用量和 Evidence 引用均已保存，才算完成真实调用验收。禁止用模拟响应代替。
