@@ -296,7 +296,7 @@ def _registry(
     ))
     registry.register(ToolDefinition(
         name="fund.personalized_decision.evaluate",
-        version="1.0.0",
+        version="1.1.0",
         description="fund.personalized_decision.evaluate",
         risk_level="R1",
         timeout_seconds=5,

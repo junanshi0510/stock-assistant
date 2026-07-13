@@ -144,7 +144,10 @@ class AgentWorkflowRunner:
                 tool_name="portfolio.context.get",
                 tool_version="1.0.0",
                 required=True,
-                input_payload={"code": code},
+                input_payload={
+                    "code": code,
+                    "profile_version_id": payload.get("profile_version_id"),
+                },
             ))
         if payload.get("include_estimate", False):
             steps.append(WorkflowStep(
@@ -662,7 +665,7 @@ class AgentWorkflowRunner:
             decision_step = WorkflowStep(
                 key="personalized_decision",
                 tool_name="fund.personalized_decision.evaluate",
-                tool_version="1.0.0",
+                tool_version="1.1.0",
                 required=True,
                 input_payload={
                     "code": code,

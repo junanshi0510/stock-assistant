@@ -133,7 +133,7 @@ def build_default_registry() -> ToolRegistry:
     ))
     registry.register(ToolDefinition(
         name="fund.personalized_decision.evaluate",
-        version="1.0.0",
+        version="1.1.0",
         description="把基金研究 Evidence 与用户组合 Evidence 代入版本化风险门禁和金额策略。",
         risk_level="R1",
         timeout_seconds=5,

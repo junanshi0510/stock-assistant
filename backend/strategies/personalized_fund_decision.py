@@ -8,7 +8,7 @@ from typing import Any
 
 
 STRATEGY_ID = "personalized_fund_decision"
-STRATEGY_VERSION = "1.0.0"
+STRATEGY_VERSION = "1.1.0"
 
 
 def _number(value: Any) -> float | None:
@@ -66,6 +66,7 @@ def evaluate_personalized_fund_decision(
     current = _number(target.get("amount")) or 0
     current_ratio = _number(target.get("ratio"))
     max_ratio = _number(profile.get("max_single_ratio")) if configured else None
+    max_drawdown_tolerance = _number(profile.get("max_drawdown_pct")) if configured else None
     budget = _number(planned_amount)
     budget_source = "planned_amount" if budget is not None and budget > 0 else "monthly_budget"
     if (budget is None or budget <= 0) and configured:
@@ -174,6 +175,25 @@ def evaluate_personalized_fund_decision(
         "label": "期限适配",
         "detail": "短期资金不用于承担中高波动基金" if horizon_block else f"投资期限 {horizon or '-'}",
     })
+    historical_max_drawdown = _number(metrics.get("max_drawdown"))
+    drawdown_block = bool(
+        configured
+        and max_drawdown_tolerance is not None
+        and historical_max_drawdown is not None
+        and abs(historical_max_drawdown) > max_drawdown_tolerance
+    )
+    gates.append({
+        "code": "drawdown_capacity",
+        "status": "block" if drawdown_block else "pass" if configured else "pending",
+        "label": "回撤承受能力",
+        "detail": (
+            f"基金历史最大回撤 {historical_max_drawdown:.2f}%，超过 IPS 上限 {max_drawdown_tolerance:.2f}%"
+            if drawdown_block else
+            f"基金历史最大回撤 {historical_max_drawdown:.2f}%，IPS 上限 {max_drawdown_tolerance:.2f}%"
+            if configured and historical_max_drawdown is not None and max_drawdown_tolerance is not None else
+            "缺少已激活 IPS 或基金历史最大回撤"
+        ),
+    })
 
     over_limit = (
         configured
@@ -231,7 +251,7 @@ def evaluate_personalized_fund_decision(
         action = "do_not_add"
         label = "不新增投入"
         rationale = "基金投资市场不在你允许的范围内，或跨境汇率风险尚未得到你的明确确认。"
-    elif risk_block or horizon_block:
+    elif risk_block or horizon_block or drawdown_block:
         action = "do_not_add"
         label = "不新增投入"
         rationale = "基金风险或建议持有期限与你保存的投资约束冲突。"
@@ -308,6 +328,11 @@ def evaluate_personalized_fund_decision(
             "user_risk": user_risk or None,
             "user_horizon": horizon or None,
             "fund_risk": fund_risk,
+            "experience_level": profile.get("experience_level") if configured else None,
+            "primary_objective": profile.get("primary_objective") if configured else None,
+            "max_drawdown_pct": max_drawdown_tolerance,
+            "profile_version_id": profile.get("profile_version_id") if configured else None,
+            "profile_payload_sha256": profile.get("profile_payload_sha256") if configured else None,
         },
         "market_context": {
             "resolution_status": market_resolution,
@@ -343,6 +368,7 @@ def evaluate_personalized_fund_decision(
             "tranche": "four_tranches_for_medium_confidence_otherwise_five",
             "loss_handling": "never_average_down_only_because_current_profit_is_negative",
             "cross_market": "market_permission_and_fx_acknowledgement_are_required_before_amount",
+            "drawdown_capacity": "historical_fund_max_drawdown_must_not_exceed_user_confirmed_ips_limit",
         },
         "policy": "这是基于已确认持仓、真实基金市场画像、用户约束和历史统计的决策检查，不保证收益，不自动下单；跨境市场未识别、市场未获允许或汇率风险未确认时不得给新增金额。当前持仓存储仍是单用户迁移账本，多用户开放前必须完成登录、授权与数据隔离。",
     }

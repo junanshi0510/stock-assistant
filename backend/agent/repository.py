@@ -129,6 +129,7 @@ class AgentRepository:
                         started_at        TEXT,
                         completed_at      TEXT,
                         parent_run_id     TEXT,
+                        profile_version_id TEXT,
                         UNIQUE(user_id, idempotency_key)
                     );
 
@@ -254,6 +255,14 @@ class AgentRepository:
                     ON agent_audit_events(run_id, sequence_no)
                     """
                 )
+                run_columns = {
+                    row["name"]
+                    for row in connection.execute("PRAGMA table_info(agent_runs)").fetchall()
+                }
+                if "profile_version_id" not in run_columns:
+                    connection.execute(
+                        "ALTER TABLE agent_runs ADD COLUMN profile_version_id TEXT"
+                    )
             self._schema_ready = True
 
     def _append_audit(
@@ -364,6 +373,7 @@ class AgentRepository:
         user_id: str = "anonymous",
         idempotency_key: str | None = None,
         parent_run_id: str | None = None,
+        profile_version_id: str | None = None,
     ) -> tuple[dict[str, Any], bool]:
         normalized_input = _json(input_payload)
         input_hash = hashlib.sha256(normalized_input.encode("utf-8")).hexdigest()
@@ -396,8 +406,8 @@ class AgentRepository:
                 INSERT INTO agent_runs (
                     id, tenant_id, user_id, intent, input_json, input_hash,
                     idempotency_key, status, cancel_requested, created_at,
-                    updated_at, parent_run_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?)
+                    updated_at, parent_run_id, profile_version_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -410,6 +420,7 @@ class AgentRepository:
                     now,
                     now,
                     parent_run_id,
+                    profile_version_id,
                 ),
             )
             self._append_audit(
@@ -421,6 +432,7 @@ class AgentRepository:
                     "input_hash": input_hash,
                     "status": "queued",
                     "parent_run_id": parent_run_id,
+                    "profile_version_id": profile_version_id,
                 },
                 actor_type="user",
                 actor_id=user_id,

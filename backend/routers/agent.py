@@ -13,6 +13,7 @@ from typing import Literal
 from fastapi import APIRouter, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
 
+import storage
 from agent.comparison import compare_run_results
 from agent.outcomes import DecisionOutcomeService, OutcomeEvaluationError
 from agent.repository import RUN_TERMINAL_STATUSES
@@ -161,12 +162,22 @@ def create_agent_run(
             status_code=429,
             detail="Agent 任务队列已满，请等待现有真实数据任务完成后再试",
         )
+    input_payload = request.model_dump()
+    profile = storage.get_investment_profile()
+    profile_version_id = (
+        str(profile.get("profile_version_id"))
+        if request.include_portfolio_context and profile.get("configured") and profile.get("profile_version_id")
+        else None
+    )
+    if profile_version_id:
+        input_payload["profile_version_id"] = profile_version_id
     run, created = repository.create_run(
         request.intent,
-        request.model_dump(),
+        input_payload,
         tenant_id="public",
         user_id="anonymous",
         idempotency_key=idempotency_key,
+        profile_version_id=profile_version_id,
     )
     start_worker()
     return {"created": created, "run": repository.get_run(run["id"])}
@@ -332,13 +343,27 @@ def rerun_agent_run(
         existing = repository.get_run_by_idempotency_key(source["user_id"], idempotency_key)
         if existing is not None:
             return {"created": False, "run": existing}
+    input_payload = dict(source.get("input") or {})
+    profile = storage.get_investment_profile()
+    profile_version_id = (
+        str(profile.get("profile_version_id"))
+        if input_payload.get("include_portfolio_context", True)
+        and profile.get("configured")
+        and profile.get("profile_version_id")
+        else None
+    )
+    if profile_version_id:
+        input_payload["profile_version_id"] = profile_version_id
+    else:
+        input_payload.pop("profile_version_id", None)
     run, created = repository.create_run(
         source["intent"],
-        source.get("input") or {},
+        input_payload,
         tenant_id=source["tenant_id"],
         user_id=source["user_id"],
         idempotency_key=idempotency_key,
         parent_run_id=source["id"],
+        profile_version_id=profile_version_id,
     )
     start_worker()
     return {"created": created, "run": repository.get_run(run["id"])}

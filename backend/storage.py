@@ -18,10 +18,19 @@
 """
 
 import datetime
+import hashlib
 import json
 import os
 import sqlite3
 import threading
+import uuid
+
+from investment_policy import (
+    CONSENT_TEXT_SHA256,
+    CONSENT_VERSION,
+    canonical_json,
+    payload_sha256,
+)
 
 _DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stock_assistant.db")
 
@@ -36,6 +45,9 @@ def _get_conn():
     if _conn is None:
         _conn = sqlite3.connect(_DB_PATH, check_same_thread=False)
         _conn.row_factory = sqlite3.Row
+        _conn.execute("PRAGMA journal_mode=WAL")
+        _conn.execute("PRAGMA foreign_keys=ON")
+        _conn.execute("PRAGMA busy_timeout=30000")
         _conn.execute(
             """
             CREATE TABLE IF NOT EXISTS watchlist (
@@ -95,6 +107,93 @@ def _get_conn():
                 allowed_fund_markets TEXT NOT NULL DEFAULT '["mainland"]',
                 accept_fx_risk   INTEGER NOT NULL DEFAULT 0,
                 updated_at       TEXT NOT NULL
+            )
+            """
+        )
+        _conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS investment_profile_versions (
+                id                    TEXT PRIMARY KEY,
+                user_id               TEXT NOT NULL,
+                version_no            INTEGER NOT NULL,
+                status                TEXT NOT NULL,
+                payload_json          TEXT NOT NULL,
+                payload_sha256        TEXT NOT NULL,
+                validation_json       TEXT NOT NULL,
+                questionnaire_version TEXT NOT NULL,
+                consent_version       TEXT,
+                consent_text_sha256   TEXT,
+                created_at            TEXT NOT NULL,
+                activated_at          TEXT,
+                review_due_at         TEXT,
+                superseded_at         TEXT,
+                UNIQUE(user_id, version_no)
+            )
+            """
+        )
+        _conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_investment_profile_active
+            ON investment_profile_versions(user_id)
+            WHERE status='active'
+            """
+        )
+        _conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_investment_profile_history
+            ON investment_profile_versions(user_id, version_no DESC)
+            """
+        )
+        _conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_investment_profile_payload_immutable
+            BEFORE UPDATE OF user_id, version_no, payload_json, payload_sha256,
+                             validation_json, questionnaire_version, created_at
+            ON investment_profile_versions
+            BEGIN
+                SELECT RAISE(ABORT, 'investment profile version payload is immutable');
+            END
+            """
+        )
+        _conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_investment_profile_status_transition
+            BEFORE UPDATE OF status ON investment_profile_versions
+            WHEN NOT (
+                NEW.status=OLD.status
+                OR (OLD.status='draft' AND NEW.status='active')
+                OR (OLD.status='active' AND NEW.status='superseded')
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'invalid investment profile status transition');
+            END
+            """
+        )
+        _conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_investment_profile_activation_immutable
+            BEFORE UPDATE OF consent_version, consent_text_sha256, activated_at, review_due_at
+            ON investment_profile_versions
+            WHEN OLD.status!='draft'
+            BEGIN
+                SELECT RAISE(ABORT, 'investment profile activation metadata is immutable');
+            END
+            """
+        )
+        _conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS investment_profile_audit_events (
+                id             TEXT PRIMARY KEY,
+                user_id        TEXT NOT NULL,
+                version_id     TEXT,
+                sequence_no    INTEGER NOT NULL,
+                event_type     TEXT NOT NULL,
+                actor_id       TEXT NOT NULL,
+                details_json   TEXT NOT NULL,
+                previous_hash  TEXT,
+                event_hash     TEXT NOT NULL,
+                created_at     TEXT NOT NULL,
+                UNIQUE(user_id, sequence_no)
             )
             """
         )
@@ -160,6 +259,7 @@ def _get_conn():
             "accept_fx_risk",
             "INTEGER NOT NULL DEFAULT 0",
         )
+        _migrate_legacy_investment_profiles(_conn)
         _conn.commit()
     return _conn
 
@@ -257,74 +357,591 @@ def clear_alerts():
 _PROFILE_DEFAULTS = {
     "risk": "balanced",
     "horizon": "mid_long",
-    "monthly_budget": None,
+    "experience_level": "beginner",
+    "primary_objective": "balanced_growth",
+    "monthly_budget": 0.0,
     "max_single_ratio": 35.0,
+    "max_equity_ratio": 70.0,
+    "max_industry_ratio": 30.0,
+    "max_drawdown_pct": 25.0,
+    "liquidity_reserve_months": 3.0,
     "allowed_fund_markets": ["mainland"],
     "accept_fx_risk": False,
+    "emergency_fund_confirmed": False,
+    "review_cycle_months": 6,
 }
 
 
+class InvestmentProfileConflictError(RuntimeError):
+    pass
+
+
+def _profile_now() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds")
+
+
+def _decode_json(value, default):
+    try:
+        return json.loads(value) if value not in (None, "") else default
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return default
+
+
+def _profile_version_from_row(row) -> dict | None:
+    if row is None:
+        return None
+    item = dict(row)
+    payload = _decode_json(item.pop("payload_json", None), {})
+    validation = _decode_json(item.pop("validation_json", None), {})
+    item["payload"] = payload
+    item["validation"] = validation
+    item["integrity_verified"] = payload_sha256(payload) == item.get("payload_sha256")
+    return item
+
+
+def _append_profile_audit(conn, user_id: str, version_id: str | None, event_type: str,
+                          details: dict, actor_id: str) -> dict:
+    previous = conn.execute(
+        """
+        SELECT sequence_no, event_hash
+        FROM investment_profile_audit_events
+        WHERE user_id=?
+        ORDER BY sequence_no DESC
+        LIMIT 1
+        """,
+        (user_id,),
+    ).fetchone()
+    sequence_no = int(previous["sequence_no"] if previous else 0) + 1
+    previous_hash = previous["event_hash"] if previous else None
+    event_id = f"ips_audit_{uuid.uuid4().hex}"
+    created_at = _profile_now()
+    canonical = {
+        "id": event_id,
+        "user_id": user_id,
+        "version_id": version_id,
+        "sequence_no": sequence_no,
+        "event_type": event_type,
+        "actor_id": actor_id,
+        "details": details,
+        "previous_hash": previous_hash,
+        "created_at": created_at,
+    }
+    event_hash = hashlib.sha256(canonical_json(canonical).encode("utf-8")).hexdigest()
+    conn.execute(
+        """
+        INSERT INTO investment_profile_audit_events (
+            id, user_id, version_id, sequence_no, event_type, actor_id,
+            details_json, previous_hash, event_hash, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            event_id,
+            user_id,
+            version_id,
+            sequence_no,
+            event_type,
+            actor_id,
+            canonical_json(details),
+            previous_hash,
+            event_hash,
+            created_at,
+        ),
+    )
+    return {**canonical, "event_hash": event_hash}
+
+
+def _migrate_legacy_investment_profiles(conn) -> None:
+    rows = conn.execute(
+        """
+        SELECT p.*
+        FROM investment_profiles AS p
+        LEFT JOIN investment_profile_versions AS v ON v.user_id=p.user_id
+        WHERE v.id IS NULL
+        """
+    ).fetchall()
+    for row in rows:
+        raw = dict(row)
+        markets = _decode_json(raw.get("allowed_fund_markets"), ["mainland"])
+        payload = {
+            **_PROFILE_DEFAULTS,
+            "schema_version": "legacy_investment_profile.v1",
+            "questionnaire_version": "legacy_unversioned",
+            "risk": raw.get("risk"),
+            "horizon": raw.get("horizon"),
+            "monthly_budget": raw.get("monthly_budget"),
+            "max_single_ratio": raw.get("max_single_ratio"),
+            "allowed_fund_markets": markets if isinstance(markets, list) else ["mainland"],
+            "accept_fx_risk": bool(raw.get("accept_fx_risk")),
+            "legacy_incomplete": True,
+        }
+        validation = {
+            "valid": False,
+            "errors": [{
+                "field": "questionnaire_version",
+                "code": "legacy_reconfirmation_required",
+                "message": "旧档案缺少版本化适当性问卷和完整流动性约束，需要重新确认",
+            }],
+            "warnings": [],
+        }
+        version_id = f"ips_{uuid.uuid4().hex}"
+        created_at = str(raw.get("updated_at") or _profile_now())
+        conn.execute(
+            """
+            INSERT INTO investment_profile_versions (
+                id, user_id, version_no, status, payload_json, payload_sha256,
+                validation_json, questionnaire_version, consent_version,
+                consent_text_sha256, created_at, activated_at, review_due_at
+            ) VALUES (?, ?, 1, 'active', ?, ?, ?, 'legacy_unversioned',
+                      'legacy-profile-migration.v1', NULL, ?, ?, ?)
+            """,
+            (
+                version_id,
+                raw["user_id"],
+                canonical_json(payload),
+                payload_sha256(payload),
+                canonical_json(validation),
+                created_at,
+                created_at,
+                created_at,
+            ),
+        )
+        _append_profile_audit(
+            conn,
+            raw["user_id"],
+            version_id,
+            "profile.legacy_migrated",
+            {"payload_sha256": payload_sha256(payload), "configured": False},
+            "storage-migration",
+        )
+
+
 def get_investment_profile(user_id: str = "default") -> dict:
-    """Return saved user constraints without pretending defaults are configured choices."""
+    """Return only the active, valid, non-expired user-confirmed policy as configured."""
     with _lock:
         row = _get_conn().execute(
             """
-            SELECT risk, horizon, monthly_budget, max_single_ratio,
-                   allowed_fund_markets, accept_fx_risk, updated_at
-            FROM investment_profiles
-            WHERE user_id=?
+            SELECT * FROM investment_profile_versions
+            WHERE user_id=? AND status='active'
             """,
             (user_id,),
         ).fetchone()
     if row is None:
-        return {**_PROFILE_DEFAULTS, "configured": False, "updated_at": None}
-    result = dict(row)
+        return {
+            **_PROFILE_DEFAULTS,
+            "configured": False,
+            "profile_version_id": None,
+            "version_no": None,
+            "status": None,
+            "updated_at": None,
+            "activated_at": None,
+            "review_due_at": None,
+            "review_required": False,
+            "integrity_verified": None,
+            "validation": {"valid": False, "errors": [], "warnings": []},
+        }
+    version = _profile_version_from_row(row)
+    review_due_at = version.get("review_due_at")
     try:
-        allowed_markets = json.loads(result.get("allowed_fund_markets") or "[]")
-    except (TypeError, ValueError, json.JSONDecodeError):
-        allowed_markets = []
-    result["allowed_fund_markets"] = [
-        str(item) for item in allowed_markets if isinstance(item, str)
-    ]
-    result["accept_fx_risk"] = bool(result.get("accept_fx_risk"))
-    return {**result, "configured": True}
+        review_due = datetime.datetime.fromisoformat(str(review_due_at).replace("Z", "+00:00"))
+        if review_due.tzinfo is None:
+            review_due = review_due.replace(tzinfo=datetime.timezone.utc)
+        review_required = review_due <= datetime.datetime.now(datetime.timezone.utc)
+    except (TypeError, ValueError):
+        review_required = True
+    validation = version.get("validation") or {}
+    governance = verify_investment_profile_integrity(user_id)
+    configured = bool(
+        version.get("integrity_verified")
+        and validation.get("valid")
+        and not review_required
+        and version.get("consent_version") == CONSENT_VERSION
+        and version.get("consent_text_sha256") == CONSENT_TEXT_SHA256
+        and governance.get("verified")
+    )
+    return {
+        **_PROFILE_DEFAULTS,
+        **(version.get("payload") or {}),
+        "configured": configured,
+        "profile_version_id": version["id"],
+        "version_no": version["version_no"],
+        "status": version["status"],
+        "payload_sha256": version["payload_sha256"],
+        "integrity_verified": version["integrity_verified"],
+        "validation": validation,
+        "activated_at": version.get("activated_at"),
+        "updated_at": version.get("activated_at"),
+        "review_due_at": review_due_at,
+        "review_required": review_required,
+        "consent_version": version.get("consent_version"),
+        "governance_integrity": governance,
+    }
+
+
+def get_investment_profile_version(version_id: str, user_id: str = "default") -> dict | None:
+    with _lock:
+        row = _get_conn().execute(
+            "SELECT * FROM investment_profile_versions WHERE id=? AND user_id=?",
+            (version_id, user_id),
+        ).fetchone()
+    version = _profile_version_from_row(row)
+    if version is None:
+        return None
+    validation = version.get("validation") or {}
+    governance = verify_investment_profile_integrity(user_id)
+    return {
+        **_PROFILE_DEFAULTS,
+        **(version.get("payload") or {}),
+        "configured": bool(
+            version.get("integrity_verified")
+            and validation.get("valid")
+            and version.get("activated_at")
+            and version.get("consent_version") == CONSENT_VERSION
+            and version.get("consent_text_sha256") == CONSENT_TEXT_SHA256
+            and governance.get("verified")
+        ),
+        "profile_version_id": version["id"],
+        "version_no": version["version_no"],
+        "status": version["status"],
+        "payload_sha256": version["payload_sha256"],
+        "integrity_verified": version["integrity_verified"],
+        "validation": validation,
+        "activated_at": version.get("activated_at"),
+        "updated_at": version.get("activated_at"),
+        "review_due_at": version.get("review_due_at"),
+        "consent_version": version.get("consent_version"),
+        "governance_integrity": governance,
+    }
+
+
+def create_investment_profile_draft(profile: dict, validation: dict,
+                                    user_id: str = "default", actor_id: str = "default") -> dict:
+    normalized = validation.get("normalized") or profile
+    digest = payload_sha256(normalized)
+    if digest != validation.get("payload_sha256"):
+        raise ValueError("投资政策草稿哈希与校验结果不一致")
+    now = _profile_now()
+    with _lock:
+        conn = _get_conn()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            existing = conn.execute(
+                """
+                SELECT * FROM investment_profile_versions
+                WHERE user_id=? AND status='draft' AND payload_sha256=?
+                ORDER BY version_no DESC LIMIT 1
+                """,
+                (user_id, digest),
+            ).fetchone()
+            if existing is not None:
+                conn.commit()
+                return {**_profile_version_from_row(existing), "created": False}
+            next_version = conn.execute(
+                "SELECT COALESCE(MAX(version_no), 0) + 1 AS value FROM investment_profile_versions WHERE user_id=?",
+                (user_id,),
+            ).fetchone()["value"]
+            version_id = f"ips_{uuid.uuid4().hex}"
+            conn.execute(
+                """
+                INSERT INTO investment_profile_versions (
+                    id, user_id, version_no, status, payload_json, payload_sha256,
+                    validation_json, questionnaire_version, created_at
+                ) VALUES (?, ?, ?, 'draft', ?, ?, ?, ?, ?)
+                """,
+                (
+                    version_id,
+                    user_id,
+                    next_version,
+                    canonical_json(normalized),
+                    digest,
+                    canonical_json({
+                        "valid": bool(validation.get("valid")),
+                        "errors": validation.get("errors") or [],
+                        "warnings": validation.get("warnings") or [],
+                    }),
+                    str(validation.get("questionnaire_version") or ""),
+                    now,
+                ),
+            )
+            _append_profile_audit(
+                conn,
+                user_id,
+                version_id,
+                "profile.draft_created",
+                {
+                    "version_no": next_version,
+                    "payload_sha256": digest,
+                    "valid": bool(validation.get("valid")),
+                },
+                actor_id,
+            )
+            row = conn.execute(
+                "SELECT * FROM investment_profile_versions WHERE id=?",
+                (version_id,),
+            ).fetchone()
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    return {**_profile_version_from_row(row), "created": True}
+
+
+def activate_investment_profile_version(
+    version_id: str,
+    *,
+    expected_payload_sha256: str,
+    expected_active_version_id: str | None,
+    consent_version: str,
+    consent_text_sha256: str,
+    review_cycle_months: int,
+    user_id: str = "default",
+    actor_id: str = "default",
+) -> dict:
+    if consent_version != CONSENT_VERSION or consent_text_sha256 != CONSENT_TEXT_SHA256:
+        raise InvestmentProfileConflictError("确认条款版本或哈希不匹配")
+    if int(review_cycle_months) not in {6, 12}:
+        raise InvestmentProfileConflictError("复核周期只能是 6 或 12 个月")
+    now_dt = datetime.datetime.now(datetime.timezone.utc)
+    now = now_dt.isoformat(timespec="milliseconds")
+    review_due_at = (
+        now_dt + datetime.timedelta(days=30 * int(review_cycle_months))
+    ).isoformat(timespec="milliseconds")
+    with _lock:
+        conn = _get_conn()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            target = conn.execute(
+                "SELECT * FROM investment_profile_versions WHERE id=? AND user_id=?",
+                (version_id, user_id),
+            ).fetchone()
+            if target is None:
+                raise KeyError(f"投资政策版本不存在:{version_id}")
+            current = conn.execute(
+                "SELECT * FROM investment_profile_versions WHERE user_id=? AND status='active'",
+                (user_id,),
+            ).fetchone()
+            current_id = current["id"] if current else None
+            if target["status"] == "active" and target["payload_sha256"] == expected_payload_sha256:
+                conn.commit()
+                return {**_profile_version_from_row(target), "activated": False}
+            if target["status"] != "draft":
+                raise InvestmentProfileConflictError("只有草稿版本可以激活")
+            if target["payload_sha256"] != expected_payload_sha256:
+                raise InvestmentProfileConflictError("草稿载荷哈希已变化，拒绝激活")
+            if current_id != expected_active_version_id:
+                raise InvestmentProfileConflictError(
+                    f"生效版本已变化，预期 {expected_active_version_id or '-'}，当前 {current_id or '-'}"
+                )
+            validation = _decode_json(target["validation_json"], {})
+            if not validation.get("valid"):
+                raise InvestmentProfileConflictError("草稿未通过适当性校验，不能激活")
+            payload = _decode_json(target["payload_json"], {})
+            if int(payload.get("review_cycle_months") or 0) != int(review_cycle_months):
+                raise InvestmentProfileConflictError("复核周期与草稿载荷不一致")
+
+            if current is not None:
+                conn.execute(
+                    """
+                    UPDATE investment_profile_versions
+                    SET status='superseded', superseded_at=?
+                    WHERE id=? AND status='active'
+                    """,
+                    (now, current_id),
+                )
+                _append_profile_audit(
+                    conn,
+                    user_id,
+                    current_id,
+                    "profile.version_superseded",
+                    {"superseded_by": version_id},
+                    actor_id,
+                )
+            conn.execute(
+                """
+                UPDATE investment_profile_versions
+                SET status='active', consent_version=?, consent_text_sha256=?,
+                    activated_at=?, review_due_at=?
+                WHERE id=? AND status='draft'
+                """,
+                (consent_version, consent_text_sha256, now, review_due_at, version_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO investment_profiles (
+                    user_id, risk, horizon, monthly_budget, max_single_ratio,
+                    allowed_fund_markets, accept_fx_risk, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    risk=excluded.risk,
+                    horizon=excluded.horizon,
+                    monthly_budget=excluded.monthly_budget,
+                    max_single_ratio=excluded.max_single_ratio,
+                    allowed_fund_markets=excluded.allowed_fund_markets,
+                    accept_fx_risk=excluded.accept_fx_risk,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    user_id,
+                    payload["risk"],
+                    payload["horizon"],
+                    payload["monthly_budget"],
+                    payload["max_single_ratio"],
+                    json.dumps(payload["allowed_fund_markets"], ensure_ascii=True),
+                    1 if payload.get("accept_fx_risk") else 0,
+                    now,
+                ),
+            )
+            _append_profile_audit(
+                conn,
+                user_id,
+                version_id,
+                "profile.version_activated",
+                {
+                    "payload_sha256": expected_payload_sha256,
+                    "consent_version": consent_version,
+                    "consent_text_sha256": consent_text_sha256,
+                    "acknowledged": True,
+                    "review_due_at": review_due_at,
+                    "superseded_version_id": current_id,
+                },
+                actor_id,
+            )
+            activated = conn.execute(
+                "SELECT * FROM investment_profile_versions WHERE id=?",
+                (version_id,),
+            ).fetchone()
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    return {**_profile_version_from_row(activated), "activated": True}
 
 
 def save_investment_profile(profile: dict, user_id: str = "default") -> dict:
-    """Persist explicit user-selected investment constraints for decision prioritization."""
-    now = datetime.datetime.now().isoformat(timespec="seconds")
-    values = (
-        user_id,
-        str(profile["risk"]),
-        str(profile["horizon"]),
-        profile.get("monthly_budget"),
-        float(profile["max_single_ratio"]),
-        json.dumps(profile.get("allowed_fund_markets") or [], ensure_ascii=True),
-        1 if profile.get("accept_fx_risk") else 0,
-        now,
-    )
+    """Compatibility path: create a draft only; activation always requires explicit consent."""
+    from investment_policy import validate_investment_policy
+
+    validation = validate_investment_policy(profile)
+    draft = create_investment_profile_draft(profile, validation, user_id=user_id)
+    return {
+        **draft,
+        **(draft.get("payload") or {}),
+        "requires_activation": True,
+    }
+
+
+def list_investment_profile_versions(user_id: str = "default", limit: int = 20) -> list[dict]:
     with _lock:
-        conn = _get_conn()
-        conn.execute(
+        rows = _get_conn().execute(
             """
-            INSERT INTO investment_profiles (
-                user_id, risk, horizon, monthly_budget, max_single_ratio,
-                allowed_fund_markets, accept_fx_risk, updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET
-                risk=excluded.risk,
-                horizon=excluded.horizon,
-                monthly_budget=excluded.monthly_budget,
-                max_single_ratio=excluded.max_single_ratio,
-                allowed_fund_markets=excluded.allowed_fund_markets,
-                accept_fx_risk=excluded.accept_fx_risk,
-                updated_at=excluded.updated_at
+            SELECT * FROM investment_profile_versions
+            WHERE user_id=?
+            ORDER BY version_no DESC
+            LIMIT ?
             """,
-            values,
-        )
-        conn.commit()
-    return get_investment_profile(user_id)
+            (user_id, max(1, min(int(limit), 100))),
+        ).fetchall()
+    return [_profile_version_from_row(row) for row in rows]
+
+
+def list_investment_profile_audit(user_id: str = "default") -> list[dict]:
+    with _lock:
+        rows = _get_conn().execute(
+            """
+            SELECT * FROM investment_profile_audit_events
+            WHERE user_id=? ORDER BY sequence_no
+            """,
+            (user_id,),
+        ).fetchall()
+    items = []
+    for row in rows:
+        item = dict(row)
+        item["details"] = _decode_json(item.pop("details_json", None), {})
+        items.append(item)
+    return items
+
+
+def verify_investment_profile_audit(user_id: str = "default") -> dict:
+    items = list_investment_profile_audit(user_id)
+    previous_hash = None
+    for expected_sequence, item in enumerate(items, start=1):
+        canonical = {
+            "id": item["id"],
+            "user_id": item["user_id"],
+            "version_id": item["version_id"],
+            "sequence_no": item["sequence_no"],
+            "event_type": item["event_type"],
+            "actor_id": item["actor_id"],
+            "details": item["details"],
+            "previous_hash": item["previous_hash"],
+            "created_at": item["created_at"],
+        }
+        calculated = hashlib.sha256(canonical_json(canonical).encode("utf-8")).hexdigest()
+        if (
+            int(item["sequence_no"]) != expected_sequence
+            or item["previous_hash"] != previous_hash
+            or item["event_hash"] != calculated
+        ):
+            return {
+                "verified": False,
+                "event_count": len(items),
+                "failing_sequence": item["sequence_no"],
+                "chain_head": previous_hash,
+            }
+        previous_hash = item["event_hash"]
+    return {
+        "verified": True,
+        "event_count": len(items),
+        "failing_sequence": None,
+        "chain_head": previous_hash,
+    }
+
+
+def verify_investment_profile_integrity(user_id: str = "default") -> dict:
+    audit = verify_investment_profile_audit(user_id)
+    with _lock:
+        rows = _get_conn().execute(
+            "SELECT * FROM investment_profile_versions WHERE user_id=? ORDER BY version_no DESC",
+            (user_id,),
+        ).fetchall()
+    versions = [_profile_version_from_row(row) for row in rows]
+    events = list_investment_profile_audit(user_id)
+    created_ids = {
+        item.get("version_id")
+        for item in events
+        if item.get("event_type") in {"profile.draft_created", "profile.legacy_migrated"}
+    }
+    activated_ids = {
+        item.get("version_id")
+        for item in events
+        if item.get("event_type") in {"profile.version_activated", "profile.legacy_migrated"}
+    }
+    active_versions = [item for item in versions if item.get("status") == "active"]
+    failing_version_id = None
+    reason = None
+    for version in versions:
+        version_id = version["id"]
+        if not version.get("integrity_verified"):
+            failing_version_id, reason = version_id, "payload_hash_invalid"
+            break
+        if version_id not in created_ids:
+            failing_version_id, reason = version_id, "missing_creation_audit"
+            break
+        if version.get("status") in {"active", "superseded"} and version_id not in activated_ids:
+            failing_version_id, reason = version_id, "missing_activation_audit"
+            break
+    if len(active_versions) > 1 and reason is None:
+        failing_version_id, reason = active_versions[1]["id"], "multiple_active_versions"
+    verified = bool(audit["verified"] and reason is None)
+    return {
+        "verified": verified,
+        "version_count": len(versions),
+        "active_version_id": active_versions[0]["id"] if len(active_versions) == 1 else None,
+        "audit_event_count": audit["event_count"],
+        "audit_chain_head": audit["chain_head"],
+        "failing_version_id": failing_version_id,
+        "reason": reason if audit["verified"] else "audit_chain_invalid",
+    }
 
 
 # ==================== 我的持仓 ====================

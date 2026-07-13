@@ -19,9 +19,9 @@ from strategies.personalized_fund_decision import (  # noqa: E402
 )
 
 
-def _analysis(decision="research", confidence="medium", risk_band="均衡偏波动"):
+def _analysis(decision="research", confidence="medium", risk_band="均衡偏波动", max_drawdown=-12.0):
     return {
-        "metrics": {"annual_volatility": 18.0},
+        "metrics": {"annual_volatility": 18.0, "max_drawdown": max_drawdown},
         "timing": {"score": 62},
         "playbook": {"role": {"risk_band": risk_band}},
         "conditioned_forward": {
@@ -53,6 +53,9 @@ def _context(*, configured=True, total=10000, target_amount=1000, target_ratio=1
             "max_single_ratio": max_ratio,
             "allowed_fund_markets": ["mainland"],
             "accept_fx_risk": False,
+            "max_drawdown_pct": 30,
+            "profile_version_id": "ips_test",
+            "profile_payload_sha256": "a" * 64,
         },
         "portfolio": {
             "holding_count": 3,
@@ -184,6 +187,19 @@ class PersonalizedFundDecisionTests(unittest.TestCase):
         blocked = {item["code"] for item in result["gates"] if item["status"] == "block"}
         self.assertIn("fund_market_permission", blocked)
         self.assertIn("foreign_exchange_risk", blocked)
+
+    def test_historical_drawdown_above_confirmed_ips_capacity_blocks_addition(self):
+        context = _context()
+        context["profile"]["max_drawdown_pct"] = 15
+        result = evaluate_personalized_fund_decision(
+            _analysis(max_drawdown=-22), context, _market(), planned_amount=1000
+        )
+
+        self.assertEqual(result["strategy_version"], "1.1.0")
+        self.assertEqual(result["decision"]["action"], "do_not_add")
+        gate = next(item for item in result["gates"] if item["code"] == "drawdown_capacity")
+        self.assertEqual(gate["status"], "block")
+        self.assertEqual(result["suitability"]["profile_version_id"], "ips_test")
 
     def test_hong_kong_fund_can_reach_tranche_only_after_explicit_consent(self):
         context = _context()

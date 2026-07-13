@@ -112,6 +112,15 @@ def compare_run_results(current_run: dict[str, Any], parent_run: dict[str, Any])
                 "changed": previous_value != current_value,
             }
         )
+    previous_profile_version = parent_run.get("profile_version_id")
+    current_profile_version = current_run.get("profile_version_id")
+    dimensions.append({
+        "key": "investment_policy_version",
+        "label": "投资政策版本",
+        "previous": previous_profile_version,
+        "current": current_profile_version,
+        "changed": previous_profile_version != current_profile_version,
+    })
 
     previous_as_of = parent_fund.get("as_of")
     current_as_of = current_fund.get("as_of")

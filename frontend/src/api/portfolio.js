@@ -41,6 +41,30 @@ export function saveInvestmentProfile(profile) {
   })
 }
 
+export function createInvestmentProfileDraft(profile) {
+  return getJson('/api/investment-profile/drafts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(profile),
+  })
+}
+
+export function activateInvestmentProfileVersion(versionId, payload) {
+  return getJson(`/api/investment-profile/versions/${encodeURIComponent(versionId)}/activate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export function fetchInvestmentProfileVersions(limit = 20) {
+  return getJson(`/api/investment-profile/versions?limit=${encodeURIComponent(limit)}`)
+}
+
+export function fetchInvestmentProfileAudit() {
+  return getJson('/api/investment-profile/audit')
+}
+
 export function fetchDecisionCenter() {
   return getJson('/api/decision-center')
 }

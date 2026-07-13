@@ -17,6 +17,11 @@ import monitor
 import portfolio_review
 import storage
 import transaction_import
+from investment_policy import (
+    CONSENT_TEXT_SHA256,
+    CONSENT_VERSION,
+    validate_investment_policy,
+)
 
 
 router = APIRouter(tags=["我的组合"])
@@ -52,14 +57,30 @@ class WatchRequest(BaseModel):
 
 
 class InvestmentProfileRequest(BaseModel):
-    risk: str = "balanced"
-    horizon: str = "mid_long"
-    monthly_budget: float | None = Field(default=None, ge=0)
-    max_single_ratio: float = Field(default=35, ge=10, le=80)
+    risk: Literal["stable", "balanced", "aggressive"]
+    horizon: Literal["short", "mid_long", "long"]
+    experience_level: Literal["beginner", "intermediate", "experienced"]
+    primary_objective: Literal["capital_preservation", "balanced_growth", "long_term_growth"]
+    monthly_budget: float = Field(ge=0, le=10_000_000)
+    max_single_ratio: float = Field(ge=5, le=60)
+    max_equity_ratio: float = Field(ge=0, le=100)
+    max_industry_ratio: float = Field(ge=5, le=50)
+    max_drawdown_pct: float = Field(ge=5, le=50)
+    liquidity_reserve_months: float = Field(ge=0, le=36)
     allowed_fund_markets: list[
         Literal["mainland", "hong_kong", "united_states", "global"]
     ] = Field(default_factory=lambda: ["mainland"], min_length=1, max_length=4)
     accept_fx_risk: bool = False
+    emergency_fund_confirmed: bool
+    review_cycle_months: Literal[6, 12] = 6
+
+
+class InvestmentProfileActivationRequest(BaseModel):
+    acknowledged: bool
+    expected_payload_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_active_version_id: str | None = Field(default=None, max_length=80)
+    consent_version: str = Field(max_length=80)
+    consent_text_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class PortfolioTransactionRequest(BaseModel):
@@ -84,10 +105,6 @@ class PortfolioTransactionImportRequest(BaseModel):
     items: list[PortfolioTransactionRequest] = Field(min_length=1, max_length=1500)
     file_sha256: str = Field(min_length=64, max_length=64)
     filename: str = Field(default="", max_length=255)
-
-
-_PROFILE_RISKS = {"stable", "balanced", "aggressive"}
-_PROFILE_HORIZONS = {"short", "mid_long", "long"}
 
 
 @router.get("/api/watchlist")
@@ -149,11 +166,86 @@ def get_investment_profile():
 
 @router.put("/api/investment-profile")
 def update_investment_profile(req: InvestmentProfileRequest):
-    if req.risk not in _PROFILE_RISKS:
-        raise HTTPException(status_code=400, detail="不支持的风险偏好")
-    if req.horizon not in _PROFILE_HORIZONS:
-        raise HTTPException(status_code=400, detail="不支持的投资期限")
-    return storage.save_investment_profile(req.model_dump())
+    validation = validate_investment_policy(req.model_dump())
+    draft = storage.create_investment_profile_draft(req.model_dump(), validation)
+    return {
+        "draft": draft,
+        "validation": validation,
+        "requires_activation": True,
+        "deprecated_transport": "PUT /api/investment-profile now creates a draft only",
+    }
+
+
+@router.post("/api/investment-profile/drafts")
+def create_investment_profile_draft(req: InvestmentProfileRequest):
+    validation = validate_investment_policy(req.model_dump())
+    draft = storage.create_investment_profile_draft(req.model_dump(), validation)
+    return {
+        "draft": draft,
+        "validation": validation,
+        "requires_activation": True,
+    }
+
+
+@router.get("/api/investment-profile/versions")
+def get_investment_profile_versions(limit: int = Query(default=20, ge=1, le=100)):
+    items = [
+        {
+            "id": item["id"],
+            "version_no": item["version_no"],
+            "status": item["status"],
+            "payload_sha256": item["payload_sha256"],
+            "integrity_verified": item.get("integrity_verified"),
+            "validation_valid": bool((item.get("validation") or {}).get("valid")),
+            "questionnaire_version": item.get("questionnaire_version"),
+            "consent_version": item.get("consent_version"),
+            "created_at": item.get("created_at"),
+            "activated_at": item.get("activated_at"),
+            "review_due_at": item.get("review_due_at"),
+            "superseded_at": item.get("superseded_at"),
+        }
+        for item in storage.list_investment_profile_versions(limit=limit)
+    ]
+    return {"items": items, "count": len(items)}
+
+
+@router.post("/api/investment-profile/versions/{version_id}/activate")
+def activate_investment_profile_version(version_id: str, req: InvestmentProfileActivationRequest):
+    if not req.acknowledged:
+        raise HTTPException(status_code=409, detail="必须明确确认投资政策条款后才能激活")
+    if req.consent_version != CONSENT_VERSION or req.consent_text_sha256 != CONSENT_TEXT_SHA256:
+        raise HTTPException(status_code=409, detail="确认条款版本或哈希不匹配")
+    version = storage.get_investment_profile_version(version_id)
+    if version is None:
+        raise HTTPException(status_code=404, detail="投资政策版本不存在")
+    try:
+        activated = storage.activate_investment_profile_version(
+            version_id,
+            expected_payload_sha256=req.expected_payload_sha256,
+            expected_active_version_id=req.expected_active_version_id,
+            consent_version=req.consent_version,
+            consent_text_sha256=req.consent_text_sha256,
+            review_cycle_months=int(version.get("review_cycle_months") or 0),
+        )
+    except storage.InvestmentProfileConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    activated_flag = bool(activated.pop("activated", False))
+    return {
+        "activated": activated_flag,
+        "version": activated,
+        "profile": storage.get_investment_profile(),
+        "audit": storage.verify_investment_profile_integrity(),
+    }
+
+
+@router.get("/api/investment-profile/audit")
+def get_investment_profile_audit():
+    items = storage.list_investment_profile_audit()
+    return {
+        "items": items,
+        "count": len(items),
+        "verification": storage.verify_investment_profile_integrity(),
+    }
 
 
 @router.get("/api/decision-center")
