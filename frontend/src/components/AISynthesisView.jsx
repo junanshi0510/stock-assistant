@@ -120,6 +120,8 @@ export default function AISynthesisView({ analysis, modelStatus, onOpenEvidence 
   if (!analysis) return null
   const available = analysis.status === 'available' && analysis.synthesis
   const provider = analysis.provider || modelStatus?.model || {}
+  const historicalConfigurationGap = analysis.reason_code === 'model_not_configured'
+    && Boolean(modelStatus?.model?.configured)
 
   if (!available) {
     return (
@@ -134,8 +136,10 @@ export default function AISynthesisView({ analysis, modelStatus, onOpenEvidence 
         <div className="ai-unavailable-body">
           <ServerCog size={23} aria-hidden="true" />
           <div>
-            <b>{analysis.reason || '大模型结果不可用'}</b>
-            <p>确定性基金分析和风险门禁仍可查看；系统没有生成任何兜底 AI 文本。</p>
+            <b>{historicalConfigurationGap ? '本轮创建时模型尚未配置；当前大模型网关已经连接。' : analysis.reason || '大模型结果不可用'}</b>
+            <p>{historicalConfigurationGap
+              ? '历史 Run 与 Evidence 不会被改写；需要创建新的 Run 才会使用当前 DeepSeek 配置。'
+              : '确定性基金分析和风险门禁仍可查看；系统没有生成任何兜底 AI 文本。'}</p>
             {analysis.reason_code && <code>{analysis.reason_code}</code>}
           </div>
         </div>

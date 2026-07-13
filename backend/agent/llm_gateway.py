@@ -238,10 +238,15 @@ class LLMGateway:
                 f"模型上下文超过部署上限:{len(user_json)}>{self.config.max_input_chars}"
             )
         provider_system_prompt = system_prompt
-        if self.config.api_style == "chat_completions" and "json" not in system_prompt.lower():
+        if self.config.api_style == "chat_completions":
+            schema_json = _canonical(output_schema)
             provider_system_prompt = (
                 system_prompt.rstrip()
-                + "\nReturn exactly one valid JSON object and no Markdown or extra text."
+                + f"\n\nRequired output contract ({schema_name}):\n"
+                + "Return exactly one valid JSON object that satisfies the following JSON Schema. "
+                + "Include every field listed in every required array, including nested objects. "
+                + "Do not add properties that the schema does not allow. Return no Markdown or extra text.\n"
+                + schema_json
             )
         input_hash = _sha256(provider_system_prompt + "\n" + user_json)
         if self.config.api_style == "responses":

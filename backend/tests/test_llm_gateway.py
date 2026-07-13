@@ -171,10 +171,16 @@ class LLMGatewayTests(unittest.TestCase):
             sleep=lambda _: None,
         )
 
+        output_schema = {
+            "type": "object",
+            "properties": {"status": {"type": "string"}},
+            "required": ["status"],
+            "additionalProperties": False,
+        }
         result = gateway.invoke_structured(
             system_prompt="Return JSON.",
             user_payload={"evidence": "ev_1"},
-            output_schema={"type": "object"},
+            output_schema=output_schema,
             schema_name="test_schema",
         )
 
@@ -187,6 +193,10 @@ class LLMGatewayTests(unittest.TestCase):
         )
         self.assertEqual(request["json"]["response_format"], {"type": "json_object"})
         self.assertEqual(request["json"]["messages"][0]["role"], "system")
+        system_message = request["json"]["messages"][0]["content"]
+        self.assertIn("Required output contract (test_schema)", system_message)
+        self.assertIn('"required":["status"]', system_message)
+        self.assertIn('"additionalProperties":false', system_message)
 
     def test_deepseek_request_sets_json_prompt_and_retries_empty_content(self):
         response_text = json.dumps({"status": "ok"})
