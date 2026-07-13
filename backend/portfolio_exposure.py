@@ -198,6 +198,7 @@ def _normalize_source(raw: dict[str, Any], observed_on: dt.date, max_age_days: i
             "bond_ratio": _ratio(allocation.get("bond_ratio")),
             "cash_ratio": _ratio(allocation.get("cash_ratio")),
         },
+        "linked_fund": raw.get("linked_fund") if isinstance(raw.get("linked_fund"), dict) else None,
         "equity_interval": {
             "lower_ratio": _round(equity_lower),
             "upper_ratio": _round(equity_upper),
@@ -356,6 +357,7 @@ def build_exposure_snapshot(
             "equity_interval": source["equity_interval"],
             "industry_unknown_ratio": source["industry_unknown_ratio"],
             "quality": source["quality"],
+            "linked_fund": source.get("linked_fund"),
         })
 
     industries = _aggregate_rows(industry_acc, total_amount)
@@ -404,6 +406,7 @@ def build_exposure_snapshot(
                 "quality": source["quality"],
                 "source": source["source"],
                 "source_url": source["source_url"],
+                "linked_fund": source.get("linked_fund"),
             }
         else:
             target = {"status": "unavailable", "code": target_code}

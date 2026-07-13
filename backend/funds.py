@@ -1443,7 +1443,281 @@ def _latest_quarter_rows(df: pd.DataFrame, quarter_col: str) -> tuple[pd.DataFra
     return df[df[quarter_col].astype(str) == latest_label].copy(), latest_label
 
 
-def get_fund_portfolio(code: str, year: str | None = None) -> dict:
+def _linked_report_period(title: str) -> str:
+    text = str(title or "")
+    quarter = re.search(r"(20\d{2})\s*年\s*第\s*([1-4])\s*季度报告", text)
+    if quarter:
+        month = int(quarter.group(2)) * 3
+        day = 31 if month in {3, 12} else 30
+        return f"{quarter.group(1)}-{month:02d}-{day:02d}"
+    annual = re.search(r"(20\d{2})\s*年\s*年度报告", text)
+    if annual:
+        return f"{annual.group(1)}-12-31"
+    interim = re.search(r"(20\d{2})\s*年\s*(?:中期|半年度)报告", text)
+    if interim:
+        return f"{interim.group(1)}-06-30"
+    return ""
+
+
+def _parse_linked_etf_relation_html(text: str) -> str | None:
+    match = re.search(
+        r"<a[^>]+href=[\"'](?:https?:)?//fund\.eastmoney\.com/(\d{6})\.html[\"'][^>]*>\s*查看相关ETF\s*>?\s*</a>",
+        str(text or ""),
+        re.I,
+    )
+    return match.group(1) if match else None
+
+
+def _linked_etf_relation(code: str) -> dict | None:
+    cache_key = ("fund_linked_etf_relation", code)
+    cached = _cache_get(cache_key)
+    if cached:
+        return cached
+    source_url = f"https://fund.eastmoney.com/{code}.html"
+    response = _session().get(
+        source_url,
+        headers={**_HEADERS, "Referer": "https://fund.eastmoney.com/"},
+        timeout=18,
+    )
+    response.raise_for_status()
+    response.encoding = response.apparent_encoding or response.encoding
+    target_code = _parse_linked_etf_relation_html(response.text)
+    if not target_code:
+        return None
+    if target_code == code:
+        raise RuntimeError("联接基金页面返回了自引用目标 ETF")
+    target = _fund_search_one(target_code)
+    if not target or target.get("code") != target_code:
+        raise RuntimeError("东方财富基金代码库无法验证相关 ETF")
+    result = {
+        "code": target_code,
+        "name": str(target.get("name") or ""),
+        "fund_type": str(target.get("type") or ""),
+        "source": "东方财富基金详情页相关 ETF 关系 + 东方财富基金代码搜索库",
+        "source_url": source_url,
+    }
+    _cache_put(cache_key, result)
+    return result
+
+
+def _parse_linked_etf_report_content(content: str, expected_target_code: str) -> dict:
+    content = str(content or "")
+    target_section = re.search(
+        r"2\.1\.1\s+目标基金基本情况(.*?)(?=2\.1\.2\s+|§3\s+|5\.9\s+)",
+        content,
+        re.S,
+    )
+    if not target_section:
+        raise RuntimeError("定期报告缺少目标基金基本情况章节")
+    target_match = re.search(r"基金主代码\s+(\d{6})", target_section.group(1))
+    if not target_match:
+        raise RuntimeError("定期报告缺少目标基金主代码")
+    report_target_code = target_match.group(1)
+    if report_target_code != expected_target_code:
+        raise RuntimeError("详情页相关 ETF 与定期报告目标基金代码不一致")
+    section_match = re.search(r"5\.9\s+.*?(?=5\.10\s+)", content, re.S)
+    if not section_match:
+        raise RuntimeError("定期报告缺少基金投资明细章节")
+    first_row = re.search(
+        r"(?:^|\n)\s*1\s+(.*?)(?=(?:\n\s*2\s+)|$)",
+        section_match.group(0),
+        re.S,
+    )
+    if not first_row:
+        raise RuntimeError("定期报告基金投资明细缺少首行")
+    numbers = [
+        float(value)
+        for value in re.findall(r"(?<![\d,])(\d{1,3}\.\d{1,4})(?!\d)", first_row.group(1))
+    ]
+    ratios = [value for value in numbers if 0 <= value <= 100]
+    if not ratios:
+        raise RuntimeError("定期报告基金投资明细缺少占净值比例")
+    return {
+        "target_code": report_target_code,
+        "target_nav_ratio": _round(ratios[-1], 4),
+    }
+
+
+def _linked_etf_periodic_report(code: str, expected_target_code: str) -> dict:
+    cache_key = ("fund_linked_etf_report", code, expected_target_code)
+    cached = _cache_get(cache_key)
+    if cached:
+        return cached
+    list_url = "https://api.fund.eastmoney.com/f10/JJGG"
+    response = _session().get(
+        list_url,
+        params={
+            "fundcode": code,
+            "pageIndex": 1,
+            "pageSize": 20,
+            "type": 3,
+        },
+        headers={**_HEADERS, "Referer": f"https://fundf10.eastmoney.com/jjgg_{code}.html"},
+        timeout=18,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    rows = payload.get("Data") or []
+    if payload.get("ErrCode") != 0 or not rows:
+        raise RuntimeError("东方财富未返回联接基金定期报告列表")
+
+    content_url = "https://np-cnotice-fund.eastmoney.com/api/content/ann"
+    parse_errors = []
+    for row in rows[:6]:
+        title = str(row.get("TITLE") or "")
+        period = _linked_report_period(title)
+        art_code = str(row.get("ID") or "")
+        if not period or not re.fullmatch(r"AN\d+", art_code):
+            continue
+        try:
+            content_response = _session().get(
+                content_url,
+                params={
+                    "client_source": "web_fund",
+                    "show_all": 1,
+                    "art_code": art_code,
+                },
+                headers={**_HEADERS, "Referer": f"https://qcloud.fund.eastmoney.com/gonggao/{code},{art_code}.html"},
+                timeout=24,
+            )
+            content_response.raise_for_status()
+            data = (content_response.json().get("data") or {})
+            content = str(data.get("notice_content") or "")
+            parsed = _parse_linked_etf_report_content(content, expected_target_code)
+            result = {
+                "art_code": art_code,
+                "title": title,
+                "period": period,
+                "published_at": str(row.get("PUBLISHDATEDesc") or ""),
+                "target_code": parsed["target_code"],
+                "target_nav_ratio": parsed["target_nav_ratio"],
+                "source": "东方财富基金公告列表 + 定期报告正文",
+                "source_url": f"https://qcloud.fund.eastmoney.com/gonggao/{code},{art_code}.html",
+                "attachment_url": str(data.get("attach_url") or ""),
+            }
+            _cache_put(cache_key, result)
+            return result
+        except Exception as exc:
+            parse_errors.append(f"{art_code}:{str(exc)[:100]}")
+    raise RuntimeError(
+        "未能从最新定期报告验证目标 ETF 占净值比例"
+        + (f":{'; '.join(parse_errors[:3])}" if parse_errors else "")
+    )
+
+
+def _scale_disclosed_rows(rows: list[dict], allocation_ratio: float) -> list[dict]:
+    scaled = []
+    for raw in rows or []:
+        ratio = _num(raw.get("nav_ratio"))
+        if ratio is None:
+            continue
+        scaled.append({
+            **raw,
+            "target_nav_ratio": _round(ratio, 4),
+            "nav_ratio": _round(ratio * allocation_ratio / 100, 4),
+        })
+    return scaled
+
+
+def _linked_fund_portfolio(
+    code: str,
+    name: str,
+    relation: dict,
+    *,
+    lookthrough_depth: int,
+) -> dict:
+    if lookthrough_depth >= 1:
+        raise RuntimeError("基金穿透关系超过当前支持的一层 ETF 联接结构")
+    report = _linked_etf_periodic_report(code, relation["code"])
+    target = get_fund_portfolio(
+        relation["code"],
+        year=report["period"][:4],
+        _lookthrough_depth=lookthrough_depth + 1,
+    )
+    allocation_ratio = float(report["target_nav_ratio"])
+    target_allocation = target.get("asset_allocation") or {}
+    target_stock_ratio = _num(target_allocation.get("stock_ratio"))
+    if target_stock_ratio is None:
+        raise RuntimeError("目标 ETF 缺少真实资产配置股票占比")
+    stocks = _scale_disclosed_rows(target.get("stocks") or [], allocation_ratio)
+    bonds = _scale_disclosed_rows(target.get("bonds") or [], allocation_ratio)
+    industries = _scale_disclosed_rows(target.get("industries") or [], allocation_ratio)
+    target_cash_ratio = _num(target_allocation.get("cash_ratio"))
+    target_bond_ratio = _num(target_allocation.get("bond_ratio"))
+    effective_stock_ratio = allocation_ratio * target_stock_ratio / 100
+    effective_bond_ratio = (
+        allocation_ratio * target_bond_ratio / 100
+        if target_bond_ratio is not None else None
+    )
+    effective_cash_ratio = (
+        allocation_ratio * target_cash_ratio / 100
+        if target_cash_ratio is not None else None
+    )
+    top10_ratio = _round(sum((_num(row.get("nav_ratio")) or 0) for row in stocks[:10]))
+    top3_ratio = _round(sum((_num(row.get("nav_ratio")) or 0) for row in stocks[:3]))
+    industry_top = industries[0] if industries else None
+    concentration = "持仓集中" if (top10_ratio or 0) >= 60 else "适中" if (top10_ratio or 0) >= 35 else "较分散"
+    style_note = f"ETF 联接穿透，目标 ETF 占净值 {allocation_ratio:.2f}%"
+    if industry_top:
+        style_note += f"，首要披露行业为{industry_top.get('name') or '-'}"
+    return {
+        "source": "东方财富基金详情页相关 ETF 关系 / 东方财富基金定期报告 / 目标 ETF 定期披露",
+        "source_url": report["source_url"],
+        "code": code,
+        "name": name,
+        "year": report["period"][:4],
+        "stock_period": report["period"],
+        "bond_period": report["period"],
+        "industry_period": report["period"],
+        "asset_period": report["period"],
+        "asset_allocation": {
+            "stock_ratio": _round(effective_stock_ratio, 4),
+            "bond_ratio": _round(effective_bond_ratio, 4),
+            "cash_ratio": _round(effective_cash_ratio, 4),
+        },
+        "stocks": stocks,
+        "bonds": bonds,
+        "industries": industries,
+        "linked_fund": {
+            "mode": "verified_etf_feeder_lookthrough",
+            "target_code": relation["code"],
+            "target_name": relation["name"],
+            "target_fund_type": relation["fund_type"],
+            "target_nav_ratio": _round(allocation_ratio, 4),
+            "relation_source_url": relation["source_url"],
+            "report_title": report["title"],
+            "report_period": report["period"],
+            "report_published_at": report["published_at"],
+            "report_source_url": report["source_url"],
+            "report_attachment_url": report["attachment_url"],
+            "target_stock_period": target.get("stock_period"),
+            "target_industry_period": target.get("industry_period"),
+            "target_asset_period": target.get("asset_period"),
+        },
+        "summary": {
+            "top3_stock_ratio": top3_ratio,
+            "top10_stock_ratio": top10_ratio,
+            "stock_count": len(stocks),
+            "bond_count": len(bonds),
+            "industry_count": len(industries),
+            "concentration": concentration,
+            "style_note": style_note,
+        },
+        "method": {
+            "note": "联接基金自身不直接持有股票；先用定期报告确认目标 ETF 代码和占净值比例，再按目标 ETF 同期真实披露逐层缩放。",
+            "relation_validation": "详情页相关 ETF 代码必须与定期报告目标基金主代码一致。",
+            "allocation": "底层占比 = 联接基金持有目标 ETF 占净值比例 × 目标 ETF 披露占比。",
+            "timeliness": "联接基金报告期与目标 ETF 资产配置、股票和行业报告期均保留在 Evidence 中。",
+        },
+    }
+
+
+def get_fund_portfolio(
+    code: str,
+    year: str | None = None,
+    *,
+    _lookthrough_depth: int = 0,
+) -> dict:
     code = str(code or "").strip()
     if not code.isdigit() or len(code) != 6:
         raise ValueError("基金代码需要是 6 位数字")
@@ -1462,6 +1736,23 @@ def get_fund_portfolio(code: str, year: str | None = None) -> dict:
         fact_sheet = _fund_fact_sheet(code)
     except Exception:
         fact_sheet = {}
+
+    display_name = str(fact_sheet.get("name") or profile.get("name") or "")
+    linked_error = None
+    if "联接" in display_name:
+        try:
+            relation = _linked_etf_relation(code)
+            if relation:
+                result = _linked_fund_portfolio(
+                    code,
+                    display_name,
+                    relation,
+                    lookthrough_depth=_lookthrough_depth,
+                )
+                _cache_put(cache_key, result)
+                return result
+        except Exception as exc:
+            linked_error = str(exc)[:240]
 
     stock_df = pd.DataFrame()
     bond_df = pd.DataFrame()
@@ -1488,7 +1779,8 @@ def get_fund_portfolio(code: str, year: str | None = None) -> dict:
             break
 
     if not used_year:
-        raise RuntimeError("未取到基金持仓或行业配置真实数据")
+        detail = f"；ETF 联接穿透失败:{linked_error}" if linked_error else ""
+        raise RuntimeError(f"未取到基金持仓或行业配置真实数据{detail}")
 
     stock_latest, stock_period = _latest_quarter_rows(stock_df, "季度")
     bond_latest, bond_period = _latest_quarter_rows(bond_df, "季度")

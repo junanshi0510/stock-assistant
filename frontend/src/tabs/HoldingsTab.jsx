@@ -473,6 +473,7 @@ export default function HoldingsTab() {
               {exposure.funds.map((row) => (
                 <span className="tag neutral" key={row.code}>
                   {row.code} {row.name} · 权益 {pctRange(row.equity_interval?.lower_ratio, row.equity_interval?.upper_ratio)} · {row.periods?.asset || row.periods?.stock || '未返回报告期'}
+                  {row.linked_fund ? ` · 目标 ETF ${row.linked_fund.target_code} × ${plainPct(row.linked_fund.target_nav_ratio)}` : ''}
                 </span>
               ))}
             </div>
