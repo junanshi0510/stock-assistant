@@ -62,6 +62,7 @@ const STEP_LABELS = {
   'portfolio.context.get': '真实持仓与投资约束',
   'fund.personalized_decision.evaluate': '个人风险门禁与金额策略',
   'fund.market_profile.get': '真实基金投资市场识别',
+  'strategy.release.check': '策略注册与发布门禁',
 }
 
 const STRATEGY_DECISION = {
@@ -82,6 +83,17 @@ const STRATEGY_CONFIDENCE = {
   medium: '中等',
   low: '较低',
   unavailable: '不可用',
+}
+
+const STRATEGY_RELEASE_STATUS = {
+  draft: '草稿',
+  review: '评审中',
+  shadow: 'Shadow 观察',
+  canary: '灰度发布',
+  active: '正式发布',
+  paused: '已暂停',
+  retired: '已退役',
+  unregistered: '未注册',
 }
 
 const CONDITION_LABELS = {
@@ -153,6 +165,11 @@ function StrategyPanel({ strategy, onOpenEvidence, personalized = false }) {
     || STRATEGY_DECISION.data_required
   const condition = strategy.condition || {}
   const coverage = strategy.coverage || {}
+  const governance = strategy.governance || {}
+  const governedStrategy = governance.strategy || {}
+  const execution = governance.execution || {}
+  const release = governance.release || {}
+  const released = Boolean(execution.decision_use_allowed)
   return (
     <section className="agent-strategy-panel" aria-label="基金历史条件策略">
       <div className="agent-section-head">
@@ -161,11 +178,32 @@ function StrategyPanel({ strategy, onOpenEvidence, personalized = false }) {
           <h3>当前条件的历史前瞻统计</h3>
           <small>{strategy.strategy_id}@{strategy.strategy_version} · 数据截至 {condition.as_of || coverage.end_date || '-'}</small>
         </div>
-        {strategy.evidence_id && (
-          <button className="ghost" onClick={() => onOpenEvidence(strategy.evidence_id)}>
-            <Database size={14} aria-hidden="true" />查看策略 Evidence
-          </button>
-        )}
+        <div className="agent-section-actions">
+          {strategy.evidence_id && (
+            <button className="ghost" onClick={() => onOpenEvidence(strategy.evidence_id)}>
+              <Database size={14} aria-hidden="true" />查看策略 Evidence
+            </button>
+          )}
+          {governance.evidence_id && (
+            <button className="ghost" onClick={() => onOpenEvidence(governance.evidence_id)}>
+              <ShieldCheck size={14} aria-hidden="true" />查看治理 Evidence
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className={`agent-strategy-release ${released ? 'released' : 'restricted'}`}>
+        <ShieldCheck size={17} aria-hidden="true" />
+        <div>
+          <span>生产发布状态</span>
+          <b>{STRATEGY_RELEASE_STATUS[governedStrategy.status] || governedStrategy.status || '不可验证'}</b>
+          <small>{execution.reason || '没有形成可验证的策略发布快照'}</small>
+        </div>
+        <div>
+          <span>发布检查</span>
+          <b>{release.passed_check_count ?? 0} / {release.required_check_count ?? '-'}</b>
+          <small>{released ? '允许进入个人决策门禁' : '研究结果不生成投入金额'}</small>
+        </div>
       </div>
 
       <div className="agent-strategy-summary">

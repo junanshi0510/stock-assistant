@@ -17,7 +17,7 @@ import storage
 from agent.comparison import compare_run_results
 from agent.outcomes import DecisionOutcomeService, OutcomeEvaluationError
 from agent.repository import RUN_TERMINAL_STATUSES
-from agent.worker import registry, repository, start_worker
+from agent.worker import registry, repository, start_worker, strategy_governance
 
 
 router = APIRouter(prefix="/api/v1/agent", tags=["投资 Agent"])
@@ -142,6 +142,60 @@ def get_agent_tool_catalog():
             if item["risk_level"] in {"R0", "R1"}
         ],
         "policy": "R0 只读取公共市场数据；R1 只读取用户已确认组合或执行确定性个人风险门禁，均不下单。",
+    }
+
+
+@router.get("/strategies")
+def list_agent_strategies():
+    items = strategy_governance.list_public()
+    return {
+        "items": items,
+        "count": len(items),
+        "policy": (
+            "策略状态和发布检查只读公开；状态写入仅允许服务器 SSH 运维命令。"
+            "只有 active 或命中 canary 且所有发布检查通过的精确版本才能影响个人决策。"
+        ),
+    }
+
+
+@router.get("/strategies/{strategy_id}/{strategy_version}")
+def get_agent_strategy(strategy_id: str, strategy_version: str):
+    item = strategy_governance.get_public(strategy_id, strategy_version)
+    if item is None:
+        raise HTTPException(status_code=404, detail="策略版本不存在")
+    events = repository.list_strategy_audit_events(strategy_id, strategy_version)
+    public_events = []
+    for event in events:
+        details = event.get("details") or {}
+        public_events.append({
+            "sequence_no": event["sequence_no"],
+            "event_type": event["event_type"],
+            "actor_role": event["actor_role"],
+            "details": {
+                key: details[key]
+                for key in (
+                    "initial_status",
+                    "manifest_sha256",
+                    "strategy_kind",
+                    "from_status",
+                    "to_status",
+                    "release_assessment",
+                )
+                if key in details
+            },
+            "previous_hash": event["previous_hash"],
+            "event_hash": event["event_hash"],
+            "created_at": event["created_at"],
+        })
+    return {
+        "strategy": item,
+        "audit": {
+            "items": public_events,
+            "verification": repository.verify_strategy_audit_chain(
+                strategy_id,
+                strategy_version,
+            ),
+        },
     }
 
 

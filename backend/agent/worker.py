@@ -19,6 +19,7 @@ from .outcome_worker import OutcomeScheduleWorker
 from .outcomes import DecisionOutcomeService
 from .registry import build_default_registry
 from .repository import AgentRepository
+from .strategy_governance import StrategyGovernanceService
 from .workflow import AgentWorkflowRunner
 
 
@@ -89,7 +90,9 @@ class AgentWorker:
 
 
 repository = AgentRepository()
-registry = build_default_registry()
+strategy_governance = StrategyGovernanceService(repository)
+strategy_governance.seed_defaults()
+registry = build_default_registry(strategy_governance)
 runner = AgentWorkflowRunner(repository, registry)
 outcome_service = DecisionOutcomeService(repository, registry)
 

@@ -13,6 +13,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import threading
 import uuid
@@ -22,6 +23,7 @@ from typing import Any
 
 RUN_TERMINAL_STATUSES = {"completed", "partial", "failed", "cancelled", "abstained"}
 STEP_REUSABLE_STATUSES = {"succeeded", "partial"}
+STRATEGY_STATUSES = {"draft", "review", "shadow", "canary", "active", "paused", "retired"}
 
 
 class _ClosingConnection(sqlite3.Connection):
@@ -237,6 +239,45 @@ class AgentRepository:
                         created_at     TEXT NOT NULL
                     );
 
+                    CREATE TABLE IF NOT EXISTS agent_strategy_versions (
+                        strategy_id       TEXT NOT NULL,
+                        strategy_version  TEXT NOT NULL,
+                        name              TEXT NOT NULL,
+                        strategy_kind     TEXT NOT NULL,
+                        owner_id          TEXT NOT NULL,
+                        status            TEXT NOT NULL,
+                        previous_status   TEXT,
+                        manifest_json     TEXT NOT NULL,
+                        manifest_sha256   TEXT NOT NULL,
+                        registered_at     TEXT NOT NULL,
+                        status_updated_at TEXT NOT NULL,
+                        PRIMARY KEY (strategy_id, strategy_version)
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_agent_strategy_status
+                    ON agent_strategy_versions(status, strategy_id, strategy_version);
+
+                    CREATE TABLE IF NOT EXISTS agent_strategy_audit_events (
+                        id                TEXT PRIMARY KEY,
+                        strategy_id       TEXT NOT NULL,
+                        strategy_version  TEXT NOT NULL,
+                        sequence_no       INTEGER NOT NULL,
+                        event_type        TEXT NOT NULL,
+                        actor_role        TEXT NOT NULL,
+                        actor_id          TEXT NOT NULL,
+                        details_json      TEXT NOT NULL,
+                        previous_hash     TEXT,
+                        event_hash        TEXT NOT NULL,
+                        created_at        TEXT NOT NULL,
+                        FOREIGN KEY (strategy_id, strategy_version)
+                            REFERENCES agent_strategy_versions(strategy_id, strategy_version)
+                            ON DELETE RESTRICT,
+                        UNIQUE(strategy_id, strategy_version, sequence_no)
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_agent_strategy_audit
+                    ON agent_strategy_audit_events(strategy_id, strategy_version, sequence_no);
+
                     """
                 )
                 audit_columns = {
@@ -328,6 +369,67 @@ class AgentRepository:
         )
         return {**canonical, "event_hash": event_hash}
 
+    def _append_strategy_audit(
+        self,
+        connection: sqlite3.Connection,
+        strategy_id: str,
+        strategy_version: str,
+        event_type: str,
+        details: dict[str, Any] | None = None,
+        *,
+        actor_role: str,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        previous = connection.execute(
+            """
+            SELECT event_hash, sequence_no
+            FROM agent_strategy_audit_events
+            WHERE strategy_id=? AND strategy_version=?
+            ORDER BY sequence_no DESC
+            LIMIT 1
+            """,
+            (strategy_id, strategy_version),
+        ).fetchone()
+        event_id = _new_id("strategy_audit")
+        created_at = _utc_now()
+        previous_hash = previous["event_hash"] if previous else None
+        sequence_no = int(previous["sequence_no"] if previous else 0) + 1
+        canonical = {
+            "id": event_id,
+            "strategy_id": strategy_id,
+            "strategy_version": strategy_version,
+            "sequence_no": sequence_no,
+            "event_type": event_type,
+            "actor_role": actor_role,
+            "actor_id": actor_id,
+            "details": details or {},
+            "previous_hash": previous_hash,
+            "created_at": created_at,
+        }
+        event_hash = hashlib.sha256(_json(canonical).encode("utf-8")).hexdigest()
+        connection.execute(
+            """
+            INSERT INTO agent_strategy_audit_events (
+                id, strategy_id, strategy_version, sequence_no, event_type,
+                actor_role, actor_id, details_json, previous_hash, event_hash, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event_id,
+                strategy_id,
+                strategy_version,
+                sequence_no,
+                event_type,
+                actor_role,
+                actor_id,
+                _json(details or {}),
+                previous_hash,
+                event_hash,
+                created_at,
+            ),
+        )
+        return {**canonical, "event_hash": event_hash}
+
     @staticmethod
     def _run_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
         if row is None:
@@ -368,6 +470,25 @@ class AgentRepository:
     @staticmethod
     def _outcome_schedule_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
         return dict(row) if row is not None else None
+
+    @staticmethod
+    def _strategy_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        item = dict(row)
+        manifest = _load(item.pop("manifest_json", None), {})
+        item["manifest"] = manifest
+        item["manifest_integrity_verified"] = (
+            hashlib.sha256(_json(manifest).encode("utf-8")).hexdigest()
+            == item.get("manifest_sha256")
+        )
+        return item
+
+    @staticmethod
+    def _strategy_audit_from_row(row: sqlite3.Row) -> dict[str, Any]:
+        item = dict(row)
+        item["details"] = _load(item.pop("details_json", None), {})
+        return item
 
     def create_run(
         self,
@@ -1692,4 +1813,234 @@ class AgentRepository:
             "failing_evidence_id": None,
             "audit_verified": True,
             "reason": None,
+        }
+
+    def register_strategy_version(
+        self,
+        manifest: dict[str, Any],
+        *,
+        initial_status: str,
+        actor_role: str = "system",
+        actor_id: str = "strategy-bootstrap-v1",
+    ) -> tuple[dict[str, Any], bool]:
+        strategy_id = str(manifest.get("strategy_id") or "").strip()
+        strategy_version = str(manifest.get("strategy_version") or "").strip()
+        name = str(manifest.get("name") or "").strip()
+        strategy_kind = str(manifest.get("strategy_kind") or "").strip()
+        owner_id = str(manifest.get("owner_id") or "").strip()
+        if not all((strategy_id, strategy_version, name, strategy_kind, owner_id)):
+            raise ValueError("策略清单缺少 id、版本、名称、类型或负责人")
+        if not re.fullmatch(r"[a-z][a-z0-9_.-]{2,127}", strategy_id):
+            raise ValueError("策略 ID 必须是 3-128 位小写稳定标识")
+        if not re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", strategy_version):
+            raise ValueError("策略版本必须使用语义化版本")
+        if initial_status not in STRATEGY_STATUSES:
+            raise ValueError(f"无效策略状态:{initial_status}")
+        if initial_status not in {"draft", "shadow"}:
+            raise ValueError("新策略版本只能以 draft 或迁移期 shadow 状态注册")
+        manifest_json = _json(manifest)
+        manifest_hash = hashlib.sha256(manifest_json.encode("utf-8")).hexdigest()
+        now = _utc_now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing_row = connection.execute(
+                """
+                SELECT * FROM agent_strategy_versions
+                WHERE strategy_id=? AND strategy_version=?
+                """,
+                (strategy_id, strategy_version),
+            ).fetchone()
+            if existing_row is not None:
+                existing = self._strategy_from_row(existing_row)
+                if existing["manifest_sha256"] != manifest_hash:
+                    raise ValueError(
+                        f"策略版本内容已存在且哈希不同:{strategy_id}@{strategy_version}"
+                    )
+                return existing, False
+            connection.execute(
+                """
+                INSERT INTO agent_strategy_versions (
+                    strategy_id, strategy_version, name, strategy_kind, owner_id,
+                    status, previous_status, manifest_json, manifest_sha256,
+                    registered_at, status_updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+                """,
+                (
+                    strategy_id,
+                    strategy_version,
+                    name,
+                    strategy_kind,
+                    owner_id,
+                    initial_status,
+                    manifest_json,
+                    manifest_hash,
+                    now,
+                    now,
+                ),
+            )
+            self._append_strategy_audit(
+                connection,
+                strategy_id,
+                strategy_version,
+                "strategy.version.registered",
+                {
+                    "initial_status": initial_status,
+                    "manifest_sha256": manifest_hash,
+                    "strategy_kind": strategy_kind,
+                },
+                actor_role=actor_role,
+                actor_id=actor_id,
+            )
+            created_row = connection.execute(
+                """
+                SELECT * FROM agent_strategy_versions
+                WHERE strategy_id=? AND strategy_version=?
+                """,
+                (strategy_id, strategy_version),
+            ).fetchone()
+        return self._strategy_from_row(created_row), True
+
+    def get_strategy_version(
+        self,
+        strategy_id: str,
+        strategy_version: str,
+    ) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM agent_strategy_versions
+                WHERE strategy_id=? AND strategy_version=?
+                """,
+                (strategy_id, strategy_version),
+            ).fetchone()
+        return self._strategy_from_row(row)
+
+    def list_strategy_versions(self) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM agent_strategy_versions
+                ORDER BY strategy_id, registered_at DESC, strategy_version DESC
+                """
+            ).fetchall()
+        return [self._strategy_from_row(row) for row in rows]
+
+    def transition_strategy_status(
+        self,
+        strategy_id: str,
+        strategy_version: str,
+        *,
+        expected_status: str,
+        target_status: str,
+        actor_role: str,
+        actor_id: str,
+        reason: str,
+        release_assessment: dict[str, Any],
+    ) -> dict[str, Any]:
+        if target_status not in STRATEGY_STATUSES:
+            raise ValueError(f"无效策略状态:{target_status}")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT * FROM agent_strategy_versions
+                WHERE strategy_id=? AND strategy_version=?
+                """,
+                (strategy_id, strategy_version),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"策略版本不存在:{strategy_id}@{strategy_version}")
+            current_status = str(row["status"])
+            if current_status != expected_status:
+                raise RuntimeError(
+                    f"策略状态已变化，期望 {expected_status}，实际 {current_status}"
+                )
+            if current_status == target_status:
+                return self._strategy_from_row(row)
+            now = _utc_now()
+            connection.execute(
+                """
+                UPDATE agent_strategy_versions
+                SET previous_status=status, status=?, status_updated_at=?
+                WHERE strategy_id=? AND strategy_version=? AND status=?
+                """,
+                (target_status, now, strategy_id, strategy_version, expected_status),
+            )
+            self._append_strategy_audit(
+                connection,
+                strategy_id,
+                strategy_version,
+                "strategy.status.changed",
+                {
+                    "from_status": current_status,
+                    "to_status": target_status,
+                    "reason": reason,
+                    "release_assessment": release_assessment,
+                },
+                actor_role=actor_role,
+                actor_id=actor_id,
+            )
+            updated = connection.execute(
+                """
+                SELECT * FROM agent_strategy_versions
+                WHERE strategy_id=? AND strategy_version=?
+                """,
+                (strategy_id, strategy_version),
+            ).fetchone()
+        return self._strategy_from_row(updated)
+
+    def list_strategy_audit_events(
+        self,
+        strategy_id: str,
+        strategy_version: str,
+    ) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM agent_strategy_audit_events
+                WHERE strategy_id=? AND strategy_version=?
+                ORDER BY sequence_no
+                """,
+                (strategy_id, strategy_version),
+            ).fetchall()
+        return [self._strategy_audit_from_row(row) for row in rows]
+
+    def verify_strategy_audit_chain(
+        self,
+        strategy_id: str,
+        strategy_version: str,
+    ) -> dict[str, Any]:
+        items = self.list_strategy_audit_events(strategy_id, strategy_version)
+        previous_hash = None
+        for expected_sequence, item in enumerate(items, start=1):
+            canonical = {
+                "id": item["id"],
+                "strategy_id": item["strategy_id"],
+                "strategy_version": item["strategy_version"],
+                "sequence_no": item["sequence_no"],
+                "event_type": item["event_type"],
+                "actor_role": item["actor_role"],
+                "actor_id": item["actor_id"],
+                "details": item["details"],
+                "previous_hash": item["previous_hash"],
+                "created_at": item["created_at"],
+            }
+            calculated_hash = hashlib.sha256(_json(canonical).encode("utf-8")).hexdigest()
+            if (
+                int(item["sequence_no"]) != expected_sequence
+                or item["previous_hash"] != previous_hash
+                or item["event_hash"] != calculated_hash
+            ):
+                return {
+                    "verified": False,
+                    "event_count": len(items),
+                    "failing_sequence": item["sequence_no"],
+                    "chain_head": previous_hash,
+                }
+            previous_hash = item["event_hash"]
+        return {
+            "verified": bool(items),
+            "event_count": len(items),
+            "failing_sequence": None if items else 0,
+            "chain_head": previous_hash,
         }

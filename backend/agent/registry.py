@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 import funds as fund_service
 import portfolio_exposure
 from .portfolio_context import get_portfolio_context
 from strategies.personalized_fund_decision import evaluate_personalized_fund_decision
+
+if TYPE_CHECKING:
+    from .strategy_governance import StrategyGovernanceService
 
 
 ToolHandler = Callable[[dict[str, Any]], dict[str, Any]]
@@ -60,7 +63,7 @@ class ToolRegistry:
         ]
 
 
-def build_default_registry() -> ToolRegistry:
+def build_default_registry(strategy_governance: "StrategyGovernanceService") -> ToolRegistry:
     registry = ToolRegistry()
     registry.register(ToolDefinition(
         name="fund.analysis.get",
@@ -125,6 +128,14 @@ def build_default_registry() -> ToolRegistry:
         ),
     ))
     registry.register(ToolDefinition(
+        name="strategy.release.check",
+        version="1.0.0",
+        description="读取精确策略版本的持久化状态、清单哈希、审计链和发布检查，默认拒绝未发布策略影响用户决策。",
+        risk_level="R0",
+        timeout_seconds=5,
+        handler=strategy_governance.evaluate_runtime_use,
+    ))
+    registry.register(ToolDefinition(
         name="portfolio.context.get",
         version="1.0.0",
         description="读取用户已确认持仓、目标基金仓位和已保存投资约束，用于个人决策门禁。",
@@ -145,8 +156,8 @@ def build_default_registry() -> ToolRegistry:
     ))
     registry.register(ToolDefinition(
         name="fund.personalized_decision.evaluate",
-        version="1.2.0",
-        description="把基金研究 Evidence 与用户组合 Evidence 代入版本化风险门禁和金额策略。",
+        version="1.3.0",
+        description="把已发布策略、基金研究 Evidence 与用户组合 Evidence 代入版本化风险门禁和金额策略。",
         risk_level="R1",
         timeout_seconds=5,
         handler=lambda payload: {
@@ -155,6 +166,7 @@ def build_default_registry() -> ToolRegistry:
                 payload["context"],
                 payload["market_profile"],
                 payload.get("exposure"),
+                payload.get("strategy_governance"),
                 planned_amount=payload.get("planned_amount"),
             ),
             "input_evidence_ids": payload.get("input_evidence_ids") or [],

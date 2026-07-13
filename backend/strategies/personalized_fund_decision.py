@@ -8,7 +8,7 @@ from typing import Any
 
 
 STRATEGY_ID = "personalized_fund_decision"
-STRATEGY_VERSION = "1.2.0"
+STRATEGY_VERSION = "1.3.0"
 
 
 def _number(value: Any) -> float | None:
@@ -71,6 +71,7 @@ def evaluate_personalized_fund_decision(
     context: dict[str, Any],
     market_profile: dict[str, Any] | None = None,
     exposure: dict[str, Any] | None = None,
+    strategy_governance: dict[str, Any] | None = None,
     *,
     planned_amount: float | None = None,
 ) -> dict[str, Any]:
@@ -80,6 +81,7 @@ def evaluate_personalized_fund_decision(
     strategy = analysis.get("conditioned_forward") or {}
     market_profile = market_profile or {}
     exposure = exposure or {}
+    strategy_governance = strategy_governance or {}
     market = market_profile.get("market") or {}
     metrics = analysis.get("metrics") or {}
     timing = analysis.get("timing") or {}
@@ -104,6 +106,11 @@ def evaluate_personalized_fund_decision(
     strategy_decision = str(strategy.get("decision") or "data_required")
     confidence = str((strategy.get("confidence") or {}).get("level") or "unavailable")
     timing_score = _number(timing.get("score"))
+    governance_strategy = strategy_governance.get("strategy") or {}
+    governance_execution = strategy_governance.get("execution") or {}
+    governance_release = strategy_governance.get("release") or {}
+    strategy_decision_allowed = bool(governance_execution.get("decision_use_allowed"))
+    governance_status = str(governance_strategy.get("status") or "unregistered")
 
     gates = []
     missing = []
@@ -395,13 +402,33 @@ def evaluate_personalized_fund_decision(
         ),
     })
 
-    edge_positive = strategy_decision == "research"
-    edge_negative = strategy_decision == "avoid_for_now"
+    gates.append({
+        "code": "strategy_release",
+        "status": "pass" if strategy_decision_allowed else "block",
+        "label": "策略发布门禁",
+        "detail": (
+            f"{strategy.get('strategy_id') or '-'}@{strategy.get('strategy_version') or '-'} "
+            f"已通过发布检查，状态 {governance_status}"
+            if strategy_decision_allowed else
+            str(governance_execution.get("reason") or "策略未注册或发布状态不可验证，默认拒绝用于个人决策")
+        ),
+    })
+    edge_positive = strategy_decision_allowed and strategy_decision == "research"
+    edge_negative = strategy_decision_allowed and strategy_decision == "avoid_for_now"
     gates.append({
         "code": "historical_edge",
-        "status": "pass" if edge_positive else "block" if edge_negative else "warn",
+        "status": (
+            "block" if not strategy_decision_allowed
+            else "pass" if edge_positive
+            else "block" if edge_negative
+            else "warn"
+        ),
         "label": "历史条件优势",
-        "detail": f"{strategy.get('strategy_id') or '历史策略'} 判断 {strategy_decision}，置信度 {confidence}",
+        "detail": (
+            f"策略当前为 {governance_status}，历史统计只保留为 Shadow Evidence"
+            if not strategy_decision_allowed else
+            f"{strategy.get('strategy_id') or '历史策略'} 判断 {strategy_decision}，置信度 {confidence}"
+        ),
     })
 
     capacities = [value for value in (single_capacity, equity_capacity, industry_capacity) if value is not None]
@@ -420,7 +447,11 @@ def evaluate_personalized_fund_decision(
         item for item in missing
         if item not in {"portfolio_exposure_snapshot"}
     ]
-    if "fund_market_identification" in missing:
+    if not strategy_decision_allowed:
+        action = "strategy_not_released"
+        label = "策略仅用于 Shadow 研究"
+        rationale = "历史条件策略尚未通过发布门禁，系统保留研究证据，但拒绝生成新增投入金额。"
+    elif "fund_market_identification" in missing:
         action = "market_data_required"
         label = "等待确认基金投资市场"
         rationale = "真实元数据只能确认该基金属于跨境产品，但无法确认主要投资市场，系统拒绝生成金额。"
@@ -501,7 +532,12 @@ def evaluate_personalized_fund_decision(
         "strategy_version": STRATEGY_VERSION,
         "status": (
             "abstained"
-            if missing or action in {"market_data_required", "exposure_data_required", "setup_required"}
+            if missing or action in {
+                "market_data_required",
+                "exposure_data_required",
+                "setup_required",
+                "strategy_not_released",
+            }
             else "evaluated"
         ),
         "decision": {
@@ -583,6 +619,22 @@ def evaluate_personalized_fund_decision(
             "median_return": _number(analog.get("median_return")),
             "worst_return": _number(analog.get("worst_return")),
         },
+        "strategy_governance": {
+            "schema_version": strategy_governance.get("schema_version"),
+            "strategy_id": governance_strategy.get("strategy_id"),
+            "strategy_version": governance_strategy.get("strategy_version"),
+            "status": governance_status,
+            "manifest_sha256": governance_strategy.get("manifest_sha256"),
+            "manifest_integrity_verified": governance_release.get("manifest_integrity_verified"),
+            "audit_verified": (governance_release.get("audit_chain") or {}).get("verified"),
+            "release_ready": governance_release.get("release_ready"),
+            "decision_use_allowed": strategy_decision_allowed,
+            "execution_mode": governance_execution.get("mode"),
+            "reason_code": governance_execution.get("reason_code"),
+            "reason": governance_execution.get("reason"),
+            "required_check_count": governance_release.get("required_check_count"),
+            "passed_check_count": governance_release.get("passed_check_count"),
+        },
         "gates": gates,
         "missing_requirements": missing,
         "monitoring": {
@@ -597,6 +649,7 @@ def evaluate_personalized_fund_decision(
             "cross_market": "market_permission_and_fx_acknowledgement_are_required_before_amount",
             "drawdown_capacity": "historical_fund_max_drawdown_must_not_exceed_user_confirmed_ips_limit",
             "portfolio_exposure": "new_money_is_allowed_only_when_an_immutable_fresh_snapshot_proves_equity_and_industry_limits",
+            "strategy_release": "unregistered_shadow_paused_retired_or_unverified_strategy_versions_cannot_influence_money",
         },
-        "policy": "这是基于已确认持仓、真实基金市场画像、不可变组合穿透快照、用户约束和历史统计的决策检查，不保证收益，不自动下单；未披露仓位按最坏上界处理，跨境市场或组合约束无法验证时不得给新增金额。当前持仓存储仍是单用户迁移账本，多用户开放前必须完成登录、授权与数据隔离。",
+        "policy": "这是基于已确认持仓、真实基金市场画像、不可变组合穿透快照、用户约束和精确策略版本的决策检查，不保证收益，不自动下单；未注册、Shadow、Paused、Retired、清单哈希或审计失败、发布检查未通过的策略均不得生成投入金额。未披露仓位按最坏上界处理，跨境市场或组合约束无法验证时同样拒绝。当前持仓存储仍是单用户迁移账本，多用户开放前必须完成登录、授权与数据隔离。",
     }

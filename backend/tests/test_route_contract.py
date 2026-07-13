@@ -4,6 +4,7 @@
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -11,6 +12,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from main import app  # noqa: E402
+from routers import agent as agent_router  # noqa: E402
 
 
 EXPECTED_OPERATIONS = {
@@ -72,6 +74,8 @@ EXPECTED_OPERATIONS = {
     "/api/funds/compare": {"POST"},
     "/api/funds/overlap": {"POST"},
     "/api/v1/agent/tools": {"GET"},
+    "/api/v1/agent/strategies": {"GET"},
+    "/api/v1/agent/strategies/{strategy_id}/{strategy_version}": {"GET"},
     "/api/v1/agent/runs": {"GET", "POST"},
     "/api/v1/agent/runs/{run_id}": {"GET"},
     "/api/v1/agent/runs/{run_id}/evaluate": {"POST"},
@@ -94,6 +98,48 @@ class RouteContractTests(unittest.TestCase):
             if path.startswith("/api/")
         }
         self.assertEqual(actual, EXPECTED_OPERATIONS)
+
+    def test_public_strategy_audit_hides_operator_identity_and_reason(self):
+        event = {
+            "sequence_no": 2,
+            "event_type": "strategy.status.changed",
+            "actor_role": "reviewer",
+            "actor_id": "internal-reviewer@example.test",
+            "details": {
+                "from_status": "shadow",
+                "to_status": "canary",
+                "reason": "internal incident and approval details",
+                "release_assessment": {"release_ready": True},
+            },
+            "previous_hash": "a" * 64,
+            "event_hash": "b" * 64,
+            "created_at": "2026-07-13T00:00:00+00:00",
+        }
+        with (
+            patch.object(
+                agent_router.strategy_governance,
+                "get_public",
+                return_value={"strategy_id": "sample", "strategy_version": "1.0.0"},
+            ),
+            patch.object(
+                agent_router.repository,
+                "list_strategy_audit_events",
+                return_value=[event],
+            ),
+            patch.object(
+                agent_router.repository,
+                "verify_strategy_audit_chain",
+                return_value={"verified": True},
+            ),
+        ):
+            response = agent_router.get_agent_strategy("sample", "1.0.0")
+
+        public_event = response["audit"]["items"][0]
+        self.assertNotIn("actor_id", public_event)
+        self.assertNotIn("reason", public_event["details"])
+        self.assertEqual(public_event["actor_role"], "reviewer")
+        self.assertEqual(public_event["details"]["to_status"], "canary")
+        self.assertTrue(response["audit"]["verification"]["verified"])
 
 
 if __name__ == "__main__":

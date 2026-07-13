@@ -4035,6 +4035,19 @@ tbody tr:hover { background: #f0f8f6; }
 .level-recurrence-policy { margin: 7px 0 0; color: var(--faint); font-size: 9px; line-height: 1.5; }
 
 .agent-strategy-panel { border-top: 3px solid #0f766e; }
+.agent-section-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 7px; }
+.agent-strategy-release { display: grid; grid-template-columns: auto minmax(0, 1.6fr) minmax(150px, .7fr); align-items: center; gap: 11px; margin-top: 15px; padding: 11px 12px; border-left: 3px solid #60737b; background: #f2f5f6; }
+.agent-strategy-release.released { border-left-color: #087d68; background: #eef8f6; }
+.agent-strategy-release.restricted { border-left-color: #956300; background: #fff9ea; }
+.agent-strategy-release > svg { color: #60737b; }
+.agent-strategy-release.released > svg { color: #087d68; }
+.agent-strategy-release.restricted > svg { color: #956300; }
+.agent-strategy-release > div { min-width: 0; }
+.agent-strategy-release span,
+.agent-strategy-release small { display: block; }
+.agent-strategy-release span { color: var(--faint); font-size: 9px; }
+.agent-strategy-release b { display: block; margin-top: 3px; font-size: 11.5px; line-height: 1.35; }
+.agent-strategy-release small { margin-top: 3px; color: var(--muted); font-size: 9.5px; line-height: 1.45; overflow-wrap: anywhere; }
 .agent-strategy-summary { display: grid; grid-template-columns: 1.25fr repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 16px; }
 .agent-strategy-summary > div { min-width: 0; min-height: 90px; padding: 11px; border-left: 2px solid var(--border-strong); background: #f8fafb; }
 .agent-strategy-summary > div.decision.positive { border-left-color: #0f766e; background: #eef8f6; }
@@ -4197,6 +4210,8 @@ tbody tr:hover { background: #f0f8f6; }
   .agent-comparison-overview { grid-template-columns: minmax(0, 1fr) 20px minmax(0, 1fr); }
   .agent-comparison-overview > div:last-child { grid-column: 1 / -1; }
   .agent-strategy-gates { grid-template-columns: 1fr; }
+  .agent-strategy-release { grid-template-columns: auto minmax(0, 1fr); }
+  .agent-strategy-release > div:last-child { grid-column: 2; }
   .agent-personal-action { grid-template-columns: 1fr; }
   .agent-personal-market { grid-template-columns: 1fr; }
   .agent-market-summary { grid-template-columns: auto 1fr 1fr; }
@@ -4254,6 +4269,10 @@ tbody tr:hover { background: #f0f8f6; }
   .agent-comparison-dimensions { grid-template-columns: 1fr; }
   .agent-strategy-summary,
   .agent-strategy-condition { grid-template-columns: 1fr; }
+  .agent-section-actions { width: 100%; justify-content: flex-start; }
+  .agent-strategy-release { grid-template-columns: 1fr; }
+  .agent-strategy-release > svg { display: none; }
+  .agent-strategy-release > div:last-child { grid-column: auto; }
   .agent-personal-metrics,
   .agent-personal-gates,
   .agent-outcome-summary,

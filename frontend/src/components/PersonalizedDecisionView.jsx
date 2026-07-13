@@ -22,6 +22,7 @@ const ACTION_TONE = {
   budget_required: 'unavailable',
   market_data_required: 'unavailable',
   exposure_data_required: 'unavailable',
+  strategy_not_released: 'unavailable',
 }
 
 const MARKET_LABELS = {
@@ -39,7 +40,14 @@ export default function PersonalizedDecisionView({ decision, onOpenEvidence }) {
   const history = decision.historical_context || {}
   const market = decision.market_context || {}
   const exposure = decision.portfolio_exposure || {}
-  const tone = ACTION_TONE[action.action] || 'mixed'
+  const governance = decision.strategy_governance || {}
+  const unverifiedPositiveAction = action.action === 'consider_tranche'
+    && governance.decision_use_allowed !== true
+  const tone = unverifiedPositiveAction ? 'unavailable' : (ACTION_TONE[action.action] || 'mixed')
+  const actionLabel = unverifiedPositiveAction ? '历史金额建议已停用' : action.label
+  const actionRationale = unverifiedPositiveAction
+    ? '该历史结果没有绑定可验证的策略发布快照，当前版本拒绝继续展示为可执行投入金额。'
+    : action.rationale
 
   return (
     <section className="agent-personal-decision" aria-label="个人基金决策">
@@ -57,19 +65,26 @@ export default function PersonalizedDecisionView({ decision, onOpenEvidence }) {
       </div>
 
       <div className={`agent-personal-action ${tone}`}>
-        <div><span>本轮动作</span><b>{action.label || '-'}</b></div>
-        <p>{action.rationale}</p>
+        <div><span>本轮动作</span><b>{actionLabel || '-'}</b></div>
+        <p>{actionRationale}</p>
       </div>
 
       <div className="agent-personal-metrics">
         <div><span>当前仓位</span><b>{pct(portfolio.current_ratio)}</b><small>{portfolio.target_exists ? money(portfolio.target_amount) : '-'}</small></div>
         <div><span>你的单品上限</span><b>{pct(portfolio.max_single_ratio)}</b><small>按确认组合金额计算</small></div>
-        <div><span>上限内可用总额</span><b>{money(budget.allowed_full_amount)}</b><small>不等于必须投入</small></div>
+        <div><span>上限内可用总额</span><b>{money(unverifiedPositiveAction ? null : budget.allowed_full_amount)}</b><small>{unverifiedPositiveAction ? '策略发布状态不可验证' : '不等于必须投入'}</small></div>
         <div>
           <span>{action.action === 'reduce_exposure' ? '建议复核减仓额' : '首批观察金额'}</span>
-          <b>{money(action.action === 'reduce_exposure' ? budget.suggested_reduction_amount : budget.first_tranche_amount)}</b>
+          <b>{money(unverifiedPositiveAction ? null : action.action === 'reduce_exposure' ? budget.suggested_reduction_amount : budget.first_tranche_amount)}</b>
           <small>{budget.tranche_count ? `计划拆为 ${budget.tranche_count} 批` : '触发门禁时不生成金额'}</small>
         </div>
+      </div>
+
+      <div className="agent-personal-evidence-row">
+        <ShieldAlert size={15} aria-hidden="true" />
+        <span>
+          策略 {governance.strategy_id || '-'}@{governance.strategy_version || '-'} · 状态 {governance.status || '不可验证'} · 发布检查 {governance.passed_check_count ?? 0}/{governance.required_check_count ?? '-'} · {governance.decision_use_allowed ? '允许进入个人门禁' : '禁止影响投入金额'}
+        </span>
       </div>
 
       <div className="agent-personal-evidence-row">
@@ -82,7 +97,13 @@ export default function PersonalizedDecisionView({ decision, onOpenEvidence }) {
       <div className="agent-personal-market">
         <div>
           <span>组合穿透快照</span>
-          <b>{exposure.integrity_verified ? '完整性已验证' : '不可用于决策'}</b>
+          <b>
+            {exposure.decision_eligible
+              ? '可用于决策'
+              : exposure.integrity_verified
+                ? '哈希有效，数据不完整'
+                : '不可用于决策'}
+          </b>
           <small>{exposure.snapshot_id || '未生成不可变快照'}</small>
         </div>
         <div>

@@ -27,6 +27,7 @@ def _analysis(decision="research", confidence="medium", risk_band="均衡偏波�
         "playbook": {"role": {"risk_band": risk_band}},
         "conditioned_forward": {
             "strategy_id": "fund_conditioned_forward_return",
+            "strategy_version": "1.0.0",
             "decision": decision,
             "confidence": {"level": confidence},
             "primary_horizon": "6m",
@@ -125,10 +126,35 @@ def _market(primary="mainland", *, resolution="identified", qdii=False):
     }
 
 
+def _governance(*, allowed=True, status="active"):
+    return {
+        "schema_version": "strategy_runtime_gate.v1",
+        "strategy": {
+            "strategy_id": "fund_conditioned_forward_return",
+            "strategy_version": "1.0.0",
+            "status": status,
+            "manifest_sha256": "d" * 64,
+        },
+        "execution": {
+            "decision_use_allowed": allowed,
+            "mode": status if allowed else "shadow",
+            "reason_code": "strategy_released" if allowed else "strategy_shadow_research_only",
+            "reason": "测试策略已发布" if allowed else "测试策略只允许 Shadow 研究",
+        },
+        "release": {
+            "manifest_integrity_verified": True,
+            "audit_chain": {"verified": True},
+            "release_ready": allowed,
+            "required_check_count": 6,
+            "passed_check_count": 6 if allowed else 0,
+        },
+    }
+
+
 class PersonalizedFundDecisionTests(unittest.TestCase):
     def test_missing_profile_abstains_without_amount(self):
         result = evaluate_personalized_fund_decision(
-            _analysis(), _context(configured=False), _market(), _exposure(), planned_amount=2000
+            _analysis(), _context(configured=False), _market(), _exposure(), _governance(), planned_amount=2000
         )
 
         self.assertEqual(result["status"], "abstained")
@@ -164,6 +190,7 @@ class PersonalizedFundDecisionTests(unittest.TestCase):
             _context(total=10000, target_amount=5000, target_ratio=50, max_ratio=35),
             _market(),
             _exposure(),
+            _governance(),
             planned_amount=1000,
         )
 
@@ -173,7 +200,7 @@ class PersonalizedFundDecisionTests(unittest.TestCase):
 
     def test_positive_history_within_limits_returns_auditable_tranche(self):
         result = evaluate_personalized_fund_decision(
-            _analysis(), _context(), _market(), _exposure(), planned_amount=1000
+            _analysis(), _context(), _market(), _exposure(), _governance(), planned_amount=1000
         )
 
         self.assertEqual(result["strategy_id"], STRATEGY_ID)
@@ -184,9 +211,27 @@ class PersonalizedFundDecisionTests(unittest.TestCase):
         self.assertEqual(result["budget"]["first_tranche_amount"], 250)
         self.assertEqual(result["portfolio"]["projected_ratio_after_full_amount"], 18.18)
 
+    def test_shadow_strategy_is_preserved_as_research_but_cannot_return_money(self):
+        result = evaluate_personalized_fund_decision(
+            _analysis(),
+            _context(),
+            _market(),
+            _exposure(),
+            _governance(allowed=False, status="shadow"),
+            planned_amount=1000,
+        )
+
+        self.assertEqual(result["status"], "abstained")
+        self.assertEqual(result["decision"]["action"], "strategy_not_released")
+        self.assertIsNone(result["budget"]["allowed_full_amount"])
+        self.assertIsNone(result["budget"]["first_tranche_amount"])
+        gate = next(item for item in result["gates"] if item["code"] == "strategy_release")
+        self.assertEqual(gate["status"], "block")
+        self.assertFalse(result["strategy_governance"]["decision_use_allowed"])
+
     def test_negative_historical_condition_blocks_averaging_down(self):
         result = evaluate_personalized_fund_decision(
-            _analysis(decision="avoid_for_now"), _context(), _market(), _exposure(), planned_amount=1000
+            _analysis(decision="avoid_for_now"), _context(), _market(), _exposure(), _governance(), planned_amount=1000
         )
 
         self.assertEqual(result["decision"]["action"], "wait")
@@ -197,7 +242,7 @@ class PersonalizedFundDecisionTests(unittest.TestCase):
         context = _context()
         context["profile"]["risk"] = "stable"
         result = evaluate_personalized_fund_decision(
-            _analysis(risk_band="进攻型"), context, _market(), _exposure(), planned_amount=1000
+            _analysis(risk_band="进攻型"), context, _market(), _exposure(), _governance(), planned_amount=1000
         )
 
         self.assertEqual(result["decision"]["action"], "do_not_add")
@@ -208,7 +253,7 @@ class PersonalizedFundDecisionTests(unittest.TestCase):
         context = _context()
         context["profile"]["horizon"] = "short"
         result = evaluate_personalized_fund_decision(
-            _analysis(), context, _market(), _exposure(), planned_amount=1000
+            _analysis(), context, _market(), _exposure(), _governance(), planned_amount=1000
         )
 
         self.assertEqual(result["decision"]["action"], "do_not_add")
@@ -217,7 +262,7 @@ class PersonalizedFundDecisionTests(unittest.TestCase):
     def test_hong_kong_fund_requires_permission_and_fx_acknowledgement(self):
         context = _context()
         result = evaluate_personalized_fund_decision(
-            _analysis(), context, _market("hong_kong", qdii=True), _exposure(), planned_amount=1000
+            _analysis(), context, _market("hong_kong", qdii=True), _exposure(), _governance(), planned_amount=1000
         )
 
         self.assertEqual(result["decision"]["action"], "do_not_add")
@@ -230,10 +275,10 @@ class PersonalizedFundDecisionTests(unittest.TestCase):
         context = _context()
         context["profile"]["max_drawdown_pct"] = 15
         result = evaluate_personalized_fund_decision(
-            _analysis(max_drawdown=-22), context, _market(), _exposure(), planned_amount=1000
+            _analysis(max_drawdown=-22), context, _market(), _exposure(), _governance(), planned_amount=1000
         )
 
-        self.assertEqual(result["strategy_version"], "1.2.0")
+        self.assertEqual(result["strategy_version"], "1.3.0")
         self.assertEqual(result["decision"]["action"], "do_not_add")
         gate = next(item for item in result["gates"] if item["code"] == "drawdown_capacity")
         self.assertEqual(gate["status"], "block")
@@ -244,7 +289,7 @@ class PersonalizedFundDecisionTests(unittest.TestCase):
         context["profile"]["allowed_fund_markets"].append("hong_kong")
         context["profile"]["accept_fx_risk"] = True
         result = evaluate_personalized_fund_decision(
-            _analysis(), context, _market("hong_kong", qdii=True), _exposure(), planned_amount=1000
+            _analysis(), context, _market("hong_kong", qdii=True), _exposure(), _governance(), planned_amount=1000
         )
 
         self.assertEqual(result["decision"]["action"], "consider_tranche")
@@ -260,6 +305,7 @@ class PersonalizedFundDecisionTests(unittest.TestCase):
             context,
             _market("unknown_cross_border", resolution="insufficient", qdii=True),
             _exposure(),
+            _governance(),
             planned_amount=1000,
         )
 

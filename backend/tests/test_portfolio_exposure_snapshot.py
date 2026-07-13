@@ -42,6 +42,8 @@ def decision_analysis():
         "timing": {"score": 65},
         "playbook": {"role": {"risk_band": "均衡偏波动"}},
         "conditioned_forward": {
+            "strategy_id": "fund_conditioned_forward_return",
+            "strategy_version": "1.0.0",
             "decision": "research",
             "confidence": {"level": "medium"},
             "primary_horizon": "6m",
@@ -84,6 +86,31 @@ def market_profile():
             "required_permissions": ["mainland"],
             "cross_border": False,
             "currency_risk": False,
+        },
+    }
+
+
+def released_strategy_governance():
+    return {
+        "schema_version": "strategy_runtime_gate.v1",
+        "strategy": {
+            "strategy_id": "fund_conditioned_forward_return",
+            "strategy_version": "1.0.0",
+            "status": "active",
+            "manifest_sha256": "c" * 64,
+        },
+        "execution": {
+            "decision_use_allowed": True,
+            "mode": "active",
+            "reason_code": "strategy_released",
+            "reason": "测试策略已通过发布门禁",
+        },
+        "release": {
+            "manifest_integrity_verified": True,
+            "audit_chain": {"verified": True},
+            "release_ready": True,
+            "required_check_count": 6,
+            "passed_check_count": 6,
         },
     }
 
@@ -204,6 +231,7 @@ class PortfolioExposureModelTests(unittest.TestCase):
             decision_context(equity_limit=60),
             market_profile(),
             decision_exposure(),
+            released_strategy_governance(),
             planned_amount=6000,
         )
 
@@ -217,6 +245,7 @@ class PortfolioExposureModelTests(unittest.TestCase):
             decision_context(industry_limit=30),
             market_profile(),
             decision_exposure(industry_lower=35, industry_upper=45),
+            released_strategy_governance(),
             planned_amount=1000,
         )
 
@@ -231,6 +260,7 @@ class PortfolioExposureModelTests(unittest.TestCase):
             decision_context(industry_limit=30),
             market_profile(),
             decision_exposure(industry_lower=20, industry_upper=40),
+            released_strategy_governance(),
             planned_amount=1000,
         )
 

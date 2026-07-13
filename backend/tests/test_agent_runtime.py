@@ -298,6 +298,7 @@ def _personalized_decision(payload):
         payload["context"],
         payload["market_profile"],
         payload["exposure"],
+        payload["strategy_governance"],
         planned_amount=payload.get("planned_amount"),
     )
     result["input_evidence_ids"] = payload.get("input_evidence_ids") or []
@@ -309,6 +310,7 @@ def _registry(
     analysis_handler=_analysis,
     estimate_handler=_estimate,
     exposure_handler=_portfolio_exposure,
+    governance_handler=None,
     timeout_overrides=None,
 ):
     registry = ToolRegistry()
@@ -329,6 +331,37 @@ def _registry(
             handler=handler,
         ))
     registry.register(ToolDefinition(
+        name="strategy.release.check",
+        version="1.0.0",
+        description="strategy.release.check",
+        risk_level="R0",
+        timeout_seconds=5,
+        handler=governance_handler or (lambda payload: {
+            "schema_version": "strategy_runtime_gate.v1",
+            "evaluated_at": "2026-07-13T00:00:00.000+00:00",
+            "strategy": {
+                "strategy_id": payload["strategy_id"],
+                "strategy_version": payload["strategy_version"],
+                "status": "active",
+                "manifest_sha256": "d" * 64,
+            },
+            "execution": {
+                "calculation_allowed": True,
+                "decision_use_allowed": True,
+                "mode": "active",
+                "reason_code": "strategy_released",
+                "reason": "测试策略已经通过发布门禁",
+            },
+            "release": {
+                "manifest_integrity_verified": True,
+                "audit_chain": {"verified": True},
+                "release_ready": True,
+                "required_check_count": 6,
+                "passed_check_count": 6,
+            },
+        }),
+    ))
+    registry.register(ToolDefinition(
         name="portfolio.context.get",
         version="1.0.0",
         description="portfolio.context.get",
@@ -346,7 +379,7 @@ def _registry(
     ))
     registry.register(ToolDefinition(
         name="fund.personalized_decision.evaluate",
-        version="1.2.0",
+        version="1.3.0",
         description="fund.personalized_decision.evaluate",
         risk_level="R1",
         timeout_seconds=5,
@@ -396,11 +429,11 @@ class AgentRuntimeTests(unittest.TestCase):
         run = self._run()
 
         self.assertEqual(run["status"], "completed")
-        self.assertEqual(len(run["steps"]), 8)
-        self.assertEqual(len(run["evidence"]), 8)
+        self.assertEqual(len(run["steps"]), 9)
+        self.assertEqual(len(run["evidence"]), 9)
         self.assertGreaterEqual(len(run["claims"]), 13)
         self.assertEqual(run["result"]["fund"]["code"], "001480")
-        self.assertEqual(run["result"]["schema_version"], "fund_deep_research.v3")
+        self.assertEqual(run["result"]["schema_version"], "fund_deep_research.v4")
         self.assertEqual(run["result"]["alternatives"][0]["code"], "000001")
         self.assertEqual(
             run["result"]["strategy"]["strategy_id"],
@@ -408,7 +441,7 @@ class AgentRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(
             run["result"]["strategy"]["evidence_ids"],
-            [run["evidence"][0]["id"]],
+            [run["evidence"][0]["id"], run["result"]["strategy"]["governance"]["evidence_id"]],
         )
         self.assertEqual(
             run["result"]["personalized_decision"]["strategy_id"],
@@ -420,7 +453,7 @@ class AgentRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(
             len(run["result"]["personalized_decision"]["evidence_ids"]),
-            5,
+            6,
         )
         self.assertEqual(run["exposure_snapshot_id"], "exposure_test")
         estimate_step = next(item for item in run["steps"] if item["step_key"] == "fund_estimate")
@@ -458,6 +491,59 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertTrue(verification["verified"])
         self.assertEqual(verification["event_count"], len(events))
         self.assertEqual(verification["chain_head"], previous)
+
+    def test_shadow_strategy_gets_immutable_governance_evidence_and_blocks_amount(self):
+        def shadow_governance(payload):
+            return {
+                "schema_version": "strategy_runtime_gate.v1",
+                "evaluated_at": "2026-07-13T00:00:00.000+00:00",
+                "strategy": {
+                    "strategy_id": payload["strategy_id"],
+                    "strategy_version": payload["strategy_version"],
+                    "status": "shadow",
+                    "manifest_sha256": "e" * 64,
+                },
+                "execution": {
+                    "calculation_allowed": True,
+                    "decision_use_allowed": False,
+                    "mode": "shadow",
+                    "reason_code": "strategy_shadow_research_only",
+                    "reason": "策略仅允许研究或 Shadow 观察，禁止影响个人投入金额。",
+                },
+                "release": {
+                    "manifest_integrity_verified": True,
+                    "audit_chain": {"verified": True},
+                    "release_ready": False,
+                    "required_check_count": 6,
+                    "passed_check_count": 0,
+                },
+            }
+
+        run = self._run(
+            registry=_registry(governance_handler=shadow_governance),
+            include_estimate=False,
+            include_disclosure_changes=False,
+            include_alternatives=False,
+        )
+
+        self.assertEqual(run["status"], "completed")
+        decision = run["result"]["personalized_decision"]
+        self.assertEqual(decision["status"], "abstained")
+        self.assertEqual(decision["decision"]["action"], "strategy_not_released")
+        self.assertIsNone(decision["budget"]["allowed_full_amount"])
+        governance_step = next(
+            item for item in run["steps"] if item["step_key"] == "strategy_governance"
+        )
+        governance_evidence = next(
+            item for item in run["evidence"] if item["step_id"] == governance_step["id"]
+        )
+        self.assertEqual(governance_evidence["evidence_type"], "governance")
+        loaded = self.repository.get_evidence(
+            run["id"], governance_evidence["id"], include_payload=True
+        )
+        self.assertTrue(loaded["integrity_verified"])
+        self.assertFalse(loaded["payload"]["execution"]["decision_use_allowed"])
+        self.assertIn(governance_evidence["id"], decision["evidence_ids"])
 
     def test_optional_real_data_failure_produces_partial_without_fabrication(self):
         def unavailable_alternatives(_payload):
@@ -527,11 +613,11 @@ class AgentRuntimeTests(unittest.TestCase):
         estimate_step = next(item for item in run["steps"] if item["step_key"] == "fund_estimate")
         self.assertEqual(estimate_step["status"], "failed")
         self.assertEqual(estimate_step["error_code"], "TOOL_TIMEOUT")
-        self.assertEqual(len(run["evidence"]), 5)
+        self.assertEqual(len(run["evidence"]), 6)
 
         release_handler.set()
         time.sleep(0.05)
-        self.assertEqual(len(self.repository.get_run(run["id"])["evidence"]), 5)
+        self.assertEqual(len(self.repository.get_run(run["id"])["evidence"]), 6)
 
     def test_exposure_timeout_cannot_persist_a_late_orphan_snapshot(self):
         handler_started = threading.Event()

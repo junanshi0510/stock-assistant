@@ -207,6 +207,8 @@ class AgentWorkflowRunner:
             return str(payload["as_of"])
         if step_key == "portfolio_exposure":
             return str(payload.get("evaluated_on") or "") or None
+        if step_key == "strategy_governance":
+            return str(payload.get("evaluated_at") or "") or None
         if step_key == "fund_estimate":
             estimate = payload.get("estimate") or {}
             confirmed = payload.get("confirmed") or {}
@@ -230,6 +232,15 @@ class AgentWorkflowRunner:
     ) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
         existing = self.repository.get_step(run_id, step.key)
         if existing and existing.get("status") in STEP_REUSABLE_STATUSES and existing.get("evidence_id"):
+            if (
+                existing.get("tool_name") != step.tool_name
+                or existing.get("tool_version") != step.tool_version
+                or (existing.get("input") or {}) != step.input_payload
+            ):
+                raise RequiredToolError(
+                    f"已持久化步骤契约与当前工作流不一致，拒绝跨版本复用:"
+                    f"{step.key}"
+                )
             evidence = self.repository.get_evidence(run_id, existing["evidence_id"], include_payload=True)
             if evidence:
                 return evidence.get("payload") or {}, evidence, None
@@ -270,6 +281,8 @@ class AgentWorkflowRunner:
                 evidence_type=(
                     "user_confirmed"
                     if step.key == "portfolio_context"
+                    else "governance"
+                    if step.key == "strategy_governance"
                     else "calculation"
                     if step.key in {"fund_analysis", "personalized_decision", "portfolio_exposure"}
                     else "provider_normalized"
@@ -398,7 +411,19 @@ class AgentWorkflowRunner:
         if conditioned_forward:
             strategy_result = dict(conditioned_forward)
             strategy_result["evidence_id"] = analysis_evidence["id"]
-            strategy_result["evidence_ids"] = [analysis_evidence["id"]]
+            governance_payload = outputs.get("strategy_governance") or {}
+            governance_evidence = evidence.get("strategy_governance") or {}
+            if governance_payload:
+                strategy_result["governance"] = {
+                    **governance_payload,
+                    "evidence_id": governance_evidence.get("id"),
+                }
+            strategy_result["evidence_ids"] = [
+                item for item in (
+                    analysis_evidence["id"],
+                    governance_evidence.get("id"),
+                ) if item
+            ]
             primary_horizon = conditioned_forward.get("primary_horizon")
             primary = next(
                 (
@@ -457,6 +482,7 @@ class AgentWorkflowRunner:
                     (evidence.get("fund_market_profile") or {}).get("id"),
                     (evidence.get("portfolio_context") or {}).get("id"),
                     (evidence.get("portfolio_exposure") or {}).get("id"),
+                    (evidence.get("strategy_governance") or {}).get("id"),
                     decision_evidence.get("id"),
                 ) if item
             ]
@@ -594,13 +620,13 @@ class AgentWorkflowRunner:
             headline += " 部分真实数据暂不可用，结论范围已收窄。"
 
         return {
-            "schema_version": "fund_deep_research.v3",
+            "schema_version": "fund_deep_research.v4",
             "generated_at": _now(),
             "intent": "fund_deep_research",
             "scope": {
                 "personalized": personalized_decision is not None,
                 "statement": (
-                    "本轮读取用户已确认持仓和已保存投资约束，输出确定性风险门禁与研究金额；不读取未导入资产，不自动下单。"
+                    "本轮读取用户已确认持仓、已保存投资约束和持久化策略发布状态；只有已发布策略才可能进入确定性金额门禁，不读取未导入资产，不自动下单。"
                     if personalized_decision is not None
                     else "本轮只分析公共基金数据，未读取用户持仓，不生成个性化仓位或交易指令。"
                 ),
@@ -690,6 +716,46 @@ class AgentWorkflowRunner:
             if failure is not None:
                 unavailable.append(failure)
 
+        conditioned_forward = (outputs.get("fund_analysis") or {}).get("conditioned_forward") or {}
+        strategy_id = str(conditioned_forward.get("strategy_id") or "")
+        strategy_version = str(conditioned_forward.get("strategy_version") or "")
+        if not strategy_id or not strategy_version:
+            raise RequiredToolError("基金策略结果缺少精确策略 ID 或版本，默认拒绝继续决策")
+        market_primary = str(
+            ((outputs.get("fund_market_profile") or {}).get("market") or {}).get("primary")
+            or "unknown_cross_border"
+        )
+        governance_step = WorkflowStep(
+            key="strategy_governance",
+            tool_name="strategy.release.check",
+            tool_version="1.0.0",
+            required=True,
+            input_payload={
+                "strategy_id": strategy_id,
+                "strategy_version": strategy_version,
+                "asset_type": "fund",
+                "market": market_primary,
+                "user_scenario": (
+                    "personalized_fund_decision"
+                    if payload.get("include_portfolio_context", True)
+                    else "fund_research"
+                ),
+                "user_id": str(run.get("user_id") or "anonymous"),
+            },
+        )
+        output, evidence_item, failure = self._execute_tool_step(
+            run_id,
+            len(research_steps) + 1,
+            governance_step,
+            code,
+        )
+        if output is not None:
+            outputs[governance_step.key] = output
+        if evidence_item is not None:
+            evidence[governance_step.key] = evidence_item
+        if failure is not None:
+            unavailable.append(failure)
+
         if "fund_analysis" not in outputs or "fund_analysis" not in evidence:
             raise RequiredToolError("基金核心分析没有形成可验证 Evidence")
 
@@ -706,11 +772,12 @@ class AgentWorkflowRunner:
                 evidence["fund_market_profile"]["id"],
                 evidence["portfolio_context"]["id"],
                 evidence["portfolio_exposure"]["id"],
+                evidence["strategy_governance"]["id"],
             ]
             decision_step = WorkflowStep(
                 key="personalized_decision",
                 tool_name="fund.personalized_decision.evaluate",
-                tool_version="1.2.0",
+                tool_version="1.3.0",
                 required=True,
                 input_payload={
                     "code": code,
@@ -722,13 +789,14 @@ class AgentWorkflowRunner:
                     "market_profile": outputs["fund_market_profile"],
                     "context": outputs["portfolio_context"],
                     "exposure": outputs["portfolio_exposure"],
+                    "strategy_governance": outputs["strategy_governance"],
                     "planned_amount": payload.get("planned_amount"),
                     "input_evidence_ids": source_evidence_ids,
                 },
             )
             output, evidence_item, failure = self._execute_tool_step(
                 run_id,
-                len(research_steps) + 1,
+                len(research_steps) + 2,
                 decision_step,
                 code,
             )
