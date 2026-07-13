@@ -16,6 +16,10 @@ export function createFundResearchRun(payload) {
   })
 }
 
+export function fetchAgentModelStatus() {
+  return getJson('/api/v1/agent/model/status')
+}
+
 export function fetchAgentRun(runId) {
   return getJson(`/api/v1/agent/runs/${encodeURIComponent(runId)}`)
 }

@@ -390,6 +390,92 @@ def _registry(
     return registry
 
 
+def _registry_with_intelligence_and_ai():
+    registry = _registry()
+    registry.register(ToolDefinition(
+        name="fund.intelligence.get",
+        version="1.0.0",
+        description="fund.intelligence.get",
+        risk_level="R0",
+        timeout_seconds=5,
+        handler=lambda payload: {
+            "status": "available",
+            "source": "真实基金情报测试快照",
+            "source_url": "https://example.test/intelligence/001480",
+            "as_of": "2026-07-13T08:00:00+00:00",
+            "market": {"primary": "mainland", "label": "中国内地"},
+            "portfolio_disclosure": {
+                "stock_period": "2026-03-31",
+                "industries": [{"name": "信息技术", "nav_ratio": 30}],
+            },
+            "holding_pulse": {
+                "status": "available",
+                "quoted_count": 3,
+                "weighted_change_pct": 0.8,
+                "items": [],
+            },
+            "sector_pulse": {"status": "available", "industries": [], "concepts": []},
+            "news": {
+                "count": 1,
+                "covered_holding_count": 1,
+                "selected_holding_count": 3,
+                "publishers": ["测试发布机构"],
+                "items": [{
+                    "title": "真实新闻测试条目",
+                    "publisher": "测试发布机构",
+                    "untrusted_external_content": True,
+                }],
+            },
+            "quality": {"status": "available", "failed_component_count": 0},
+            "failed": [],
+        },
+    ))
+
+    def synthesize(payload):
+        evidence_ids = [
+            item["id"]
+            for item in payload["context"]["evidence_catalog"]
+            if item.get("id")
+        ]
+        return {
+            "status": "available",
+            "source": "llm:test-provider/test-model",
+            "generated_at": "2026-07-13T08:01:00+00:00",
+            "schema_version": "fund_ai_synthesis.v1",
+            "synthesis": {
+                "status": "ready",
+                "action": payload["context"]["allowed_action"],
+                "confidence": "medium",
+                "headline": "测试模型已完成证据研判",
+                "all_evidence_ids": evidence_ids,
+            },
+            "provider": {
+                "provider": "test-provider",
+                "model": "test-model",
+                "api_style": "responses",
+                "data_region": "test",
+                "private_context_used": True,
+            },
+            "invocation": {
+                "input_sha256": "a" * 64,
+                "output_sha256": "b" * 64,
+                "latency_ms": 20,
+                "usage": {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150},
+            },
+            "quality": {"passed": True, "evidence_reference_count": len(evidence_ids)},
+        }
+
+    registry.register(ToolDefinition(
+        name="llm.fund_decision.synthesize",
+        version="1.0.0",
+        description="llm.fund_decision.synthesize",
+        risk_level="R1",
+        timeout_seconds=5,
+        handler=synthesize,
+    ))
+    return registry
+
+
 class AgentRuntimeTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -421,6 +507,10 @@ class AgentRuntimeTests(unittest.TestCase):
     def test_new_fund_research_defaults_to_five_year_strategy_window(self):
         request = agent_router.CreateAgentRunRequest(code="001480")
         self.assertEqual(request.months, 60)
+        self.assertTrue(request.include_market_intelligence)
+        self.assertTrue(request.include_ai_synthesis)
+        self.assertTrue(request.include_disclosure_changes)
+        self.assertTrue(request.include_alternatives)
         steps = AgentWorkflowRunner(self.repository, _registry())._fund_steps({"code": "001480"})
         self.assertEqual(steps[0].input_payload["months"], 60)
         self.assertEqual(steps[1].key, "fund_market_profile")
@@ -435,7 +525,7 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(len(run["evidence"]), 9)
         self.assertGreaterEqual(len(run["claims"]), 13)
         self.assertEqual(run["result"]["fund"]["code"], "001480")
-        self.assertEqual(run["result"]["schema_version"], "fund_deep_research.v4")
+        self.assertEqual(run["result"]["schema_version"], "fund_deep_research.v5")
         self.assertEqual(run["result"]["alternatives"][0]["code"], "000001")
         self.assertEqual(
             run["result"]["strategy"]["strategy_id"],
@@ -493,6 +583,31 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertTrue(verification["verified"])
         self.assertEqual(verification["event_count"], len(events))
         self.assertEqual(verification["chain_head"], previous)
+
+    def test_market_intelligence_and_ai_synthesis_are_persisted_as_evidence(self):
+        run = self._run(
+            registry=_registry_with_intelligence_and_ai(),
+            include_estimate=False,
+            include_disclosure_changes=False,
+            include_alternatives=False,
+            include_portfolio_context=False,
+            include_market_intelligence=True,
+            include_ai_synthesis=True,
+            question="结合市场与新闻解释这只基金的下一步研究动作",
+        )
+
+        self.assertEqual(run["status"], "completed")
+        self.assertEqual(run["result"]["market_intelligence"]["status"], "available")
+        self.assertEqual(run["result"]["ai_synthesis"]["status"], "available")
+        self.assertTrue(run["result"]["scope"]["model_synthesized"])
+        self.assertTrue(run["result"]["scope"]["model_private_context_used"])
+        ai_step = next(item for item in run["steps"] if item["step_key"] == "ai_synthesis")
+        ai_evidence = next(item for item in run["evidence"] if item["step_id"] == ai_step["id"])
+        self.assertEqual(ai_evidence["evidence_type"], "model_inference")
+        self.assertEqual(ai_evidence["schema_version"], "fund_ai_synthesis.v1")
+        loaded = self.repository.get_evidence(run["id"], ai_evidence["id"], include_payload=True)
+        self.assertTrue(loaded["integrity_verified"])
+        self.assertEqual(loaded["payload"]["provider"]["model"], "test-model")
 
     def test_shadow_strategy_gets_immutable_governance_evidence_and_blocks_amount(self):
         def shadow_governance(payload):

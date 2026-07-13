@@ -324,7 +324,10 @@ class StrategyShadowOutcomeService:
         if run.get("status") not in {"completed", "partial"} or not run.get("result"):
             return {"eligible": False, "reason": "run_not_research_terminal"}
         snapshot = self._signal_snapshot(run)
-        if (run.get("result") or {}).get("schema_version") != "fund_deep_research.v4":
+        if (run.get("result") or {}).get("schema_version") not in {
+            "fund_deep_research.v4",
+            "fund_deep_research.v5",
+        }:
             return {"eligible": False, "reason": "governance_snapshot_not_available"}
         strategy = snapshot["strategy"]
         signal = snapshot["signal"]

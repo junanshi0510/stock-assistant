@@ -78,7 +78,7 @@ export default function App() {
       <main className="container">
         <div className="risk-disclosure" role="note">
           <Info size={15} strokeWidth={2.2} aria-hidden="true" />
-          <span>风险提示：所有结论均来自已标注的数据源和历史计算，不代表未来涨跌，也不构成投资建议。</span>
+          <span>风险提示：市场与基金事实来自已标注数据源；AI 仅解释 Evidence，不代表未来涨跌，也不构成投资建议。</span>
         </div>
 
         <Suspense fallback={<div className="page-loading"><span className="spinner" />正在加载工作区</div>}>

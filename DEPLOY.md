@@ -260,3 +260,41 @@ sudo systemctl status stock-assistant-api
 - 上传截图前尽量打码姓名、手机号、账号和银行卡。
 - 第一版只保存用户确认后的持仓结果，不长期保存原图。
 - 后续接入登录系统后，应把持仓表从默认用户迁移到真实 `user_id`。
+
+## 12. 启用证据约束的大模型研判
+
+未配置模型时，Agent 会继续完成真实数据和确定性风险门禁，但明确显示
+`model_not_configured`，不会用模板文本冒充模型研判。
+
+建议在阿里云服务器使用百炼按量付费 API Key，并通过独立环境文件保存密钥：
+
+```bash
+sudo install -d -m 750 /etc/stock-assistant
+sudo install -m 600 /dev/null /etc/stock-assistant/stock-assistant.env
+sudo nano /etc/stock-assistant/stock-assistant.env
+```
+
+```dotenv
+LLM_PROVIDER=dashscope
+LLM_MODEL=qwen-plus
+DASHSCOPE_API_KEY=你的百炼按量付费API-Key
+LLM_DATA_REGION=cn-beijing
+LLM_PRIVATE_CONTEXT_ENABLED=false
+```
+
+确认 `/etc/systemd/system/stock-assistant-api.service` 的 `[Service]` 包含：
+
+```ini
+EnvironmentFile=-/etc/stock-assistant/stock-assistant.env
+```
+
+然后执行：
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart stock-assistant-api
+curl -s http://127.0.0.1:8000/api/v1/agent/model/status
+```
+
+只有返回 `"configured": true` 才代表模型已接通。当前没有登录和多租户隔离，必须保持
+`LLM_PRIVATE_CONTEXT_ENABLED=false`；此时个人持仓只在本机确定性门禁中使用，不会发送给模型。

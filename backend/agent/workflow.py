@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import json
 import time
 from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass
@@ -13,6 +15,7 @@ import portfolio_exposure
 
 from .registry import ToolDefinition, ToolRegistry
 from .repository import AgentRepository, STEP_REUSABLE_STATUSES
+from .synthesis import build_synthesis_context
 
 
 SUPPORTED_INTENTS = {"fund_deep_research"}
@@ -140,6 +143,18 @@ class AgentWorkflowRunner:
             required=True,
             input_payload={"code": code},
         )]
+        if payload.get("include_market_intelligence", False):
+            steps.append(WorkflowStep(
+                key="fund_intelligence",
+                tool_name="fund.intelligence.get",
+                tool_version="1.0.0",
+                required=False,
+                input_payload={
+                    "code": code,
+                    "holding_limit": int(payload.get("intelligence_holding_limit") or 4),
+                    "news_per_holding": int(payload.get("news_per_holding") or 3),
+                },
+            ))
         if payload.get("include_portfolio_context", True):
             steps.append(WorkflowStep(
                 key="portfolio_context",
@@ -221,6 +236,8 @@ class AgentWorkflowRunner:
                 or latest.get("year")
                 or ""
             ) or None
+        if step_key in {"fund_intelligence", "ai_synthesis"}:
+            return str(payload.get("as_of") or payload.get("generated_at") or "") or None
         return None
 
     def _execute_tool_step(
@@ -281,6 +298,8 @@ class AgentWorkflowRunner:
                 evidence_type=(
                     "user_confirmed"
                     if step.key == "portfolio_context"
+                    else "model_inference"
+                    if step.key == "ai_synthesis"
                     else "governance"
                     if step.key == "strategy_governance"
                     else "calculation"
@@ -293,6 +312,7 @@ class AgentWorkflowRunner:
                 source_url=str(output.get("source_url") or "") or None,
                 as_of=self._as_of(output, step.key),
                 quality_status=quality,
+                schema_version=str(output.get("schema_version") or "1.0.0"),
             )
             unavailable = None
             if quality != "complete":
@@ -606,6 +626,49 @@ class AgentWorkflowRunner:
                     "evidence_id": alternative_evidence_id,
                 })
 
+        intelligence_payload = outputs.get("fund_intelligence") or {}
+        intelligence_result = None
+        if intelligence_payload:
+            intelligence_evidence_id = (evidence.get("fund_intelligence") or {}).get("id")
+            news = intelligence_payload.get("news") or {}
+            intelligence_result = {
+                "status": intelligence_payload.get("status") or "unavailable",
+                "as_of": intelligence_payload.get("as_of"),
+                "market": intelligence_payload.get("market") or {},
+                "portfolio_disclosure": intelligence_payload.get("portfolio_disclosure") or {},
+                "holding_pulse": intelligence_payload.get("holding_pulse") or {},
+                "sector_pulse": intelligence_payload.get("sector_pulse") or {},
+                "news": {
+                    "count": news.get("count") or 0,
+                    "covered_holding_count": news.get("covered_holding_count") or 0,
+                    "selected_holding_count": news.get("selected_holding_count") or 0,
+                    "publishers": news.get("publishers") or [],
+                    "interpretation_policy": news.get("interpretation_policy"),
+                },
+                "quality": intelligence_payload.get("quality") or {},
+                "failed": intelligence_payload.get("failed") or [],
+                "policy": intelligence_payload.get("policy"),
+                "evidence_id": intelligence_evidence_id,
+                "evidence_ids": [intelligence_evidence_id] if intelligence_evidence_id else [],
+            }
+
+        synthesis_payload = outputs.get("ai_synthesis") or {}
+        ai_synthesis_result = None
+        if synthesis_payload:
+            synthesis_evidence_id = (evidence.get("ai_synthesis") or {}).get("id")
+            ai_synthesis_result = {
+                **synthesis_payload,
+                "evidence_id": synthesis_evidence_id,
+                "evidence_ids": [
+                    item
+                    for item in (
+                        synthesis_evidence_id,
+                        *((synthesis_payload.get("synthesis") or {}).get("all_evidence_ids") or []),
+                    )
+                    if item
+                ],
+            }
+
         role_label = role.get("label") or "观察仓"
         timing_label = timing.get("label") or analysis.get("trend_state") or "等待更多数据"
         if personalized_decision:
@@ -620,15 +683,21 @@ class AgentWorkflowRunner:
             headline += " 部分真实数据暂不可用，结论范围已收窄。"
 
         return {
-            "schema_version": "fund_deep_research.v4",
+            "schema_version": "fund_deep_research.v5",
             "generated_at": _now(),
             "intent": "fund_deep_research",
             "scope": {
                 "personalized": personalized_decision is not None,
+                "model_synthesized": bool(
+                    ai_synthesis_result and ai_synthesis_result.get("status") == "available"
+                ),
+                "model_private_context_used": bool(
+                    ((ai_synthesis_result or {}).get("provider") or {}).get("private_context_used")
+                ),
                 "statement": (
-                    "本轮读取用户已确认持仓、已保存投资约束和持久化策略发布状态；只有已发布策略才可能进入确定性金额门禁，不读取未导入资产，不自动下单。"
+                    "本轮读取用户已确认持仓、已保存投资约束和持久化策略发布状态；只有已发布策略才可能进入确定性金额门禁。模型仅解释已持久化 Evidence，不读取未导入资产，不自动下单。"
                     if personalized_decision is not None
-                    else "本轮只分析公共基金数据，未读取用户持仓，不生成个性化仓位或交易指令。"
+                    else "本轮只分析公共基金数据；模型仅解释已持久化 Evidence，未读取用户持仓，不生成个性化仓位或交易指令。"
                 ),
             },
             "fund": {
@@ -653,7 +722,9 @@ class AgentWorkflowRunner:
             "facts": facts,
             "strategy": strategy_result,
             "market_profile": market_profile,
+            "market_intelligence": intelligence_result,
             "personalized_decision": personalized_decision,
+            "ai_synthesis": ai_synthesis_result,
             "level_recurrence": level_recurrence_result,
             "risk_review": {
                 "red_flags": playbook.get("red_flags") or [],
@@ -677,7 +748,7 @@ class AgentWorkflowRunner:
                 }
                 for key, item in evidence.items()
             ],
-            "policy": "研究候选不等于买入建议；任何新增投入都应在登录和持仓隔离完成后，再结合用户真实组合复盘。",
+            "policy": "大模型研判不等于收益承诺；精确数值、仓位和动作由确定性门禁控制，任何新增投入都应结合真实组合与后续结果复盘。",
         }
 
     def _execute_fund_research(self, run: dict[str, Any]) -> dict[str, Any]:
@@ -804,6 +875,53 @@ class AgentWorkflowRunner:
                 outputs[decision_step.key] = output
             if evidence_item is not None:
                 evidence[decision_step.key] = evidence_item
+            if failure is not None:
+                unavailable.append(failure)
+
+        if payload.get("include_ai_synthesis", False):
+            model_context = build_synthesis_context(payload, outputs, evidence)
+            canonical_context = json.dumps(
+                model_context,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            context_sha256 = hashlib.sha256(canonical_context.encode("utf-8")).hexdigest()
+            model_evidence_ids = sorted(
+                str(item.get("id"))
+                for item in evidence.values()
+                if item.get("id")
+            )
+            question = str(payload.get("question") or "").strip()
+            synthesis_step = WorkflowStep(
+                key="ai_synthesis",
+                tool_name="llm.fund_decision.synthesize",
+                tool_version="1.0.0",
+                required=False,
+                input_payload={
+                    "code": code,
+                    "context_sha256": context_sha256,
+                    "question_sha256": hashlib.sha256(question.encode("utf-8")).hexdigest(),
+                    "input_evidence_ids": model_evidence_ids,
+                    "private_context_requested": bool(
+                        payload.get("include_portfolio_context", True)
+                    ),
+                },
+                runtime_input_payload={
+                    "context": model_context,
+                    "context_sha256": context_sha256,
+                },
+            )
+            output, evidence_item, failure = self._execute_tool_step(
+                run_id,
+                len(research_steps) + 3,
+                synthesis_step,
+                code,
+            )
+            if output is not None:
+                outputs[synthesis_step.key] = output
+            if evidence_item is not None:
+                evidence[synthesis_step.key] = evidence_item
             if failure is not None:
                 unavailable.append(failure)
 

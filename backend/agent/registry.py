@@ -7,8 +7,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
 import funds as fund_service
+import fund_intelligence
 import portfolio_exposure
 from .portfolio_context import get_portfolio_context
+from .synthesis import InvestmentSynthesisService
 from strategies.personalized_fund_decision import evaluate_personalized_fund_decision
 
 if TYPE_CHECKING:
@@ -63,8 +65,12 @@ class ToolRegistry:
         ]
 
 
-def build_default_registry(strategy_governance: "StrategyGovernanceService") -> ToolRegistry:
+def build_default_registry(
+    strategy_governance: "StrategyGovernanceService",
+    synthesis_service: InvestmentSynthesisService | None = None,
+) -> ToolRegistry:
     registry = ToolRegistry()
+    synthesis_service = synthesis_service or InvestmentSynthesisService()
     registry.register(ToolDefinition(
         name="fund.analysis.get",
         version="1.0.0",
@@ -92,6 +98,18 @@ def build_default_registry(strategy_governance: "StrategyGovernanceService") -> 
         risk_level="R0",
         timeout_seconds=25,
         handler=lambda payload: fund_service.get_fund_market_profile(str(payload["code"])),
+    ))
+    registry.register(ToolDefinition(
+        name="fund.intelligence.get",
+        version="1.0.0",
+        description="穿透真实基金披露，读取前列持仓行情、板块和逐条新闻，形成跨市场情报上下文。",
+        risk_level="R0",
+        timeout_seconds=95,
+        handler=lambda payload: fund_intelligence.get_fund_intelligence(
+            str(payload["code"]),
+            holding_limit=int(payload.get("holding_limit") or 4),
+            news_per_holding=int(payload.get("news_per_holding") or 3),
+        ),
     ))
     registry.register(ToolDefinition(
         name="fund.decision_outcome.get",
@@ -186,5 +204,13 @@ def build_default_registry(strategy_governance: "StrategyGovernanceService") -> 
             ),
             "input_evidence_ids": payload.get("input_evidence_ids") or [],
         },
+    ))
+    registry.register(ToolDefinition(
+        name="llm.fund_decision.synthesize",
+        version="1.0.0",
+        description="使用已配置大模型对脱敏 Evidence 做结构化基金研判，并执行证据、动作和安全质量门禁。",
+        risk_level="R1",
+        timeout_seconds=110,
+        handler=synthesis_service.synthesize,
     ))
     return registry

@@ -7,10 +7,19 @@ Type=simple
 WorkingDirectory=/opt/stock-assistant/backend
 Environment="PYTHONUNBUFFERED=1"
 Environment="ALLOWED_ORIGINS=https://your-domain.com"
+EnvironmentFile=-/etc/stock-assistant/stock-assistant.env
 # Enable screenshot OCR import only after creating an Alibaba Cloud OCR AccessKey.
 # Environment="ALIBABA_CLOUD_ACCESS_KEY_ID=your-access-key-id"
 # Environment="ALIBABA_CLOUD_ACCESS_KEY_SECRET=your-access-key-secret"
 # Environment="ALIYUN_OCR_ENDPOINT=ocr-api.cn-hangzhou.aliyuncs.com"
+# Enable evidence-bound model synthesis only with a pay-as-you-go API key.
+# Do not use Alibaba Cloud Coding Plan or Token Plan keys for this backend service.
+# Environment="LLM_PROVIDER=dashscope"
+# Environment="LLM_MODEL=qwen-plus"
+# Environment="DASHSCOPE_API_KEY=your-bailian-api-key"
+# Environment="LLM_DATA_REGION=cn-beijing"
+# Keep private portfolio egress disabled until login, consent and tenant isolation are complete.
+# Environment="LLM_PRIVATE_CONTEXT_ENABLED=false"
 ExecStart=/opt/stock-assistant/venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8000
 Restart=always
 RestartSec=5

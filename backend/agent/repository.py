@@ -2183,7 +2183,7 @@ class AgentRepository:
         after_completed_at: str | None = None,
         after_run_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Return eligible-looking v4 runs in chronological order for unbiased backfill."""
+        """Return governance-aware runs in chronological order for unbiased backfill."""
         with self._connect() as connection:
             rows = connection.execute(
                 """
@@ -2195,7 +2195,8 @@ class AgentRepository:
                   AND runs.intent='fund_deep_research'
                   AND runs.status IN ('completed', 'partial')
                   AND runs.result_json IS NOT NULL
-                  AND json_extract(runs.result_json, '$.schema_version')='fund_deep_research.v4'
+                  AND json_extract(runs.result_json, '$.schema_version')
+                      IN ('fund_deep_research.v4', 'fund_deep_research.v5')
                   AND json_extract(runs.result_json, '$.strategy.signal.direction')
                       IN ('positive', 'negative')
                   AND (

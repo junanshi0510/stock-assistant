@@ -23,6 +23,7 @@ from agent.worker import (
     start_worker,
     strategy_governance,
     strategy_shadow_service,
+    synthesis_service,
 )
 
 
@@ -34,11 +35,20 @@ class CreateAgentRunRequest(BaseModel):
     code: str
     months: int = Field(default=60, ge=6, le=120)
     include_estimate: bool = False
-    include_disclosure_changes: bool = False
-    include_alternatives: bool = False
+    include_disclosure_changes: bool = True
+    include_alternatives: bool = True
+    include_market_intelligence: bool = True
+    include_ai_synthesis: bool = True
     include_portfolio_context: bool = True
+    question: str = Field(
+        default="结合未来 3-12 个月的市场、底层持仓、新闻和我的组合约束，我现在应该如何管理这只基金？",
+        min_length=8,
+        max_length=500,
+    )
     planned_amount: float | None = Field(default=None, ge=0)
     alternative_limit: int = Field(default=5, ge=3, le=8)
+    intelligence_holding_limit: int = Field(default=4, ge=2, le=6)
+    news_per_holding: int = Field(default=3, ge=1, le=5)
 
     @field_validator("code")
     @classmethod
@@ -47,6 +57,14 @@ class CreateAgentRunRequest(BaseModel):
         if not re.fullmatch(r"\d{6}", code):
             raise ValueError("基金代码需要是 6 位数字")
         return code
+
+    @field_validator("question")
+    @classmethod
+    def validate_question(cls, value: str) -> str:
+        question = re.sub(r"\s+", " ", str(value or "")).strip()
+        if len(question) < 8:
+            raise ValueError("研究目标至少需要 8 个字符")
+        return question
 
 
 class OutcomeScheduleRequest(BaseModel):
@@ -147,7 +165,18 @@ def get_agent_tool_catalog():
             item for item in registry.catalog()
             if item["risk_level"] in {"R0", "R1"}
         ],
-        "policy": "R0 只读取公共市场数据；R1 只读取用户已确认组合或执行确定性个人风险门禁，均不下单。",
+        "policy": "R0 只读取公共市场数据；R1 读取用户确认的聚合组合上下文或调用已批准模型，均不下单。",
+    }
+
+
+@router.get("/model/status")
+def get_agent_model_status():
+    return {
+        "model": synthesis_service.public_status(),
+        "policy": (
+            "未配置模型时不会返回模板化 AI 结论；私有持仓只有在用户勾选且服务器明确允许时，"
+            "才会以聚合摘要进入模型上下文。"
+        ),
     }
 
 

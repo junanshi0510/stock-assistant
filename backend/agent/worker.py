@@ -22,6 +22,7 @@ from .repository import AgentRepository
 from .strategy_governance import StrategyGovernanceService
 from .strategy_shadow_outcomes import StrategyShadowOutcomeService
 from .strategy_shadow_worker import StrategyShadowOutcomeWorker
+from .synthesis import InvestmentSynthesisService
 from .workflow import AgentWorkflowRunner
 
 
@@ -94,7 +95,8 @@ class AgentWorker:
 repository = AgentRepository()
 strategy_governance = StrategyGovernanceService(repository)
 strategy_governance.seed_defaults()
-registry = build_default_registry(strategy_governance)
+synthesis_service = InvestmentSynthesisService()
+registry = build_default_registry(strategy_governance, synthesis_service)
 runner = AgentWorkflowRunner(repository, registry)
 outcome_service = DecisionOutcomeService(repository, registry)
 strategy_shadow_service = StrategyShadowOutcomeService(repository, registry)

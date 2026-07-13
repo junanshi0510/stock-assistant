@@ -2,11 +2,22 @@
 
 一个面向个人投资者的真实数据决策工作台，覆盖公募基金、A 股、港股、美股和用户真实持仓。
 
-当前版本使用 **React + Vite** 构建前端，使用 **FastAPI + Python** 完成数据获取、基金与股票研究、组合账本和确定性计算。项目正在按照工业级投资 Agent PRD 逐步升级，但当前线上版本仍是“专业投资工作台”，不是已经完成的自主 Agent，也不具备自动交易能力。
+当前版本使用 **React + Vite** 构建前端，使用 **FastAPI + Python** 完成数据获取、基金与股票研究、组合账本、确定性计算和证据约束的大模型合成。项目正在按照工业级投资 Agent PRD 逐步升级；当前已经具备可恢复 Run、真实工具、Evidence、风险门禁和可选 LLM 研判，但仍不具备自动交易能力，也不把模型文本当作确定性计算结果。
 
 > 风险提示：系统输出用于研究和风险复盘，不代表未来涨跌，不构成投资建议，也不承诺收益。数据源不可用、数据过期或用户持仓不完整时，系统必须明确显示缺口，不使用模拟数据补齐。
 
 ## 最近更新
+
+### 2026-07-13：证据约束的大模型基金研判
+
+- 新增提供商中立的 LLM Gateway，支持 OpenAI Responses API、阿里云百炼 DashScope OpenAI 兼容接口及其他经批准的 OpenAI-compatible 服务；提供商、模型和 API Key 必须显式配置。
+- 新增真实基金情报工具 `fund.intelligence.get@1.0.0`，使用基金最新可得定期披露穿透底层持仓，并聚合腾讯证券单股行情、A/H 股真实新闻发布机构、美股 Alpha Vantage 新闻和内地行业/概念数据。
+- 新增 R1 工具 `llm.fund_decision.synthesize@1.0.0`。模型只读取已持久化 Evidence 的结构化摘要，不直接调用行情工具，不重算净值、仓位或收益率，也不能绕过确定性动作门禁。
+- 模型输出必须通过 Pydantic JSON Schema、Evidence ID、动作一致性、利润承诺、精确金融数字和提示注入检查；任何一项失败都返回 `unavailable`，不使用模板文本冒充模型结果。
+- 私有组合默认不发送给模型。只有服务器设置 `LLM_PRIVATE_CONTEXT_ENABLED=true` 且用户在任务中勾选组合上下文时，才发送去标识化的聚合摘要；不发送姓名、账户号或原始持仓流水。
+- Agent 结果升级为 `fund_deep_research.v5`，历史 v4 结果继续兼容策略 Shadow Outcome。前端按“决策问题 → 模型状态 → AI 研判 → 确定性风险门禁 → Evidence/Audit”组织，并折叠历史任务。
+- 未配置真实模型时，任务明确保存 `model_not_configured` Evidence，页面显示“本轮没有生成大模型研判”；确定性研究仍可查看，但不存在兜底 AI 文本。
+- 本次后端全量回归为 195 项；真实基金 `013403` 验证为港股 QDII，底层持仓行情与新闻情报可用，桌面端和 390px 手机端无横向溢出。
 
 ### 2026-07-13：Agent 跨市场基金识别与风险门禁
 
@@ -87,7 +98,7 @@
 | 工作区 | 主要能力 |
 |---|---|
 | 投资总览 | 汇总真实持仓、投资约束、组合风险、数据缺口和市场机会日报，生成有优先级的复盘任务 |
-| 投资 Agent | 创建可恢复的基金深度研究 Run，识别内地/港股/美股/全球基金，执行版本化 R0 公共工具和 R1 持仓只读/确定性决策工具，输出跨市场与个人风险门禁，保存 Step、Evidence、Claim 和追加式审计链 |
+| 投资 Agent | 创建可恢复的基金深度研究 Run，识别内地/港股/美股/全球基金，编排真实市场/持仓/新闻工具、确定性风险门禁和可选 LLM 证据合成，保存 Step、Evidence、Claim、模型调用摘要和追加式审计链 |
 | 基金中心 | 基金发现与搜索、真实净值分析、盘中估值历史到达、回撤与恢复、同类排名、替代品、分红、定期报告持仓、披露变化、多基金比较与重合度 |
 | 股票与板块 | A 股/港股/美股实时价位历史到达、热门榜、行业与概念、个股技术面和基本面、多股比较、批量筛选、新闻情绪与历史信号回测 |
 | 我的组合 | 手动、文本、CSV/XLSX 和 OCR 持仓导入，基金名称反查、组合体检、穿透暴露、交易流水、FIFO 成本、XIRR、行为复盘、快照归因和仓位纪律 |
@@ -103,7 +114,7 @@
 - 最新定期报告持仓、前后披露期变化和风格变化线索。
 - 多基金相关性、重仓股/行业重合以及用户持仓穿透暴露。
 
-### 投资 Agent 第一阶段
+### 投资 Agent 当前阶段
 
 - 当前支持固定意图 `fund_deep_research`，读取公募基金真实数据，并可选择把用户已确认组合和投资约束纳入确定性风险门禁。
 - Agent Run、工具步骤、证据、结论引用和审计事件持久化到 SQLite，进程重启后可恢复未完成任务并复用已完成证据。
@@ -115,10 +126,13 @@
 - 基金研究包含版本化历史条件策略：以真实净值匹配当前趋势/回撤状态，展示后续 3/6/12 个月历史分布、无条件基准和样本置信度。
 - 持仓感知决策只有在投资档案、完整组合金额、风险、期限、仓位和历史条件全部通过时才计算分批研究金额；缺少关键数据时主动弃权。
 - 跨境基金还必须通过市场识别、用户市场权限和汇率风险确认；QDII 估值不替代确认净值，也不直接驱动金额。
+- 基金底层情报按投资市场路由：内地基金读取 A 股行业/概念，港股和美股基金使用披露行业及底层持仓行情；没有获准的海外板块源时明确标记不可用，不把 A 股板块套用到跨境基金。
+- 可选大模型在所有工具完成后执行，只做证据解释、反证整理、未知项识别和复核计划；确定性代码负责精确数字、组合暴露、预算和最终允许动作。
+- 模型调用记录提供商、模型、提示模板版本、输入/输出哈希、Token 使用、时延和质量门禁，但不保存 API Key 或完整原始 Prompt。
 - 每条数值 Claim 绑定 Evidence，Evidence 保存来源、有效时间、质量状态和 SHA-256 摘要。
 - 真实来源失败时 Run 进入 `partial` 或 `failed`，不会生成替代数据。
 
-当前阶段没有自主规划大模型、交易工具或自动下单。R1 私人持仓工具已进入单用户迁移阶段，但真实登录、多用户授权和数据隔离尚未完成；SQLite 和单进程 Worker 也不等同于最终的 PostgreSQL + Temporal 生产架构。
+当前阶段没有开放式自主规划、交易工具或自动下单。LLM 仅是受约束的最终合成节点，不拥有工具权限。R1 私人持仓工具仍处于单用户迁移阶段，真实登录、多用户授权和数据隔离尚未完成；SQLite 和单进程 Worker 也不等同于最终的 PostgreSQL + Temporal 生产架构。
 
 ### 组合与交易复盘
 
@@ -211,6 +225,16 @@ npm run dev
 | `AGENT_WORKER_ENABLED` | 是否启动内置持久化 Worker；默认开启 |
 | `AGENT_WORKER_POLL_SECONDS` | 内置 Worker 轮询间隔；默认 `0.75` 秒 |
 | `FUND_HTTP_TRUST_ENV` | 基金请求是否使用环境代理；设为 `0`/`direct` 时强制直连 |
+| `LLM_PROVIDER` | `openai`、`dashscope` 或 `openai_compatible`；不配置时禁用模型合成 |
+| `LLM_MODEL` | 明确批准的模型 ID，不提供隐式默认值 |
+| `LLM_API_KEY` | 通用模型密钥；OpenAI/DashScope 也可分别使用下面的专用变量 |
+| `OPENAI_API_KEY` | `LLM_PROVIDER=openai` 时的 OpenAI API Key |
+| `DASHSCOPE_API_KEY` | `LLM_PROVIDER=dashscope` 时的阿里云百炼 API Key |
+| `LLM_BASE_URL` | 可选自定义 HTTPS Base URL；OpenAI 和 DashScope 有公开默认值 |
+| `LLM_API_STYLE` | `responses` 或 `chat_completions`；OpenAI 默认 Responses，其余默认 Chat Completions |
+| `LLM_PRIVATE_CONTEXT_ENABLED` | 是否允许去标识化的聚合组合摘要离开本服务；默认 `false` |
+| `LLM_DATA_REGION` | 记录模型处理地域，例如 `cn-beijing` 或 `ap-southeast-1` |
+| `LLM_TIMEOUT_SECONDS` | 模型请求时限，默认 75 秒 |
 
 前后端分离部署时，参考 `frontend/.env.example` 配置 `VITE_API_BASE_URL`。不要把真实 Key、服务器密码或用户数据提交到 Git。
 
@@ -221,9 +245,11 @@ backend/
   main.py                  FastAPI 启动与路由装配
   agent/
     comparison.py          基于持久化结果和 Evidence 门禁的父子 Run 对比
+    llm_gateway.py         提供商中立模型网关、重试与调用元数据
     portfolio_context.py   用户已确认持仓与投资约束的最小只读上下文
     registry.py            版本化工具白名单
     repository.py          Run、Step、Evidence、Claim 与 Audit 持久化
+    synthesis.py           证据上下文、结构化模型协议与质量门禁
     workflow.py            确定性基金研究工作流、超时与取消
     worker.py              可恢复的迁移期单进程 Worker
   strategies/
@@ -237,6 +263,7 @@ backend/
     funds.py               基金发现、研究、比较和替代品接口
     portfolio.py           持仓、交易、OCR、复盘和提醒接口
   funds.py                 基金净值、风险、披露和比较领域逻辑
+  fund_intelligence.py     跨市场持仓、行情、板块和新闻聚合
   holdings.py              持仓解析、OCR 和组合分析
   portfolio_review.py      FIFO、XIRR、行为、快照和归因
   decision_center.py       持仓感知的规则化决策任务
@@ -248,6 +275,7 @@ backend/
 frontend/
   src/App.jsx              顶层工作区导航
   src/components/PersonalizedDecisionView.jsx  Agent 个人决策与门禁面板
+  src/components/AISynthesisView.jsx           模型研判、反证、未知项与审计摘要
   src/components/FundMarketProfileView.jsx     基金跨市场 Evidence 面板
   src/tabs/                总览、基金、市场、组合和研究页面
   src/features/funds/      基金研究组件和状态管理

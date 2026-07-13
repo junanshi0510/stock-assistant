@@ -4,12 +4,15 @@ import {
   ArrowRightLeft,
   Bot,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   CircleAlert,
   Database,
   FileSearch,
   Filter,
   History,
   Layers3,
+  MessageSquareText,
   Play,
   RefreshCw,
   ShieldCheck,
@@ -19,6 +22,7 @@ import {
 import {
   cancelAgentRun,
   createFundResearchRun,
+  fetchAgentModelStatus,
   fetchAgentAudit,
   fetchAgentEvidence,
   fetchAgentRun,
@@ -35,6 +39,7 @@ import AssetLevelRecurrenceView from '../components/AssetLevelRecurrenceView'
 import PersonalizedDecisionView from '../components/PersonalizedDecisionView'
 import FundMarketProfileView from '../components/FundMarketProfileView'
 import DecisionOutcomeView from '../components/DecisionOutcomeView'
+import AISynthesisView, { ModelStatusStrip } from '../components/AISynthesisView'
 
 const TERMINAL = new Set(['completed', 'partial', 'failed', 'cancelled', 'abstained'])
 const EMPTY_HISTORY_FILTERS = { code: '', status: '' }
@@ -64,6 +69,8 @@ const STEP_LABELS = {
   'portfolio.context.get': '真实持仓与投资约束',
   'fund.personalized_decision.evaluate': '个人风险门禁与金额策略',
   'fund.market_profile.get': '真实基金投资市场识别',
+  'fund.intelligence.get': '底层持仓、板块、新闻与行情情报',
+  'llm.fund_decision.synthesize': '大模型证据约束合成',
   'strategy.release.check': '策略注册与发布门禁',
 }
 
@@ -399,9 +406,12 @@ export default function AgentTab() {
   const [code, setCode] = useState('001480')
   const [months, setMonths] = useState(60)
   const [includeEstimate, setIncludeEstimate] = useState(false)
-  const [includeDisclosure, setIncludeDisclosure] = useState(false)
-  const [includeAlternatives, setIncludeAlternatives] = useState(false)
+  const [includeDisclosure, setIncludeDisclosure] = useState(true)
+  const [includeAlternatives, setIncludeAlternatives] = useState(true)
+  const [includeMarketIntelligence, setIncludeMarketIntelligence] = useState(true)
+  const [includeAiSynthesis, setIncludeAiSynthesis] = useState(true)
   const [includePortfolioContext, setIncludePortfolioContext] = useState(true)
+  const [question, setQuestion] = useState('结合未来 3-12 个月的市场、底层持仓、新闻和我的组合约束，我现在应该如何管理这只基金？')
   const [plannedAmount, setPlannedAmount] = useState('')
   const [run, setRun] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -409,7 +419,11 @@ export default function AgentTab() {
   const [loadingHistory, setLoadingHistory] = useState(false)
   const [historyFilterDraft, setHistoryFilterDraft] = useState(EMPTY_HISTORY_FILTERS)
   const [historyFilters, setHistoryFilters] = useState(EMPTY_HISTORY_FILTERS)
+  const [historyOpen, setHistoryOpen] = useState(false)
   const [error, setError] = useState('')
+  const [modelStatus, setModelStatus] = useState(null)
+  const [modelStatusError, setModelStatusError] = useState('')
+  const [loadingModelStatus, setLoadingModelStatus] = useState(true)
   const [selectedEvidence, setSelectedEvidence] = useState(null)
   const [loadingEvidence, setLoadingEvidence] = useState(false)
   const [audit, setAudit] = useState(null)
@@ -422,6 +436,20 @@ export default function AgentTab() {
   const [outcomeEligibility, setOutcomeEligibility] = useState(null)
   const [loadingOutcomeSchedule, setLoadingOutcomeSchedule] = useState(false)
   const [strategyShadowOutcome, setStrategyShadowOutcome] = useState(null)
+
+  async function loadModelStatus() {
+    setLoadingModelStatus(true)
+    try {
+      const data = await fetchAgentModelStatus()
+      setModelStatus(data)
+      setModelStatusError('')
+    } catch (requestError) {
+      setModelStatus(null)
+      setModelStatusError(requestError.message || '模型网关状态获取失败')
+    } finally {
+      setLoadingModelStatus(false)
+    }
+  }
 
   async function loadRun(runId, { quiet = false } = {}) {
     if (!runId) return
@@ -518,6 +546,7 @@ export default function AgentTab() {
     const savedRunId = localStorage.getItem('investment-agent-run-id')
     if (savedRunId) loadRun(savedRunId)
     loadHistory()
+    loadModelStatus()
   }, [])
 
   useEffect(() => {
@@ -559,10 +588,12 @@ export default function AgentTab() {
   const progress = useMemo(() => {
     if (!run) return { completed: 0, total: 0 }
     const completed = (run.steps || []).filter((item) => ['succeeded', 'partial', 'failed'].includes(item.status)).length
-    const requested = 2 + (run.input?.include_portfolio_context === false ? 0 : 2)
+    const requested = 3 + (run.input?.include_portfolio_context === false ? 0 : 3)
       + Number(Boolean(run.input?.include_estimate))
       + Number(Boolean(run.input?.include_disclosure_changes))
       + Number(Boolean(run.input?.include_alternatives))
+      + Number(Boolean(run.input?.include_market_intelligence))
+      + Number(Boolean(run.input?.include_ai_synthesis))
     return { completed, total: Math.max(requested, run.steps?.length || 0) }
   }, [run])
 
@@ -570,6 +601,11 @@ export default function AgentTab() {
     const clean = code.trim()
     if (!/^\d{6}$/.test(clean)) {
       setError('请输入 6 位基金代码')
+      return
+    }
+    const cleanQuestion = question.replace(/\s+/g, ' ').trim()
+    if (cleanQuestion.length < 8) {
+      setError('请用至少 8 个字符说明本次要解决的投资问题')
       return
     }
     setLoading(true)
@@ -589,7 +625,10 @@ export default function AgentTab() {
         include_estimate: includeEstimate,
         include_disclosure_changes: includeDisclosure,
         include_alternatives: includeAlternatives,
+        include_market_intelligence: includeMarketIntelligence,
+        include_ai_synthesis: includeAiSynthesis,
         include_portfolio_context: includePortfolioContext,
+        question: cleanQuestion,
         planned_amount: plannedAmount === '' ? null : Number(plannedAmount),
         alternative_limit: 5,
       })
@@ -722,14 +761,26 @@ export default function AgentTab() {
     <div className="agent-workspace">
       <section className="agent-heading">
         <div>
-          <span className="eyebrow">持仓感知投资 Agent</span>
-          <h2>基金投资决策任务</h2>
-          <p>把真实基金证据与你确认的持仓、预算和风险上限合并，先过风险门禁，再形成可审计的行动建议。</p>
+          <span className="eyebrow">Evidence-bound Investment Agent</span>
+          <h2>基金决策研究台</h2>
+          <p>让模型解释真实市场、底层持仓、新闻与个人组合证据；仓位和动作仍由确定性风险门禁控制。</p>
         </div>
         <div className="agent-readonly-badge"><ShieldCheck size={16} aria-hidden="true" />R0 公共数据 · R1 私有只读</div>
       </section>
 
+      <ModelStatusStrip
+        status={modelStatus}
+        loading={loadingModelStatus}
+        error={modelStatusError}
+      />
+
       <section className="panel agent-launcher" aria-label="创建基金研究任务">
+        <div className="agent-launcher-head">
+          <div><span className="eyebrow">New Decision Run</span><h3>发起一次可审计研判</h3></div>
+          <button className="ghost" type="button" onClick={loadModelStatus} disabled={loadingModelStatus} title="重新核验模型网关">
+            <RefreshCw size={14} className={loadingModelStatus ? 'spin-icon' : ''} aria-hidden="true" />核验模型
+          </button>
+        </div>
         <div className="form-row">
           <label className="field">
             <span>基金代码</span>
@@ -760,8 +811,21 @@ export default function AgentTab() {
             <span>{loading ? '正在创建' : '开始研究'}</span>
           </button>
         </div>
+        <label className="agent-question-field">
+          <span><MessageSquareText size={14} aria-hidden="true" />这次要解决的投资问题</span>
+          <textarea
+            value={question}
+            maxLength={500}
+            rows={3}
+            onChange={(event) => setQuestion(event.target.value)}
+            placeholder="例如：我已经持有这只基金，未来 6 个月应继续持有、分批增加，还是降低暴露？"
+          />
+          <small>{question.trim().length}/500</small>
+        </label>
         <div className="agent-options" aria-label="研究范围">
           <label><input type="checkbox" checked={includePortfolioContext} onChange={(event) => setIncludePortfolioContext(event.target.checked)} />应用真实持仓与约束</label>
+          <label><input type="checkbox" checked={includeMarketIntelligence} onChange={(event) => setIncludeMarketIntelligence(event.target.checked)} />市场、板块与新闻</label>
+          <label><input type="checkbox" checked={includeAiSynthesis} onChange={(event) => setIncludeAiSynthesis(event.target.checked)} />大模型证据研判</label>
           <label><input type="checkbox" checked={includeEstimate} onChange={(event) => setIncludeEstimate(event.target.checked)} />盘中估值核验</label>
           <label><input type="checkbox" checked={includeDisclosure} onChange={(event) => setIncludeDisclosure(event.target.checked)} />披露变化</label>
           <label><input type="checkbox" checked={includeAlternatives} onChange={(event) => setIncludeAlternatives(event.target.checked)} />同类替代品</label>
@@ -770,12 +834,22 @@ export default function AgentTab() {
 
       <section className="agent-history-panel" aria-label="Agent 运行历史">
         <div className="agent-section-head">
-          <div><span className="eyebrow">Run History</span><h3>最近研究任务</h3></div>
-          <button className="ghost" onClick={() => loadHistory()} disabled={loadingHistory} title="刷新历史任务">
-            <RefreshCw size={15} className={loadingHistory ? 'spin-icon' : ''} aria-hidden="true" />
-            <span>{loadingHistory ? '刷新中' : '刷新'}</span>
-          </button>
+          <div><span className="eyebrow">Run History</span><h3>最近研究任务 <small>{history.items.length}</small></h3></div>
+          <div className="agent-section-actions">
+            {historyOpen && (
+              <button className="ghost" onClick={() => loadHistory()} disabled={loadingHistory} title="刷新历史任务">
+                <RefreshCw size={15} className={loadingHistory ? 'spin-icon' : ''} aria-hidden="true" />
+                <span>{loadingHistory ? '刷新中' : '刷新'}</span>
+              </button>
+            )}
+            <button className="ghost" type="button" onClick={() => setHistoryOpen((current) => !current)} aria-expanded={historyOpen}>
+              {historyOpen ? <ChevronUp size={15} aria-hidden="true" /> : <ChevronDown size={15} aria-hidden="true" />}
+              {historyOpen ? '收起' : '查看历史'}
+            </button>
+          </div>
         </div>
+        {historyOpen && (
+          <>
         <form className="agent-history-filters" onSubmit={applyHistoryFilters}>
           <label>
             <span>基金代码</span>
@@ -846,6 +920,8 @@ export default function AgentTab() {
           >
             <History size={14} aria-hidden="true" />加载更早任务
           </button>
+        )}
+          </>
         )}
       </section>
 
@@ -972,8 +1048,16 @@ export default function AgentTab() {
 
       {result && (
         <>
+          {result.ai_synthesis && (
+            <AISynthesisView
+              analysis={result.ai_synthesis}
+              modelStatus={modelStatus}
+              onOpenEvidence={openEvidence}
+            />
+          )}
+
           <section className="agent-result-summary">
-            <span className="eyebrow">研究结论</span>
+            <span className="eyebrow">Deterministic Risk Gate</span>
             <h3>{result.conclusion?.headline}</h3>
             <p>{result.conclusion?.role_reason || result.scope?.statement}</p>
             <div className="agent-decision-grid">

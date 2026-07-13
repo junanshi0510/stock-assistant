@@ -77,6 +77,7 @@ EXPECTED_OPERATIONS = {
     "/api/funds/compare": {"POST"},
     "/api/funds/overlap": {"POST"},
     "/api/v1/agent/tools": {"GET"},
+    "/api/v1/agent/model/status": {"GET"},
     "/api/v1/agent/strategies": {"GET"},
     "/api/v1/agent/strategies/{strategy_id}/{strategy_version}": {"GET"},
     "/api/v1/agent/strategies/{strategy_id}/{strategy_version}/shadow-outcomes": {"GET"},
