@@ -16,7 +16,7 @@ from .llm_gateway import LLMGateway, ModelInvocationError, ModelUnavailableError
 
 
 PROMPT_TEMPLATE_ID = "fund_decision_synthesis"
-PROMPT_TEMPLATE_VERSION = "1.0.0"
+PROMPT_TEMPLATE_VERSION = "1.1.0"
 OUTPUT_SCHEMA_VERSION = "fund_ai_synthesis.v1"
 
 DecisionAction = Literal[
@@ -78,7 +78,6 @@ class FundDecisionSynthesis(_StrictModel):
     unknowns: list[LinkedAssessment] = Field(max_length=6)
     action_plan: ActionPlan
     coverage: DataCoverage
-    all_evidence_ids: list[str] = Field(min_length=1, max_length=30)
 
 
 _PROHIBITED_PROMISES = re.compile(
@@ -385,8 +384,6 @@ def _quality_errors(
         errors.append("no_evidence_referenced")
     if referenced - allowed_evidence_ids:
         errors.append("unknown_evidence_reference")
-    if set(synthesis.all_evidence_ids) - allowed_evidence_ids:
-        errors.append("all_evidence_ids_contains_unknown_reference")
     if synthesis.coverage.news == "used" and _news_count(context) == 0:
         errors.append("news_marked_used_without_news_evidence")
     private_shared = bool((context.get("privacy") or {}).get("private_context_shared"))
@@ -413,7 +410,8 @@ _SYSTEM_PROMPT = """你是金融投资助手中的证据合成模型。你的任
 7. 采用以下研究顺序：组合适配与重合风险；底层市场和板块环境；中期趋势与动量及其反转风险；同类相对表现、费用和载体质量；披露持仓与盈利支撑；新闻催化；失效条件；分批执行和复盘。
 8. 不得承诺盈利、使用确定性涨跌措辞、输出自动交易命令或暴露隐式思维链。confidence 最高只能是 medium。
 9. 如果关键数据不足，status 必须为 insufficient，并把缺口写入 unknowns；不要编造替代数据。
-10. 只返回符合给定 JSON Schema 的 JSON 对象，不要返回 Markdown 或额外说明。"""
+10. 只返回符合给定 JSON Schema 的 JSON 对象，不要返回 Markdown 或额外说明。
+11. 保持输出紧凑：risks 最多 3 项；catalysts、counter_evidence、unknowns 各最多 2 项；每类 action conditions 最多 2 项。证据不足的可选数组返回空数组，不要为了填满上限重复内容。"""
 
 
 class InvestmentSynthesisService:
@@ -485,6 +483,7 @@ class InvestmentSynthesisService:
             "model_tools_enabled": False,
         }
         schema = FundDecisionSynthesis.model_json_schema()
+        invocation = None
         try:
             invocation = self.gateway.invoke_structured(
                 system_prompt=_SYSTEM_PROMPT,
@@ -512,13 +511,33 @@ class InvestmentSynthesisService:
                 },
             }
         except (json.JSONDecodeError, ValidationError) as error:
+            invocation_summary = {
+                key: invocation.get(key)
+                for key in (
+                    "provider",
+                    "model",
+                    "api_style",
+                    "response_id",
+                    "input_sha256",
+                    "output_sha256",
+                    "latency_ms",
+                    "finish_reason",
+                    "output_chars",
+                    "usage",
+                )
+            } if invocation else None
+            truncated = (invocation_summary or {}).get("finish_reason") in {"length", "max_tokens"}
             return {
                 "status": "unavailable",
                 "source": "llm_gateway",
-                "reason_code": "model_schema_failed",
-                "reason": "模型输出未通过结构化 Schema 校验。",
+                "reason_code": "model_output_truncated" if truncated else "model_schema_failed",
+                "reason": (
+                    "模型输出达到长度上限，结构化 JSON 不完整。"
+                    if truncated else "模型输出未通过结构化 Schema 校验。"
+                ),
                 "provider": provider_status,
                 "validation_error": str(error)[:500],
+                "invocation": invocation_summary,
                 "prompt": {
                     "template_id": PROMPT_TEMPLATE_ID,
                     "template_version": PROMPT_TEMPLATE_VERSION,

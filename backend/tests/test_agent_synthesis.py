@@ -52,7 +52,6 @@ def _model_output(evidence_id="ev_analysis"):
             "news": "used",
             "portfolio": "unavailable",
         },
-        "all_evidence_ids": [evidence_id],
     }
 
 
@@ -91,6 +90,28 @@ class _Gateway:
         }
 
 
+class _TruncatedGateway(_Gateway):
+    def __init__(self):
+        super().__init__({})
+
+    def invoke_structured(self, **kwargs):
+        self.calls.append(kwargs)
+        text = '{"status":"ready"'
+        return {
+            "provider": "test-provider",
+            "model": "test-model",
+            "api_style": "chat_completions",
+            "response_id": "resp_truncated",
+            "input_sha256": "a" * 64,
+            "output_sha256": "b" * 64,
+            "latency_ms": 42,
+            "finish_reason": "length",
+            "output_chars": len(text),
+            "usage": {"input_tokens": 100, "output_tokens": 4800, "total_tokens": 4900},
+            "text": text,
+        }
+
+
 def _context():
     return {
         "schema_version": "fund_synthesis_context.v1",
@@ -123,11 +144,30 @@ class InvestmentSynthesisTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "available")
         self.assertFalse(result["provider"]["private_context_used"])
+        self.assertEqual(result["synthesis"]["all_evidence_ids"], ["ev_analysis"])
         sent = gateway.calls[0]["user_payload"]
         self.assertEqual(sent["allowed_action"], "research_only")
         self.assertEqual(sent["private_context"]["status"], "not_shared_with_model")
         self.assertEqual(sent["private_evidence_ids"], [])
         self.assertTrue(result["quality"]["passed"])
+
+    def test_truncated_json_is_reported_with_safe_invocation_metadata(self):
+        gateway = _TruncatedGateway()
+        service = InvestmentSynthesisService(gateway)
+        context = _context()
+
+        result = service.synthesize({
+            "context": context,
+            "context_sha256": __import__("hashlib").sha256(
+                json.dumps(context, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest(),
+        })
+
+        self.assertEqual(result["status"], "unavailable")
+        self.assertEqual(result["reason_code"], "model_output_truncated")
+        self.assertEqual(result["invocation"]["finish_reason"], "length")
+        self.assertEqual(result["invocation"]["output_chars"], 17)
+        self.assertNotIn("text", result["invocation"])
 
     def test_unknown_evidence_reference_is_blocked(self):
         gateway = _Gateway(_model_output("ev_unknown"), private_context_enabled=False)

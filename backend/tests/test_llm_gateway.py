@@ -73,6 +73,7 @@ class LLMGatewayTests(unittest.TestCase):
         self.assertEqual(config.base_url, "https://api.deepseek.com")
         self.assertEqual(config.api_style, "chat_completions")
         self.assertEqual(config.thinking_mode, "disabled")
+        self.assertEqual(config.max_output_tokens, 4800)
 
     def test_deepseek_invalid_thinking_mode_blocks_configuration(self):
         with patch.dict(os.environ, {
@@ -158,7 +159,7 @@ class LLMGatewayTests(unittest.TestCase):
         session = _Session(_Response({
             "id": "chatcmpl_test",
             "model": "compatible-model-2026",
-            "choices": [{"message": {"role": "assistant", "content": response_text}}],
+            "choices": [{"message": {"role": "assistant", "content": response_text}, "finish_reason": "stop"}],
             "usage": {"prompt_tokens": 18, "completion_tokens": 7, "total_tokens": 25},
         }))
         gateway = LLMGateway(
@@ -186,6 +187,8 @@ class LLMGatewayTests(unittest.TestCase):
 
         self.assertEqual(result["text"], response_text)
         self.assertEqual(result["usage"]["total_tokens"], 25)
+        self.assertEqual(result["finish_reason"], "stop")
+        self.assertEqual(result["output_chars"], len(response_text))
         url, request = session.calls[0]
         self.assertEqual(
             url,

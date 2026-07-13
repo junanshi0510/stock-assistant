@@ -106,7 +106,7 @@ class ModelGatewayConfig:
             api_style=api_style,
             api_key=_provider_key(provider),
             timeout_seconds=_bounded_int("LLM_TIMEOUT_SECONDS", 75, 10, 180),
-            max_output_tokens=_bounded_int("LLM_MAX_OUTPUT_TOKENS", 2600, 600, 8000),
+            max_output_tokens=_bounded_int("LLM_MAX_OUTPUT_TOKENS", 4800, 600, 8000),
             max_input_chars=_bounded_int("LLM_MAX_INPUT_CHARS", 60000, 10000, 160000),
             retry_count=_bounded_int("LLM_RETRY_COUNT", 2, 0, 3),
             private_context_enabled=_env_bool("LLM_PRIVATE_CONTEXT_ENABLED", False),
@@ -362,6 +362,11 @@ class LLMGateway:
         input_tokens = usage.get("input_tokens", usage.get("prompt_tokens"))
         output_tokens = usage.get("output_tokens", usage.get("completion_tokens"))
         total_tokens = usage.get("total_tokens")
+        finish_reason = (
+            envelope.get("status")
+            if self.config.api_style == "responses"
+            else (((envelope.get("choices") or [{}])[0]).get("finish_reason"))
+        )
         return {
             "provider": self.config.provider,
             "model": str(envelope.get("model") or self.config.model),
@@ -370,6 +375,8 @@ class LLMGateway:
             "input_sha256": input_hash,
             "output_sha256": _sha256(text),
             "latency_ms": int((time.monotonic() - started) * 1000),
+            "finish_reason": finish_reason,
+            "output_chars": len(text),
             "usage": {
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
