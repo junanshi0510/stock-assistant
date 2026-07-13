@@ -336,6 +336,52 @@ class AgentRepository:
                         strategy_id, strategy_version, fund_code, horizon, baseline_as_of
                     );
 
+                    CREATE TABLE IF NOT EXISTS agent_strategy_shadow_cohorts (
+                        id                              TEXT PRIMARY KEY,
+                        enrollment_id                   TEXT NOT NULL UNIQUE
+                                                              REFERENCES agent_strategy_shadow_enrollments(id)
+                                                              ON DELETE CASCADE,
+                        run_id                          TEXT NOT NULL
+                                                              REFERENCES agent_runs(id) ON DELETE CASCADE,
+                        strategy_id                     TEXT NOT NULL,
+                        strategy_version                TEXT NOT NULL,
+                        fund_code                       TEXT NOT NULL,
+                        horizon                         TEXT NOT NULL,
+                        observation_days                INTEGER NOT NULL,
+                        taxonomy_id                     TEXT NOT NULL,
+                        taxonomy_version                TEXT NOT NULL,
+                        market_profile_evidence_id      TEXT NOT NULL
+                                                              REFERENCES agent_evidence(id)
+                                                              ON DELETE RESTRICT,
+                        market_profile_payload_sha256   TEXT NOT NULL,
+                        signal_evidence_id              TEXT NOT NULL
+                                                              REFERENCES agent_evidence(id)
+                                                              ON DELETE RESTRICT,
+                        signal_payload_sha256           TEXT NOT NULL,
+                        evidence_id                     TEXT NOT NULL UNIQUE
+                                                              REFERENCES agent_evidence(id)
+                                                              ON DELETE RESTRICT,
+                        market_primary                  TEXT NOT NULL,
+                        asset_class                     TEXT NOT NULL,
+                        vehicle_type                    TEXT NOT NULL,
+                        trend_regime                    TEXT NOT NULL,
+                        drawdown_regime                 TEXT NOT NULL,
+                        release_cohort_key              TEXT NOT NULL,
+                        regime_cohort_key               TEXT NOT NULL,
+                        release_eligible                INTEGER NOT NULL,
+                        cohort_json                     TEXT NOT NULL,
+                        cohort_sha256                   TEXT NOT NULL,
+                        created_at                      TEXT NOT NULL,
+                        FOREIGN KEY (strategy_id, strategy_version)
+                            REFERENCES agent_strategy_versions(strategy_id, strategy_version)
+                            ON DELETE RESTRICT
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_agent_strategy_shadow_cohort_version
+                    ON agent_strategy_shadow_cohorts(
+                        strategy_id, strategy_version, release_cohort_key, created_at
+                    );
+
                     """
                 )
                 audit_columns = {
@@ -558,6 +604,20 @@ class AgentRepository:
         item["signal_snapshot_integrity_verified"] = (
             hashlib.sha256(_json(snapshot).encode("utf-8")).hexdigest()
             == item.get("signal_snapshot_sha256")
+        )
+        return item
+
+    @staticmethod
+    def _strategy_shadow_cohort_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        item = dict(row)
+        cohort = _load(item.pop("cohort_json", None), {})
+        item["cohort"] = cohort
+        item["release_eligible"] = bool(item.get("release_eligible"))
+        item["cohort_integrity_verified"] = (
+            hashlib.sha256(_json(cohort).encode("utf-8")).hexdigest()
+            == item.get("cohort_sha256")
         )
         return item
 
@@ -2355,6 +2415,261 @@ class AgentRepository:
                 (enrollment_id,),
             ).fetchone()
         return self._strategy_shadow_from_row(row), True
+
+    def get_strategy_shadow_cohort(self, enrollment_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM agent_strategy_shadow_cohorts WHERE enrollment_id=?",
+                (enrollment_id,),
+            ).fetchone()
+        return self._strategy_shadow_cohort_from_row(row)
+
+    def list_strategy_shadow_cohorts(
+        self,
+        strategy_id: str,
+        strategy_version: str,
+        *,
+        limit: int = 2000,
+    ) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM agent_strategy_shadow_cohorts
+                WHERE strategy_id=? AND strategy_version=?
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (
+                    strategy_id,
+                    strategy_version,
+                    max(1, min(int(limit), 2000)),
+                ),
+            ).fetchall()
+        return [self._strategy_shadow_cohort_from_row(row) for row in rows]
+
+    def list_strategy_shadow_enrollments_missing_cohort(
+        self,
+        *,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT enrollments.*
+                FROM agent_strategy_shadow_enrollments AS enrollments
+                LEFT JOIN agent_strategy_shadow_cohorts AS cohorts
+                    ON cohorts.enrollment_id=enrollments.id
+                WHERE cohorts.id IS NULL
+                ORDER BY enrollments.created_at ASC, enrollments.id ASC
+                LIMIT ?
+                """,
+                (max(1, min(int(limit), 10000)),),
+            ).fetchall()
+        return [self._strategy_shadow_from_row(row) for row in rows]
+
+    def ensure_strategy_shadow_cohort(
+        self,
+        enrollment_id: str,
+        *,
+        cohort: dict[str, Any],
+        actor_id: str = "strategy-shadow-cohort-runtime-v1",
+        now: str | dt.datetime | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        """Atomically persist immutable Cohort Evidence, index fields, and audit binding."""
+        cohort_json = _json(cohort)
+        cohort_hash = hashlib.sha256(cohort_json.encode("utf-8")).hexdigest()
+        taxonomy = cohort.get("taxonomy") or {}
+        binding = cohort.get("enrollment_binding") or {}
+        sources = cohort.get("source_evidence") or {}
+        market_source = sources.get("market_profile") or {}
+        signal_source = sources.get("signal") or {}
+        dimensions = cohort.get("dimensions") or {}
+        horizon = dimensions.get("horizon") or {}
+        market = dimensions.get("market") or {}
+        asset = dimensions.get("asset_class") or {}
+        vehicle = dimensions.get("vehicle") or {}
+        regime = dimensions.get("signal_regime") or {}
+        keys = cohort.get("keys") or {}
+        release = cohort.get("release_classification") or {}
+        required = {
+            "taxonomy_id": taxonomy.get("id"),
+            "taxonomy_version": taxonomy.get("version"),
+            "run_id": binding.get("run_id"),
+            "strategy_id": binding.get("strategy_id"),
+            "strategy_version": binding.get("strategy_version"),
+            "fund_code": binding.get("fund_code"),
+            "horizon": horizon.get("name"),
+            "market_evidence_id": market_source.get("evidence_id"),
+            "market_payload_hash": market_source.get("payload_sha256"),
+            "signal_evidence_id": signal_source.get("evidence_id"),
+            "signal_payload_hash": signal_source.get("payload_sha256"),
+            "market_primary": market.get("primary"),
+            "asset_class": asset.get("primary"),
+            "vehicle_type": vehicle.get("type"),
+            "release_cohort_key": keys.get("release_cohort"),
+            "regime_cohort_key": keys.get("regime_cohort"),
+        }
+        if any(not str(value or "").strip() for value in required.values()):
+            raise ValueError("Shadow Cohort 缺少不可变绑定字段")
+        observation_days = int(horizon.get("confirmed_nav_observations") or 0)
+        if observation_days < 1:
+            raise ValueError("Shadow Cohort 缺少有效确认净值窗口")
+        now_text = _utc_iso(now)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT * FROM agent_strategy_shadow_cohorts WHERE enrollment_id=?",
+                (enrollment_id,),
+            ).fetchone()
+            if existing is not None:
+                item = self._strategy_shadow_cohort_from_row(existing)
+                if item.get("cohort_sha256") != cohort_hash:
+                    raise ValueError("Shadow 入组已经绑定不同的 Cohort 快照")
+                return item, False
+            enrollment = connection.execute(
+                "SELECT * FROM agent_strategy_shadow_enrollments WHERE id=?",
+                (enrollment_id,),
+            ).fetchone()
+            if enrollment is None:
+                raise KeyError(f"Shadow 入组记录不存在:{enrollment_id}")
+            bound_values = {
+                "id": binding.get("enrollment_id"),
+                "run_id": binding.get("run_id"),
+                "strategy_id": binding.get("strategy_id"),
+                "strategy_version": binding.get("strategy_version"),
+                "manifest_sha256": binding.get("manifest_sha256"),
+                "signal_snapshot_sha256": binding.get("signal_snapshot_sha256"),
+                "fund_code": binding.get("fund_code"),
+                "baseline_as_of": binding.get("baseline_as_of"),
+                "signal_direction": binding.get("signal_direction"),
+                "horizon": horizon.get("name"),
+                "observation_days": observation_days,
+            }
+            for key, expected in bound_values.items():
+                if str(enrollment[key]) != str(expected):
+                    raise ValueError(f"Shadow Cohort 与入组字段不一致:{key}")
+            if enrollment["signal_evidence_id"] != signal_source["evidence_id"]:
+                raise ValueError("Shadow Cohort 信号 Evidence 与入组记录不一致")
+            for source, label in (
+                (market_source, "市场画像"),
+                (signal_source, "策略信号"),
+            ):
+                evidence = connection.execute(
+                    "SELECT run_id, payload_sha256 FROM agent_evidence WHERE id=?",
+                    (source["evidence_id"],),
+                ).fetchone()
+                if (
+                    evidence is None
+                    or evidence["run_id"] != enrollment["run_id"]
+                    or evidence["payload_sha256"] != source["payload_sha256"]
+                ):
+                    raise ValueError(f"Shadow Cohort {label} Evidence 绑定失败")
+
+            evidence_id = _new_id("ev")
+            quality_status = "complete" if bool(release.get("eligible")) else "partial"
+            connection.execute(
+                """
+                INSERT INTO agent_evidence (
+                    id, run_id, step_id, evidence_type, subject_type, subject_id,
+                    provider, source_url, observed_at, as_of, schema_version,
+                    quality_status, payload_json, payload_sha256, created_at
+                ) VALUES (?, ?, NULL, 'strategy_shadow_cohort', 'fund_strategy', ?,
+                          'strategy_shadow_cohort_taxonomy', NULL, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    evidence_id,
+                    enrollment["run_id"],
+                    f"{enrollment['strategy_id']}@{enrollment['strategy_version']}:{enrollment['fund_code']}",
+                    now_text,
+                    enrollment["baseline_as_of"],
+                    str(cohort.get("schema_version") or "strategy_shadow_cohort.v1"),
+                    quality_status,
+                    cohort_json,
+                    cohort_hash,
+                    now_text,
+                ),
+            )
+            cohort_id = _new_id("cohort")
+            connection.execute(
+                """
+                INSERT INTO agent_strategy_shadow_cohorts (
+                    id, enrollment_id, run_id, strategy_id, strategy_version,
+                    fund_code, horizon, observation_days, taxonomy_id,
+                    taxonomy_version, market_profile_evidence_id,
+                    market_profile_payload_sha256, signal_evidence_id,
+                    signal_payload_sha256, evidence_id, market_primary,
+                    asset_class, vehicle_type, trend_regime, drawdown_regime,
+                    release_cohort_key, regime_cohort_key, release_eligible,
+                    cohort_json, cohort_sha256, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                          ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    cohort_id,
+                    enrollment_id,
+                    enrollment["run_id"],
+                    enrollment["strategy_id"],
+                    enrollment["strategy_version"],
+                    enrollment["fund_code"],
+                    enrollment["horizon"],
+                    int(enrollment["observation_days"]),
+                    required["taxonomy_id"],
+                    required["taxonomy_version"],
+                    market_source["evidence_id"],
+                    market_source["payload_sha256"],
+                    signal_source["evidence_id"],
+                    signal_source["payload_sha256"],
+                    evidence_id,
+                    required["market_primary"],
+                    required["asset_class"],
+                    required["vehicle_type"],
+                    str(regime.get("trend") or ""),
+                    str(regime.get("drawdown_band") or ""),
+                    required["release_cohort_key"],
+                    required["regime_cohort_key"],
+                    int(bool(release.get("eligible"))),
+                    cohort_json,
+                    cohort_hash,
+                    now_text,
+                ),
+            )
+            self._append_audit(
+                connection,
+                enrollment["run_id"],
+                "evidence.created",
+                {
+                    "evidence_id": evidence_id,
+                    "step_id": None,
+                    "payload_sha256": cohort_hash,
+                    "quality_status": quality_status,
+                    "evidence_type": "strategy_shadow_cohort",
+                },
+                actor_id=actor_id,
+            )
+            self._append_audit(
+                connection,
+                enrollment["run_id"],
+                "strategy.shadow.cohort.bound",
+                {
+                    "cohort_id": cohort_id,
+                    "enrollment_id": enrollment_id,
+                    "evidence_id": evidence_id,
+                    "cohort_sha256": cohort_hash,
+                    "taxonomy_id": required["taxonomy_id"],
+                    "taxonomy_version": required["taxonomy_version"],
+                    "market_profile_evidence_id": market_source["evidence_id"],
+                    "signal_evidence_id": signal_source["evidence_id"],
+                    "release_cohort_key": required["release_cohort_key"],
+                    "regime_cohort_key": required["regime_cohort_key"],
+                    "release_eligible": bool(release.get("eligible")),
+                },
+                actor_id=actor_id,
+            )
+            row = connection.execute(
+                "SELECT * FROM agent_strategy_shadow_cohorts WHERE id=?",
+                (cohort_id,),
+            ).fetchone()
+        return self._strategy_shadow_cohort_from_row(row), True
 
     def claim_due_strategy_shadow_enrollment(
         self,

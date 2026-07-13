@@ -201,6 +201,8 @@ def _alternatives(_payload):
 
 def _market_profile(_payload):
     return {
+        "strategy_id": "fund_market_profile",
+        "strategy_version": "1.0.0",
         "status": "available",
         "source": "真实基金市场元数据测试快照",
         "source_url": "https://example.test/fund/001480",

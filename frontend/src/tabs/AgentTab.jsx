@@ -9,6 +9,7 @@ import {
   FileSearch,
   Filter,
   History,
+  Layers3,
   Play,
   RefreshCw,
   ShieldCheck,
@@ -115,6 +116,12 @@ const CONDITION_LABELS = {
 
 const HORIZON_LABELS = { '3m': '随后 3 个月', '6m': '随后 6 个月', '12m': '随后 12 个月' }
 
+const COHORT_VEHICLE_LABELS = {
+  domestic: '境内基金载体',
+  qdii: 'QDII 载体',
+  cross_border_non_qdii: '非 QDII 跨境载体',
+}
+
 const INVALIDATION_LABELS = {
   trend: '净值与 60 日均值的关系发生变化',
   drawdown_band: '当前回撤跨入新的区间',
@@ -185,6 +192,16 @@ function StrategyPanel({ strategy, shadowOutcome, onOpenEvidence, personalized =
   const shadowGate = shadowSummary.disclosure_gate || {}
   const shadowVerification = shadowOutcome?.verification || null
   const shadowEvidence = shadowOutcome?.observations?.[0] || null
+  const shadowCohort = shadowOutcome?.cohort || null
+  const cohortDimensions = shadowCohort?.dimensions || {}
+  const cohortMarket = cohortDimensions.market || {}
+  const cohortAsset = cohortDimensions.asset_class || {}
+  const cohortVehicle = cohortDimensions.vehicle || {}
+  const cohortRegime = cohortDimensions.signal_regime || {}
+  const cohortRelease = shadowCohort?.release_classification || {}
+  const cohortVerification = shadowOutcome?.cohort_verification || null
+  const cohortSummary = shadowSummary.cohort_binding || {}
+  const cohortSegments = shadowSummary.segments || []
   return (
     <section className="agent-strategy-panel" aria-label="基金历史条件策略">
       <div className="agent-section-head">
@@ -239,12 +256,14 @@ function StrategyPanel({ strategy, shadowOutcome, onOpenEvidence, personalized =
           </small>
         </div>
         <div>
-          <span>策略版本样本</span>
+          <span>可比 Cohort 样本</span>
           <b>{shadowObservation.observed_count ?? 0} 已观测 / {shadowObservation.release_grade_count ?? 0} 完整基准</b>
           <small>
             {shadowGate.aggregate_available
-              ? '已达汇总披露门槛，仍需人工发布评审'
-              : '未达门槛，不展示胜率或平均收益'}
+              ? '单一可比 Cohort 达到门槛，仍需人工发布评审'
+              : cohortSegments.length > 1
+                ? `${cohortSegments.length} 个 Cohort 分开统计，禁止混合总体胜率`
+                : '未达门槛，不展示胜率或平均收益'}
           </small>
         </div>
         <div className="agent-shadow-integrity">
@@ -256,6 +275,34 @@ function StrategyPanel({ strategy, shadowOutcome, onOpenEvidence, personalized =
             </button>
           )}
         </div>
+      </div>
+
+      <div className={`agent-shadow-cohort ${cohortRelease.eligible ? 'complete' : 'restricted'}`}>
+        <Layers3 size={17} aria-hidden="true" />
+        <div>
+          <span>样本可比性</span>
+          <b>{cohortMarket.label || '市场待绑定'} · {cohortAsset.label || '资产类别待绑定'}</b>
+          <small>{COHORT_VEHICLE_LABELS[cohortVehicle.type] || cohortVehicle.type || '-'}</small>
+        </div>
+        <div>
+          <span>预测周期与信号状态</span>
+          <b>{HORIZON_LABELS[cohortDimensions.horizon?.name] || '-'} · {cohortRegime.trend_label || '-'}</b>
+          <small>{cohortRegime.drawdown_label || '-'}</small>
+        </div>
+        <div>
+          <span>Cohort 绑定</span>
+          <b>{cohortVerification?.verified ? 'Evidence 与审计已验证' : shadowCohort ? '绑定校验未通过' : '等待自动绑定'}</b>
+          <small>
+            {cohortRelease.eligible
+              ? `分类完整 · 当前版本已绑定 ${cohortSummary.bound_count ?? 0} 条`
+              : (cohortRelease.reasons || []).join('、') || '当前不可进入绩效披露'}
+          </small>
+        </div>
+        {shadowCohort?.evidence_id && (
+          <button className="ghost" onClick={() => onOpenEvidence(shadowCohort.evidence_id)}>
+            <Database size={13} aria-hidden="true" />查看 Cohort Evidence
+          </button>
+        )}
       </div>
 
       <div className="agent-strategy-summary">

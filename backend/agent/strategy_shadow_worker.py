@@ -46,6 +46,16 @@ class StrategyShadowOutcomeWorker:
                     logger.info("已为 %s 个既有策略信号建立 Shadow 入组记录", backfilled)
             except Exception:
                 logger.exception("既有策略 Shadow 入组回填失败")
+            try:
+                cohort_backfill = self.service.backfill_missing_cohorts(limit=1000)
+                if cohort_backfill["created"] or cohort_backfill["failed"]:
+                    logger.info(
+                        "策略 Shadow Cohort 回填:created=%s failed=%s",
+                        cohort_backfill["created"],
+                        cohort_backfill["failed"],
+                    )
+            except Exception:
+                logger.exception("既有策略 Shadow Cohort 回填失败")
             self._stop.clear()
             self._thread = threading.Thread(
                 target=self._loop,

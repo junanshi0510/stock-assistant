@@ -300,6 +300,16 @@ def get_agent_run_strategy_shadow_outcome(run_id: str):
         if enrollment is not None
         else None
     )
+    cohort = (
+        repository.get_strategy_shadow_cohort(str(enrollment["id"]))
+        if enrollment is not None
+        else None
+    )
+    cohort_verification = (
+        strategy_shadow_service.verify_cohort(cohort, enrollment)
+        if enrollment is not None
+        else None
+    )
     result_strategy = (run.get("result") or {}).get("strategy") or {}
     strategy_id = str(result_strategy.get("strategy_id") or "")
     strategy_version = str(result_strategy.get("strategy_version") or "")
@@ -317,6 +327,8 @@ def get_agent_run_strategy_shadow_outcome(run_id: str):
         "eligibility": eligibility,
         "enrollment": strategy_shadow_service.public_enrollment(enrollment),
         "verification": verification,
+        "cohort": strategy_shadow_service.public_cohort(cohort),
+        "cohort_verification": cohort_verification,
         "observations": [
             {
                 "evidence_id": item["id"],
@@ -330,7 +342,7 @@ def get_agent_run_strategy_shadow_outcome(run_id: str):
             for item in observations
         ],
         "strategy_summary": report,
-        "policy": "策略 Shadow 样本由终态 Run 自动、按时间顺序入组；公网仅可读，不能手工挑样本、提前结算或改写基线。",
+        "policy": "策略 Shadow 样本由终态 Run 自动入组并绑定不可变市场、资产、周期和信号状态 Cohort；公网仅可读，不能手工挑样本、跨 Cohort 池化、提前结算或改写基线。",
     }
 
 

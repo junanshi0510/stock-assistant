@@ -13,13 +13,20 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from statistics import fmean
 from typing import Any
 
+from strategies.fund_strategy_cohort import (
+    COHORT_TAXONOMY_ID,
+    COHORT_TAXONOMY_VERSION,
+    build_strategy_shadow_cohort,
+)
+
 from .registry import ToolRegistry
 from .repository import AgentRepository
 
 
 SHADOW_OUTCOME_SCHEMA_VERSION = "strategy_shadow_outcome.v1"
 SHADOW_ENROLLMENT_POLICY_VERSION = "strategy_shadow_enrollment@1.0.0"
-SHADOW_REPORT_VERSION = "strategy_shadow_report@1.0.0"
+SHADOW_OUTCOME_EVIDENCE_VERSION = "1.1.0"
+SHADOW_REPORT_VERSION = "strategy_shadow_report@1.1.0"
 MIN_RELEASE_GRADE_OUTCOMES = 30
 MIN_DISTINCT_FUNDS = 10
 
@@ -106,6 +113,113 @@ def build_shadow_aggregate(
         "distinct_release_grade_funds": distinct_funds,
         "aggregate_available": aggregate_ready,
         "metrics": metrics,
+    }
+
+
+def build_segmented_shadow_aggregate(
+    samples: list[dict[str, Any]],
+    *,
+    integrity_failures: int,
+    scan_complete: bool,
+    classification_complete: bool,
+) -> dict[str, Any]:
+    """Disclose metrics only inside comparable Cohorts; never pool heterogeneous axes."""
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    dimensions_by_key: dict[str, dict[str, Any]] = {}
+    observed_cohort_keys: set[str] = set()
+    unclassified_observed = 0
+    for sample in samples:
+        cohort = sample.get("cohort") or {}
+        key = str((cohort.get("keys") or {}).get("release_cohort") or "")
+        cohort_verified = bool(sample.get("cohort_integrity_verified"))
+        cohort_eligible = bool(
+            (cohort.get("release_classification") or {}).get("eligible")
+        )
+        if not key or not cohort_verified:
+            unclassified_observed += 1
+            continue
+        observed_cohort_keys.add(key)
+        comparable = bool(sample.get("release_grade") and cohort_eligible)
+        normalized = dict(sample)
+        normalized["release_grade"] = comparable
+        grouped.setdefault(key, []).append(normalized)
+        dimensions_by_key[key] = cohort.get("dimensions") or {}
+
+    segments = []
+    for key in sorted(grouped):
+        segment_samples = grouped[key]
+        aggregate = build_shadow_aggregate(
+            segment_samples,
+            integrity_failures=(
+                int(integrity_failures)
+                if classification_complete
+                else max(1, int(integrity_failures))
+            ),
+            scan_complete=bool(scan_complete and classification_complete),
+        )
+        regime_counts = Counter(
+            str(((item.get("cohort") or {}).get("keys") or {}).get("regime_cohort") or "unknown")
+            for item in segment_samples
+            if item.get("release_grade")
+        )
+        segments.append({
+            "key": key,
+            "dimensions": dimensions_by_key[key],
+            "observed_count": len(segment_samples),
+            "release_grade_count": aggregate["release_grade_count"],
+            "distinct_release_grade_funds": aggregate["distinct_release_grade_funds"],
+            "regime_counts": dict(sorted(regime_counts.items())),
+            "disclosure_gate": {
+                "aggregate_available": aggregate["aggregate_available"],
+                "minimum_release_grade_outcomes": MIN_RELEASE_GRADE_OUTCOMES,
+                "minimum_distinct_funds": MIN_DISTINCT_FUNDS,
+                "reason": (
+                    None
+                    if aggregate["aggregate_available"]
+                    else "该可比 Cohort 的样本数、基金覆盖或完整性未达披露门槛。"
+                ),
+            },
+            "metrics": aggregate["metrics"],
+        })
+
+    comparable_release_grade_count = sum(
+        int(item["release_grade_count"]) for item in segments
+    )
+    pooled_available = bool(
+        len(observed_cohort_keys) == 1
+        and unclassified_observed == 0
+        and classification_complete
+        and int(integrity_failures) == 0
+        and len(segments) == 1
+        and segments[0]["disclosure_gate"]["aggregate_available"]
+    )
+    if pooled_available:
+        pooled_reason = None
+        pooled_metrics = segments[0]["metrics"]
+    elif len(observed_cohort_keys) > 1:
+        pooled_reason = "存在多个市场、资产、载体或预测周期 Cohort，禁止返回混合总体绩效。"
+        pooled_metrics = None
+    elif unclassified_observed or not classification_complete:
+        pooled_reason = "存在未绑定或未通过完整性校验的 Cohort，禁止返回总体绩效。"
+        pooled_metrics = None
+    else:
+        pooled_reason = "单一可比 Cohort 的样本数、基金覆盖或完整性未达披露门槛。"
+        pooled_metrics = None
+    return {
+        "release_grade_count": comparable_release_grade_count,
+        "distinct_release_grade_funds": len({
+            str(item.get("fund_code"))
+            for item in samples
+            if item.get("release_grade")
+            and item.get("cohort_integrity_verified")
+            and ((item.get("cohort") or {}).get("release_classification") or {}).get("eligible")
+        }),
+        "observed_cohort_count": len(observed_cohort_keys),
+        "unclassified_observed_count": unclassified_observed,
+        "aggregate_available": pooled_available,
+        "metrics": pooled_metrics,
+        "reason": pooled_reason,
+        "segments": segments,
     }
 
 
@@ -250,6 +364,11 @@ class StrategyShadowOutcomeService:
             evidence = self.repository.get_evidence(str(run["id"]), evidence_id)
             if evidence is None or not evidence.get("integrity_verified"):
                 return {"eligible": False, "reason": f"{key}_integrity_failed"}
+        market_profile = (run.get("result") or {}).get("market_profile") or {}
+        market_evidence_id = str(market_profile.get("evidence_id") or "")
+        market_evidence = self.repository.get_evidence(str(run["id"]), market_evidence_id)
+        if market_evidence is None or not market_evidence.get("integrity_verified"):
+            return {"eligible": False, "reason": "market_profile_evidence_integrity_failed"}
         return {
             "eligible": True,
             "reason": None,
@@ -290,7 +409,7 @@ class StrategyShadowOutcomeService:
         signal = snapshot["signal"]
         fund = snapshot["fund"]
         baseline = snapshot["baseline"]
-        return self.repository.ensure_strategy_shadow_enrollment(
+        enrollment, created = self.repository.ensure_strategy_shadow_enrollment(
             str(run["id"]),
             strategy_id=strategy["strategy_id"],
             strategy_version=strategy["strategy_version"],
@@ -312,6 +431,67 @@ class StrategyShadowOutcomeService:
             actor_id=actor_id,
             now=now,
         )
+        self.ensure_cohort(
+            enrollment,
+            actor_id=actor_id,
+            now=now,
+        )
+        return enrollment, created
+
+    def ensure_cohort(
+        self,
+        enrollment: dict[str, Any],
+        *,
+        actor_id: str = "strategy-shadow-cohort-runtime-v1",
+        now: str | dt.datetime | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        run = self.repository.get_run(str(enrollment.get("run_id") or ""))
+        if run is None:
+            raise ValueError("Shadow Cohort 缺少来源 Run")
+        market_profile = (run.get("result") or {}).get("market_profile") or {}
+        market_evidence_id = str(market_profile.get("evidence_id") or "")
+        market_evidence = self.repository.get_evidence(str(run["id"]), market_evidence_id)
+        signal_evidence = self.repository.get_evidence(
+            str(run["id"]),
+            str(enrollment.get("signal_evidence_id") or ""),
+        )
+        cohort = build_strategy_shadow_cohort(
+            enrollment=enrollment,
+            market_profile_evidence=market_evidence or {},
+            signal_evidence=signal_evidence or {},
+        )
+        return self.repository.ensure_strategy_shadow_cohort(
+            str(enrollment["id"]),
+            cohort=cohort,
+            actor_id=actor_id,
+            now=now,
+        )
+
+    def backfill_missing_cohorts(self, *, limit: int = 1000) -> dict[str, Any]:
+        enrollments = self.repository.list_strategy_shadow_enrollments_missing_cohort(
+            limit=max(1, min(int(limit), 10000)),
+        )
+        created = 0
+        failures = []
+        for enrollment in enrollments:
+            try:
+                _, was_created = self.ensure_cohort(
+                    enrollment,
+                    actor_id="strategy-shadow-cohort-backfill-v1",
+                )
+                created += int(was_created)
+            except Exception as error:
+                failures.append({
+                    "enrollment_id": enrollment.get("id"),
+                    "run_id": enrollment.get("run_id"),
+                    "error_type": type(error).__name__,
+                })
+        return {
+            "scanned": len(enrollments),
+            "created": created,
+            "failed": len(failures),
+            "failures": failures[:20],
+        }
 
     def backfill_eligible_enrollments(self, *, limit: int = 1000) -> int:
         created_count = 0
@@ -447,6 +627,124 @@ class StrategyShadowOutcomeService:
             "source_audit_chain_head": audit.get("chain_head"),
         }
 
+    def verify_cohort(
+        self,
+        cohort_record: dict[str, Any] | None,
+        enrollment: dict[str, Any],
+    ) -> dict[str, Any]:
+        if cohort_record is None:
+            return {"verified": False, "reason": "cohort_binding_missing"}
+        if not cohort_record.get("cohort_integrity_verified"):
+            return {"verified": False, "reason": "cohort_snapshot_hash_failed"}
+        if cohort_record.get("enrollment_id") != enrollment.get("id"):
+            return {"verified": False, "reason": "cohort_enrollment_binding_failed"}
+        run_id = str(enrollment.get("run_id") or "")
+        market_evidence = self.repository.get_evidence(
+            run_id,
+            str(cohort_record.get("market_profile_evidence_id") or ""),
+        )
+        signal_evidence = self.repository.get_evidence(
+            run_id,
+            str(cohort_record.get("signal_evidence_id") or ""),
+        )
+        if market_evidence is None or signal_evidence is None:
+            return {"verified": False, "reason": "cohort_source_evidence_missing"}
+        if (
+            not market_evidence.get("integrity_verified")
+            or not signal_evidence.get("integrity_verified")
+            or market_evidence.get("payload_sha256")
+            != cohort_record.get("market_profile_payload_sha256")
+            or signal_evidence.get("payload_sha256")
+            != cohort_record.get("signal_payload_sha256")
+        ):
+            return {"verified": False, "reason": "cohort_source_evidence_integrity_failed"}
+        try:
+            rebuilt = build_strategy_shadow_cohort(
+                enrollment=enrollment,
+                market_profile_evidence=market_evidence,
+                signal_evidence=signal_evidence,
+            )
+        except ValueError as error:
+            return {"verified": False, "reason": f"cohort_rebuild_failed:{error}"}
+        if _sha256(rebuilt) != cohort_record.get("cohort_sha256"):
+            return {"verified": False, "reason": "cohort_source_rebuild_hash_failed"}
+        cohort = cohort_record.get("cohort") or {}
+        dimensions = cohort.get("dimensions") or {}
+        release = cohort.get("release_classification") or {}
+        bound_fields = {
+            "strategy_id": (cohort.get("enrollment_binding") or {}).get("strategy_id"),
+            "strategy_version": (cohort.get("enrollment_binding") or {}).get("strategy_version"),
+            "fund_code": (cohort.get("enrollment_binding") or {}).get("fund_code"),
+            "horizon": (dimensions.get("horizon") or {}).get("name"),
+            "observation_days": (dimensions.get("horizon") or {}).get(
+                "confirmed_nav_observations"
+            ),
+            "taxonomy_id": (cohort.get("taxonomy") or {}).get("id"),
+            "taxonomy_version": (cohort.get("taxonomy") or {}).get("version"),
+            "market_primary": (dimensions.get("market") or {}).get("primary"),
+            "asset_class": (dimensions.get("asset_class") or {}).get("primary"),
+            "vehicle_type": (dimensions.get("vehicle") or {}).get("type"),
+            "trend_regime": (dimensions.get("signal_regime") or {}).get("trend"),
+            "drawdown_regime": (dimensions.get("signal_regime") or {}).get(
+                "drawdown_band"
+            ),
+            "release_cohort_key": (cohort.get("keys") or {}).get("release_cohort"),
+            "regime_cohort_key": (cohort.get("keys") or {}).get("regime_cohort"),
+        }
+        for key, expected in bound_fields.items():
+            if str(cohort_record.get(key)) != str(expected):
+                return {"verified": False, "reason": f"cohort_row_binding_failed:{key}"}
+        if bool(cohort_record.get("release_eligible")) != bool(release.get("eligible")):
+            return {"verified": False, "reason": "cohort_row_binding_failed:release_eligible"}
+        cohort_evidence = self.repository.get_evidence(
+            run_id,
+            str(cohort_record.get("evidence_id") or ""),
+        )
+        if (
+            cohort_evidence is None
+            or cohort_evidence.get("evidence_type") != "strategy_shadow_cohort"
+            or not cohort_evidence.get("integrity_verified")
+            or cohort_evidence.get("payload_sha256") != cohort_record.get("cohort_sha256")
+            or cohort_evidence.get("payload") != cohort
+        ):
+            return {"verified": False, "reason": "cohort_evidence_binding_failed"}
+        audit = self.repository.verify_audit_chain(run_id)
+        if not audit.get("verified"):
+            return {"verified": False, "reason": "cohort_audit_chain_failed"}
+        binding_events = []
+        for event in self.repository.list_audit_events(run_id):
+            if event.get("event_type") != "strategy.shadow.cohort.bound":
+                continue
+            details = event.get("details") or {}
+            if details.get("cohort_id") == cohort_record.get("id"):
+                binding_events.append(details)
+        if len(binding_events) != 1:
+            return {"verified": False, "reason": "cohort_binding_audit_event_count_failed"}
+        details = binding_events[0]
+        expected_audit = {
+            "enrollment_id": cohort_record.get("enrollment_id"),
+            "evidence_id": cohort_record.get("evidence_id"),
+            "cohort_sha256": cohort_record.get("cohort_sha256"),
+            "taxonomy_id": cohort_record.get("taxonomy_id"),
+            "taxonomy_version": cohort_record.get("taxonomy_version"),
+            "market_profile_evidence_id": cohort_record.get("market_profile_evidence_id"),
+            "signal_evidence_id": cohort_record.get("signal_evidence_id"),
+            "release_cohort_key": cohort_record.get("release_cohort_key"),
+            "regime_cohort_key": cohort_record.get("regime_cohort_key"),
+            "release_eligible": cohort_record.get("release_eligible"),
+        }
+        if any(details.get(key) != value for key, value in expected_audit.items()):
+            return {"verified": False, "reason": "cohort_binding_audit_replay_failed"}
+        return {
+            "verified": True,
+            "reason": None,
+            "taxonomy_id": cohort_record.get("taxonomy_id"),
+            "taxonomy_version": cohort_record.get("taxonomy_version"),
+            "cohort_sha256": cohort_record.get("cohort_sha256"),
+            "evidence_id": cohort_record.get("evidence_id"),
+            "audit_chain_head": audit.get("chain_head"),
+        }
+
     def _invoke_tool(self, enrollment: dict[str, Any]) -> dict[str, Any]:
         definition = self.registry.get(self.TOOL_NAME, self.TOOL_VERSION)
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="strategy-shadow-outcome")
@@ -497,6 +795,14 @@ class StrategyShadowOutcomeService:
                 f"Shadow 入组快照或状态校验失败:{verification['reason']}",
                 retryable=False,
             )
+        cohort_record = self.repository.get_strategy_shadow_cohort(str(enrollment["id"]))
+        cohort_verification = self.verify_cohort(cohort_record, enrollment)
+        if not cohort_verification["verified"]:
+            raise StrategyShadowOutcomeError(
+                "SHADOW_COHORT_INTEGRITY_FAILED",
+                f"Shadow Cohort 绑定或审计校验失败:{cohort_verification['reason']}",
+                retryable=False,
+            )
         outcome = self._invoke_tool(enrollment)
         status = str(outcome.get("status") or "")
         if status == "blocked":
@@ -506,7 +812,12 @@ class StrategyShadowOutcomeService:
                 retryable=False,
             )
         if status == "pending":
-            return {"status": "pending", "outcome": outcome, "verification": verification}
+            return {
+                "status": "pending",
+                "outcome": outcome,
+                "verification": verification,
+                "cohort_verification": cohort_verification,
+            }
         if status != "observed":
             raise StrategyShadowOutcomeError(
                 "INVALID_SHADOW_OUTCOME_STATUS",
@@ -539,6 +850,16 @@ class StrategyShadowOutcomeService:
             "observation_days": enrollment["observation_days"],
             "non_overlapping_per_fund_version_horizon": True,
         }
+        outcome["cohort_binding"] = {
+            "cohort_id": cohort_record["id"],
+            "cohort_sha256": cohort_record["cohort_sha256"],
+            "cohort_evidence_id": cohort_record["evidence_id"],
+            "taxonomy_id": cohort_record["taxonomy_id"],
+            "taxonomy_version": cohort_record["taxonomy_version"],
+            "release_cohort_key": cohort_record["release_cohort_key"],
+            "regime_cohort_key": cohort_record["regime_cohort_key"],
+            "release_eligible": cohort_record["release_eligible"],
+        }
         quality_status = str((outcome.get("quality") or {}).get("status") or "partial")
         if quality_status not in {"complete", "partial"}:
             quality_status = "partial"
@@ -551,7 +872,7 @@ class StrategyShadowOutcomeService:
             provider=str(outcome.get("source") or self.TOOL_NAME),
             source_url=str(outcome.get("source_url") or "") or None,
             as_of=observed_as_of,
-            schema_version=str(outcome.get("evaluator_version") or self.TOOL_VERSION),
+            schema_version=SHADOW_OUTCOME_EVIDENCE_VERSION,
             quality_status=quality_status,
             payload=outcome,
             actor_type="system",
@@ -563,6 +884,7 @@ class StrategyShadowOutcomeService:
             "outcome": evidence.get("payload") or {},
             "evidence": evidence,
             "verification": verification,
+            "cohort_verification": cohort_verification,
         }
 
     @staticmethod
@@ -606,6 +928,27 @@ class StrategyShadowOutcomeService:
             )
         }
 
+    @staticmethod
+    def public_cohort(cohort_record: dict[str, Any] | None) -> dict[str, Any] | None:
+        if cohort_record is None:
+            return None
+        cohort = cohort_record.get("cohort") or {}
+        return {
+            "id": cohort_record.get("id"),
+            "enrollment_id": cohort_record.get("enrollment_id"),
+            "evidence_id": cohort_record.get("evidence_id"),
+            "taxonomy_id": cohort_record.get("taxonomy_id"),
+            "taxonomy_version": cohort_record.get("taxonomy_version"),
+            "cohort_sha256": cohort_record.get("cohort_sha256"),
+            "cohort_integrity_verified": cohort_record.get("cohort_integrity_verified"),
+            "release_eligible": cohort_record.get("release_eligible"),
+            "release_cohort_key": cohort_record.get("release_cohort_key"),
+            "regime_cohort_key": cohort_record.get("regime_cohort_key"),
+            "dimensions": cohort.get("dimensions") or {},
+            "release_classification": cohort.get("release_classification") or {},
+            "created_at": cohort_record.get("created_at"),
+        }
+
     def report(
         self,
         strategy_id: str,
@@ -632,18 +975,49 @@ class StrategyShadowOutcomeService:
             for item in enrollments
             if item.get("exclusion_reason")
         )
+        cohort_records = self.repository.list_strategy_shadow_cohorts(
+            strategy_id,
+            strategy_version,
+            limit=2000,
+        )
+        cohort_by_enrollment = {
+            str(item["enrollment_id"]): item for item in cohort_records
+        }
         samples = []
         integrity_failures = 0
+        cohort_integrity_failures = 0
+        cohort_missing = 0
+        cohort_release_eligible = 0
+        market_counts: Counter[str] = Counter()
+        asset_counts: Counter[str] = Counter()
+        horizon_counts: Counter[str] = Counter()
         for enrollment in enrollments:
+            record_integrity_failed = not bool(
+                enrollment.get("signal_snapshot_integrity_verified")
+            )
+            cohort_record = cohort_by_enrollment.get(str(enrollment["id"]))
+            cohort_verification = self.verify_cohort(cohort_record, enrollment)
+            cohort_verified = bool(cohort_verification.get("verified"))
+            if cohort_record is None:
+                cohort_missing += 1
+            if not cohort_verified:
+                cohort_integrity_failures += 1
+                record_integrity_failed = True
+            else:
+                cohort_release_eligible += int(bool(cohort_record.get("release_eligible")))
+                market_counts[str(cohort_record.get("market_primary") or "unknown")] += 1
+                asset_counts[str(cohort_record.get("asset_class") or "unknown")] += 1
+                horizon_counts[str(cohort_record.get("horizon") or "unknown")] += 1
             if enrollment.get("status") != "observed":
-                if not enrollment.get("signal_snapshot_integrity_verified"):
+                if record_integrity_failed:
                     integrity_failures += 1
                 continue
             enrollment_verification = self.verify_enrollment(enrollment)
             enrollment_verified = bool(enrollment_verification.get("verified"))
             if not enrollment_verified:
-                integrity_failures += 1
+                record_integrity_failed = True
             if not enrollment.get("last_evidence_id"):
+                integrity_failures += 1
                 continue
             evidence = self.repository.get_evidence(
                 str(enrollment["run_id"]),
@@ -651,6 +1025,7 @@ class StrategyShadowOutcomeService:
             )
             payload = (evidence or {}).get("payload") or {}
             binding = payload.get("strategy_binding") or {}
+            cohort_binding = payload.get("cohort_binding") or {}
             evidence_verified = bool(
                 evidence
                 and evidence.get("integrity_verified")
@@ -659,6 +1034,12 @@ class StrategyShadowOutcomeService:
                 and binding.get("manifest_sha256") == enrollment.get("manifest_sha256")
                 and binding.get("signal_snapshot_sha256") == enrollment.get("signal_snapshot_sha256")
                 and enrollment_verified
+                and cohort_verified
+                and cohort_binding.get("cohort_id") == (cohort_record or {}).get("id")
+                and cohort_binding.get("cohort_sha256")
+                == (cohort_record or {}).get("cohort_sha256")
+                and cohort_binding.get("taxonomy_id") == COHORT_TAXONOMY_ID
+                and cohort_binding.get("taxonomy_version") == COHORT_TAXONOMY_VERSION
             )
             score = payload.get("score") or {}
             observed = payload.get("observed") or {}
@@ -677,8 +1058,11 @@ class StrategyShadowOutcomeService:
                 )
             )
             evidence_verified = bool(evidence_verified and schema_valid)
-            if not evidence_verified and enrollment_verified:
+            if not evidence_verified:
+                record_integrity_failed = True
+            if record_integrity_failed:
                 integrity_failures += 1
+            cohort_payload = (cohort_record or {}).get("cohort") or {}
             samples.append({
                 "enrollment_id": enrollment["id"],
                 "run_id": enrollment["run_id"],
@@ -699,11 +1083,27 @@ class StrategyShadowOutcomeService:
                 "evidence_id": evidence.get("id") if evidence else None,
                 "payload_sha256": evidence.get("payload_sha256") if evidence else None,
                 "integrity_verified": evidence_verified,
+                "cohort_integrity_verified": cohort_verified,
+                "cohort": {
+                    "taxonomy": cohort_payload.get("taxonomy") or {},
+                    "dimensions": cohort_payload.get("dimensions") or {},
+                    "keys": cohort_payload.get("keys") or {},
+                    "release_classification": (
+                        cohort_payload.get("release_classification") or {}
+                    ),
+                },
             })
-        aggregate = build_shadow_aggregate(
+        classification_complete = bool(
+            scan_complete
+            and len(cohort_records) == len(enrollments)
+            and cohort_missing == 0
+            and cohort_integrity_failures == 0
+        )
+        aggregate = build_segmented_shadow_aggregate(
             samples,
             integrity_failures=integrity_failures,
             scan_complete=scan_complete,
+            classification_complete=classification_complete,
         )
         return {
             "schema_version": SHADOW_REPORT_VERSION,
@@ -723,24 +1123,37 @@ class StrategyShadowOutcomeService:
                 "non_overlap_unit": "strategy_version+fund_code+horizon",
                 "selection": "chronological_first_signal_after_previous_observed_window",
             },
+            "cohort_binding": {
+                "taxonomy_id": COHORT_TAXONOMY_ID,
+                "taxonomy_version": COHORT_TAXONOMY_VERSION,
+                "bound_count": len(cohort_records),
+                "missing_count": cohort_missing,
+                "integrity_failure_count": cohort_integrity_failures,
+                "release_eligible_count": cohort_release_eligible,
+                "classification_complete": classification_complete,
+                "market_counts": dict(sorted(market_counts.items())),
+                "asset_class_counts": dict(sorted(asset_counts.items())),
+                "horizon_counts": dict(sorted(horizon_counts.items())),
+            },
             "observation": {
                 "observed_count": len(samples),
                 "release_grade_count": aggregate["release_grade_count"],
                 "distinct_release_grade_funds": aggregate["distinct_release_grade_funds"],
                 "integrity_failure_count": integrity_failures,
+                "observed_cohort_count": aggregate["observed_cohort_count"],
+                "unclassified_observed_count": aggregate["unclassified_observed_count"],
             },
             "disclosure_gate": {
                 "aggregate_available": aggregate["aggregate_available"],
                 "minimum_release_grade_outcomes": MIN_RELEASE_GRADE_OUTCOMES,
                 "minimum_distinct_funds": MIN_DISTINCT_FUNDS,
-                "reason": (
-                    None
-                    if aggregate["aggregate_available"]
-                    else "样本数、基金覆盖、全量扫描或完整性未达披露门槛，不展示胜率和平均收益。"
-                ),
+                "comparability_unit": "horizon+market+asset_class+vehicle_type",
+                "cross_cohort_pooling": "forbidden",
+                "reason": aggregate["reason"],
             },
             "metrics": aggregate["metrics"],
+            "segments": aggregate["segments"],
             "samples": samples[: max(1, min(int(limit), 500))],
             "release_effect": "none_manual_review_required",
-            "policy": "Shadow Outcome 只是按策略精确版本系统性积累的后验证据；未达披露门槛不返回汇总绩效，达到门槛也不会自动改变策略发布状态或保证未来收益。",
+            "policy": "Shadow Outcome 只在预测周期、市场、资产类别和基金载体一致的 Cohort 内披露绩效；不同 Cohort 禁止池化，达到门槛也不会自动改变策略发布状态或保证未来收益。",
         }

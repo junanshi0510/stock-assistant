@@ -4061,6 +4061,17 @@ tbody tr:hover { background: #f0f8f6; }
 .agent-shadow-enrollment b { display: block; margin-top: 3px; font-size: 11px; line-height: 1.4; }
 .agent-shadow-enrollment small { margin-top: 3px; color: var(--muted); font-size: 9.5px; line-height: 1.45; overflow-wrap: anywhere; }
 .agent-shadow-integrity .ghost { margin-top: 6px; min-height: 28px; }
+.agent-shadow-cohort { display: grid; grid-template-columns: auto minmax(0, 1.2fr) minmax(0, 1.1fr) minmax(0, 1fr) auto; align-items: center; gap: 11px; margin-top: 8px; padding: 11px 12px; border-left: 3px solid #60737b; background: #f4f7f8; }
+.agent-shadow-cohort.complete { border-left-color: #087d68; background: #eef8f6; }
+.agent-shadow-cohort.restricted { border-left-color: #956300; background: #fff9ea; }
+.agent-shadow-cohort > svg { color: #34656a; }
+.agent-shadow-cohort > div { min-width: 0; }
+.agent-shadow-cohort span,
+.agent-shadow-cohort small { display: block; }
+.agent-shadow-cohort span { color: var(--faint); font-size: 9px; }
+.agent-shadow-cohort b { display: block; margin-top: 3px; font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
+.agent-shadow-cohort small { margin-top: 3px; color: var(--muted); font-size: 9.5px; line-height: 1.45; overflow-wrap: anywhere; }
+.agent-shadow-cohort .ghost { min-height: 30px; white-space: nowrap; }
 .agent-strategy-summary { display: grid; grid-template-columns: 1.25fr repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 16px; }
 .agent-strategy-summary > div { min-width: 0; min-height: 90px; padding: 11px; border-left: 2px solid var(--border-strong); background: #f8fafb; }
 .agent-strategy-summary > div.decision.positive { border-left-color: #0f766e; background: #eef8f6; }
@@ -4227,6 +4238,10 @@ tbody tr:hover { background: #f0f8f6; }
   .agent-strategy-release > div:last-child { grid-column: 2; }
   .agent-shadow-enrollment { grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr); }
   .agent-shadow-integrity { grid-column: 2 / -1; }
+  .agent-shadow-cohort { grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr); }
+  .agent-shadow-cohort > div:last-of-type,
+  .agent-shadow-cohort > button { grid-column: 2 / -1; }
+  .agent-shadow-cohort > button { justify-self: start; }
   .agent-personal-action { grid-template-columns: 1fr; }
   .agent-personal-market { grid-template-columns: 1fr; }
   .agent-market-summary { grid-template-columns: auto 1fr 1fr; }
@@ -4291,6 +4306,10 @@ tbody tr:hover { background: #f0f8f6; }
   .agent-shadow-enrollment { grid-template-columns: 1fr; }
   .agent-shadow-enrollment > svg { display: none; }
   .agent-shadow-integrity { grid-column: auto; }
+  .agent-shadow-cohort { grid-template-columns: 1fr; }
+  .agent-shadow-cohort > svg { display: none; }
+  .agent-shadow-cohort > div:last-of-type,
+  .agent-shadow-cohort > button { grid-column: auto; }
   .agent-personal-metrics,
   .agent-personal-gates,
   .agent-outcome-summary,
