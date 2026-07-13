@@ -8,6 +8,10 @@ WorkingDirectory=/opt/stock-assistant/backend
 Environment="PYTHONUNBUFFERED=1"
 Environment="ALLOWED_ORIGINS=https://your-domain.com"
 EnvironmentFile=-/etc/stock-assistant/stock-assistant.env
+# 2-core / 4 GB host: keep real-data Agent batches at two concurrent Run lanes.
+Environment="AGENT_WORKER_CONCURRENCY=2"
+Environment="AGENT_MAX_BATCH_SIZE=6"
+Environment="AGENT_MAX_PENDING_RUNS=20"
 # Enable screenshot OCR import only after creating an Alibaba Cloud OCR AccessKey.
 # Environment="ALIBABA_CLOUD_ACCESS_KEY_ID=your-access-key-id"
 # Environment="ALIBABA_CLOUD_ACCESS_KEY_SECRET=your-access-key-secret"

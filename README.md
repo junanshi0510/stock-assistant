@@ -8,6 +8,16 @@
 
 ## 最近更新
 
+### 2026-07-13：投资 Agent 批量基金研究
+
+- Agent 新增父级 Batch，单次支持 2-6 只不同基金；批次和全部子 Run 在同一个 SQLite 事务内创建，重复提交由 Batch 级 `Idempotency-Key` 去重。
+- 新增 `POST/GET /api/v1/agent/batches`、`GET /api/v1/agent/batches/{batch_id}` 和批次取消接口。每只基金继续使用原有 Run、Step、Evidence、Claim 与追加式审计链，不复制或弱化单基金证据契约。
+- 内置 Worker 支持受控并发，默认 2 路、最多 4 路；2 核服务器可让多个真实数据任务并行推进，同时保留全局活动任务上限和单批大小门禁。
+- 批次结果逐行展示基金状态、市场、风险、研究动作、近一年收益、当前回撤、新闻与模型覆盖；点击任一行进入该基金完整 Evidence、Audit 和 Outcome 详情。
+- 跨基金重合度只使用本批次成功获取的前 N 大真实披露持仓，按共同持仓较小净值占比求和并标记为“重合下界”；未披露、未覆盖和披露日期差异不推断。
+- 批次不会把同一笔计划金额复制给多只基金，也不会把缺失模型结果用模板补齐。金额仍由每只基金的个人组合风险门禁单独决定。
+- 本次后端全量回归为 200 项；真实批次 `013403 + 014089` 两条 Worker 通道同时启动，市场情报覆盖 2/2，桌面端和 390px 手机端无横向溢出。
+
 ### 2026-07-13：证据约束的大模型基金研判
 
 - 新增提供商中立的 LLM Gateway，支持 OpenAI Responses API、阿里云百炼 DashScope OpenAI 兼容接口及其他经批准的 OpenAI-compatible 服务；提供商、模型和 API Key 必须显式配置。
@@ -98,7 +108,7 @@
 | 工作区 | 主要能力 |
 |---|---|
 | 投资总览 | 汇总真实持仓、投资约束、组合风险、数据缺口和市场机会日报，生成有优先级的复盘任务 |
-| 投资 Agent | 创建可恢复的基金深度研究 Run，识别内地/港股/美股/全球基金，编排真实市场/持仓/新闻工具、确定性风险门禁和可选 LLM 证据合成，保存 Step、Evidence、Claim、模型调用摘要和追加式审计链 |
+| 投资 Agent | 创建可恢复的单基金 Run 或 2-6 只基金 Batch，识别内地/港股/美股/全球基金，编排真实市场/持仓/新闻工具、跨基金披露持仓重合、确定性风险门禁和可选 LLM 证据合成，保存 Step、Evidence、Claim、模型调用摘要和追加式审计链 |
 | 基金中心 | 基金发现与搜索、真实净值分析、盘中估值历史到达、回撤与恢复、同类排名、替代品、分红、定期报告持仓、披露变化、多基金比较与重合度 |
 | 股票与板块 | A 股/港股/美股实时价位历史到达、热门榜、行业与概念、个股技术面和基本面、多股比较、批量筛选、新闻情绪与历史信号回测 |
 | 我的组合 | 手动、文本、CSV/XLSX 和 OCR 持仓导入，基金名称反查、组合体检、穿透暴露、交易流水、FIFO 成本、XIRR、行为复盘、快照归因和仓位纪律 |
@@ -222,8 +232,10 @@ npm run dev
 | `ALLOWED_ORIGINS` | FastAPI CORS 允许来源 |
 | `AGENT_DB_PATH` | Agent 迁移期 SQLite 文件路径；默认复用 `backend/stock_assistant.db` |
 | `AGENT_MAX_PENDING_RUNS` | Agent 排队和运行任务总上限；默认 `20` |
+| `AGENT_MAX_BATCH_SIZE` | 单个基金研究批次上限；默认 `6`，代码硬上限 `8` |
 | `AGENT_WORKER_ENABLED` | 是否启动内置持久化 Worker；默认开启 |
 | `AGENT_WORKER_POLL_SECONDS` | 内置 Worker 轮询间隔；默认 `0.75` 秒 |
+| `AGENT_WORKER_CONCURRENCY` | 单进程 Run Worker 并发数；默认 `2`，代码硬上限 `4` |
 | `FUND_HTTP_TRUST_ENV` | 基金请求是否使用环境代理；设为 `0`/`direct` 时强制直连 |
 | `LLM_PROVIDER` | `openai`、`dashscope` 或 `openai_compatible`；不配置时禁用模型合成 |
 | `LLM_MODEL` | 明确批准的模型 ID，不提供隐式默认值 |
@@ -244,6 +256,7 @@ npm run dev
 backend/
   main.py                  FastAPI 启动与路由装配
   agent/
+    batches.py             批次状态、逐只决策矩阵与披露持仓重合下界
     comparison.py          基于持久化结果和 Evidence 门禁的父子 Run 对比
     llm_gateway.py         提供商中立模型网关、重试与调用元数据
     portfolio_context.py   用户已确认持仓与投资约束的最小只读上下文
@@ -251,14 +264,14 @@ backend/
     repository.py          Run、Step、Evidence、Claim 与 Audit 持久化
     synthesis.py           证据上下文、结构化模型协议与质量门禁
     workflow.py            确定性基金研究工作流、超时与取消
-    worker.py              可恢复的迁移期单进程 Worker
+    worker.py              可恢复、受控并发的迁移期单进程 Worker
   strategies/
     asset_level_recurrence.py   股票实时价/基金估值历史到达指标 1.0.0
     fund_conditioned_forward.py  基金当前条件历史前瞻策略 1.0.0
     fund_market_profile.py        基金跨市场画像与 QDII 风险口径 1.0.0
     personalized_fund_decision.py 持仓感知的个人风险门禁与金额策略 1.0.0
   routers/
-    agent.py               Agent Run、重跑对比、Evidence 和 Audit API
+    agent.py               Agent Batch/Run、重跑对比、Evidence 和 Audit API
     market.py              股票、板块、行情和市场日报接口
     funds.py               基金发现、研究、比较和替代品接口
     portfolio.py           持仓、交易、OCR、复盘和提醒接口

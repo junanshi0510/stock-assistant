@@ -20,8 +20,12 @@ import {
   X,
 } from 'lucide-react'
 import {
+  cancelAgentBatch,
   cancelAgentRun,
+  createFundResearchBatch,
   createFundResearchRun,
+  fetchAgentBatch,
+  fetchAgentBatches,
   fetchAgentModelStatus,
   fetchAgentAudit,
   fetchAgentEvidence,
@@ -40,9 +44,17 @@ import PersonalizedDecisionView from '../components/PersonalizedDecisionView'
 import FundMarketProfileView from '../components/FundMarketProfileView'
 import DecisionOutcomeView from '../components/DecisionOutcomeView'
 import AISynthesisView, { ModelStatusStrip } from '../components/AISynthesisView'
+import AgentBatchView from '../components/AgentBatchView'
 
 const TERMINAL = new Set(['completed', 'partial', 'failed', 'cancelled', 'abstained'])
 const EMPTY_HISTORY_FILTERS = { code: '', status: '' }
+
+function parseBatchCodes(value) {
+  const tokens = String(value || '').split(/[\s,，;；]+/).map((item) => item.trim()).filter(Boolean)
+  const invalid = tokens.filter((item) => !/^\d{6}$/.test(item))
+  const codes = [...new Set(tokens.filter((item) => /^\d{6}$/.test(item)))]
+  return { codes, invalid, duplicateCount: tokens.length - invalid.length - codes.length }
+}
 
 const STATUS = {
   queued: ['等待执行', 'queued'],
@@ -403,7 +415,9 @@ function StepState({ step }) {
 }
 
 export default function AgentTab() {
+  const [researchMode, setResearchMode] = useState('single')
   const [code, setCode] = useState('001480')
+  const [batchCodes, setBatchCodes] = useState('')
   const [months, setMonths] = useState(60)
   const [includeEstimate, setIncludeEstimate] = useState(false)
   const [includeDisclosure, setIncludeDisclosure] = useState(true)
@@ -414,6 +428,9 @@ export default function AgentTab() {
   const [question, setQuestion] = useState('结合未来 3-12 个月的市场、底层持仓、新闻和我的组合约束，我现在应该如何管理这只基金？')
   const [plannedAmount, setPlannedAmount] = useState('')
   const [run, setRun] = useState(null)
+  const [batch, setBatch] = useState(null)
+  const [batchHistory, setBatchHistory] = useState([])
+  const [loadingBatch, setLoadingBatch] = useState(false)
   const [loading, setLoading] = useState(false)
   const [history, setHistory] = useState({ items: [], next_cursor: null, has_more: false })
   const [loadingHistory, setLoadingHistory] = useState(false)
@@ -436,6 +453,7 @@ export default function AgentTab() {
   const [outcomeEligibility, setOutcomeEligibility] = useState(null)
   const [loadingOutcomeSchedule, setLoadingOutcomeSchedule] = useState(false)
   const [strategyShadowOutcome, setStrategyShadowOutcome] = useState(null)
+  const batchCodeState = useMemo(() => parseBatchCodes(batchCodes), [batchCodes])
 
   async function loadModelStatus() {
     setLoadingModelStatus(true)
@@ -448,6 +466,30 @@ export default function AgentTab() {
       setModelStatusError(requestError.message || '模型网关状态获取失败')
     } finally {
       setLoadingModelStatus(false)
+    }
+  }
+
+  async function loadBatch(batchId, { quiet = false } = {}) {
+    if (!batchId) return
+    if (!quiet) setLoadingBatch(true)
+    try {
+      const data = await fetchAgentBatch(batchId)
+      setBatch(data)
+      setError('')
+      localStorage.setItem('investment-agent-batch-id', data.id)
+    } catch (requestError) {
+      if (!quiet) setError(requestError.message || '批量 Agent 任务获取失败')
+    } finally {
+      if (!quiet) setLoadingBatch(false)
+    }
+  }
+
+  async function loadBatchHistory() {
+    try {
+      const data = await fetchAgentBatches({ limit: 6 })
+      setBatchHistory(data.items || [])
+    } catch (requestError) {
+      setError(requestError.message || '批量 Agent 历史获取失败')
     }
   }
 
@@ -543,9 +585,14 @@ export default function AgentTab() {
   }
 
   useEffect(() => {
+    const savedMode = localStorage.getItem('investment-agent-mode')
+    if (savedMode === 'batch') setResearchMode('batch')
     const savedRunId = localStorage.getItem('investment-agent-run-id')
     if (savedRunId) loadRun(savedRunId)
+    const savedBatchId = localStorage.getItem('investment-agent-batch-id')
+    if (savedBatchId) loadBatch(savedBatchId)
     loadHistory()
+    loadBatchHistory()
     loadModelStatus()
   }, [])
 
@@ -554,6 +601,18 @@ export default function AgentTab() {
     const timer = window.setInterval(() => loadRun(run.id, { quiet: true }), 1200)
     return () => window.clearInterval(timer)
   }, [run?.id, run?.status])
+
+  useEffect(() => {
+    if (!batch?.id || TERMINAL.has(batch.status)) return undefined
+    const timer = window.setInterval(() => loadBatch(batch.id, { quiet: true }), 1500)
+    return () => window.clearInterval(timer)
+  }, [batch?.id, batch?.status])
+
+  useEffect(() => {
+    if (!batch?.id || !TERMINAL.has(batch.status)) return
+    loadBatchHistory()
+    loadHistory()
+  }, [batch?.id, batch?.status])
 
   useEffect(() => {
     if (run?.id && TERMINAL.has(run.status)) {
@@ -610,6 +669,7 @@ export default function AgentTab() {
     }
     setLoading(true)
     setError('')
+    setBatch(null)
     setRun(null)
     setSelectedEvidence(null)
     setAudit(null)
@@ -639,6 +699,70 @@ export default function AgentTab() {
       setError(requestError.message || '基金研究任务创建失败')
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function startBatchResearch() {
+    const { codes, invalid } = batchCodeState
+    if (invalid.length > 0) {
+      setError(`无法识别这些基金代码：${invalid.slice(0, 3).join('、')}。请只输入 6 位基金代码。`)
+      return
+    }
+    if (codes.length < 2 || codes.length > 6) {
+      setError('一次批量研究需要 2-6 只不同基金。')
+      return
+    }
+    const cleanQuestion = question.replace(/\s+/g, ' ').trim()
+    if (cleanQuestion.length < 8) {
+      setError('请用至少 8 个字符说明本次要解决的投资问题。')
+      return
+    }
+    setLoadingBatch(true)
+    setError('')
+    setBatch(null)
+    setRun(null)
+    setSelectedEvidence(null)
+    setAudit(null)
+    setComparison(null)
+    setEvaluations([])
+    setOutcomeSchedule(null)
+    setOutcomeEligibility(null)
+    setStrategyShadowOutcome(null)
+    try {
+      const data = await createFundResearchBatch({
+        codes,
+        months: Number(months),
+        include_estimate: includeEstimate,
+        include_disclosure_changes: includeDisclosure,
+        include_alternatives: includeAlternatives,
+        include_market_intelligence: includeMarketIntelligence,
+        include_ai_synthesis: includeAiSynthesis,
+        include_portfolio_context: includePortfolioContext,
+        question: cleanQuestion,
+        alternative_limit: 5,
+      })
+      setBatch(data.batch)
+      localStorage.setItem('investment-agent-batch-id', data.batch.id)
+      loadBatchHistory()
+      loadHistory()
+    } catch (requestError) {
+      setError(requestError.message || '批量基金研究任务创建失败')
+    } finally {
+      setLoadingBatch(false)
+    }
+  }
+
+  async function cancelBatch() {
+    if (!batch?.id) return
+    setLoadingBatch(true)
+    try {
+      const data = await cancelAgentBatch(batch.id)
+      setBatch(data.batch)
+      setError('')
+    } catch (requestError) {
+      setError(requestError.message || '取消批量 Agent 任务失败')
+    } finally {
+      setLoadingBatch(false)
     }
   }
 
@@ -781,36 +905,115 @@ export default function AgentTab() {
             <RefreshCw size={14} className={loadingModelStatus ? 'spin-icon' : ''} aria-hidden="true" />核验模型
           </button>
         </div>
-        <div className="form-row">
-          <label className="field">
-            <span>基金代码</span>
-            <input value={code} inputMode="numeric" maxLength={6} onChange={(event) => setCode(event.target.value)} placeholder="例如 001480" />
-          </label>
-          <label className="field">
-            <span>净值研究窗口</span>
-            <select value={months} onChange={(event) => setMonths(Number(event.target.value))}>
-              <option value={12}>12 个月</option>
-              <option value={24}>24 个月</option>
-              <option value={36}>36 个月</option>
-              <option value={60}>60 个月</option>
-            </select>
-          </label>
-          <label className="field">
-            <span>本次计划投入</span>
-            <input
-              value={plannedAmount}
-              type="number"
-              min="0"
-              step="100"
-              placeholder="未填则用月度预算"
-              onChange={(event) => setPlannedAmount(event.target.value)}
-            />
-          </label>
-          <button onClick={startResearch} disabled={loading || (run && !TERMINAL.has(run.status))}>
-            <Play size={16} aria-hidden="true" />
-            <span>{loading ? '正在创建' : '开始研究'}</span>
-          </button>
+        <div className="agent-research-mode" role="tablist" aria-label="基金研究模式">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={researchMode === 'single'}
+            className={researchMode === 'single' ? 'active' : ''}
+            onClick={() => {
+              setResearchMode('single')
+              localStorage.setItem('investment-agent-mode', 'single')
+            }}
+          ><FileSearch size={15} aria-hidden="true" />单基金</button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={researchMode === 'batch'}
+            className={researchMode === 'batch' ? 'active' : ''}
+            onClick={() => {
+              setResearchMode('batch')
+              localStorage.setItem('investment-agent-mode', 'batch')
+            }}
+          ><Layers3 size={15} aria-hidden="true" />批量基金</button>
         </div>
+
+        {researchMode === 'single' ? (
+          <div className="form-row">
+            <label className="field">
+              <span>基金代码</span>
+              <input value={code} inputMode="numeric" maxLength={6} onChange={(event) => setCode(event.target.value)} placeholder="例如 001480" />
+            </label>
+            <label className="field">
+              <span>净值研究窗口</span>
+              <select value={months} onChange={(event) => setMonths(Number(event.target.value))}>
+                <option value={12}>12 个月</option>
+                <option value={24}>24 个月</option>
+                <option value={36}>36 个月</option>
+                <option value={60}>60 个月</option>
+              </select>
+            </label>
+            <label className="field">
+              <span>本次计划投入</span>
+              <input
+                value={plannedAmount}
+                type="number"
+                min="0"
+                step="100"
+                placeholder="未填则用月度预算"
+                onChange={(event) => setPlannedAmount(event.target.value)}
+              />
+            </label>
+            <button onClick={startResearch} disabled={loading || (run && !TERMINAL.has(run.status))}>
+              <Play size={16} aria-hidden="true" />
+              <span>{loading ? '正在创建' : '开始研究'}</span>
+            </button>
+          </div>
+        ) : (
+          <div className="agent-batch-launcher">
+            <label className="agent-batch-code-field">
+              <span>基金代码 · 每行一个，最多 6 只</span>
+              <textarea
+                value={batchCodes}
+                inputMode="numeric"
+                rows={3}
+                onChange={(event) => setBatchCodes(event.target.value)}
+                placeholder={'例如：\n013403\n014089\n001056'}
+              />
+            </label>
+            <div className="agent-batch-code-preview" aria-live="polite">
+              <div>
+                {batchCodeState.codes.map((item) => <span key={item}>{item}</span>)}
+                {batchCodeState.codes.length === 0 && <small>支持换行、空格或逗号分隔</small>}
+              </div>
+              <b>{batchCodeState.codes.length}/6</b>
+              {batchCodeState.duplicateCount > 0 && <small>已自动去除 {batchCodeState.duplicateCount} 个重复代码</small>}
+              {batchCodeState.invalid.length > 0 && <small className="invalid">存在无法识别的内容</small>}
+            </div>
+            <div className="form-row agent-batch-settings">
+              <label className="field">
+                <span>统一研究窗口</span>
+                <select value={months} onChange={(event) => setMonths(Number(event.target.value))}>
+                  <option value={12}>12 个月</option>
+                  <option value={24}>24 个月</option>
+                  <option value={36}>36 个月</option>
+                  <option value={60}>60 个月</option>
+                </select>
+              </label>
+              <div className="agent-batch-budget-policy">
+                <ShieldCheck size={16} aria-hidden="true" />
+                <span><b>批次不复制单笔金额</b><small>逐只研究后再由组合风险门禁决定金额</small></span>
+              </div>
+              <button
+                onClick={startBatchResearch}
+                disabled={
+                  loadingBatch
+                  || (batch && !TERMINAL.has(batch.status))
+                  || batchCodeState.codes.length < 2
+                  || batchCodeState.codes.length > 6
+                  || batchCodeState.invalid.length > 0
+                }
+              >
+                <Play size={16} aria-hidden="true" />
+                <span>{loadingBatch
+                  ? '正在创建'
+                  : batchCodeState.codes.length < 2
+                    ? '至少输入 2 只基金'
+                    : `研究 ${batchCodeState.codes.length} 只基金`}</span>
+              </button>
+            </div>
+          </div>
+        )}
         <label className="agent-question-field">
           <span><MessageSquareText size={14} aria-hidden="true" />这次要解决的投资问题</span>
           <textarea
@@ -818,7 +1021,9 @@ export default function AgentTab() {
             maxLength={500}
             rows={3}
             onChange={(event) => setQuestion(event.target.value)}
-            placeholder="例如：我已经持有这只基金，未来 6 个月应继续持有、分批增加，还是降低暴露？"
+            placeholder={researchMode === 'batch'
+              ? '例如：比较这些基金的风险、底层持仓重合和当前证据，分别应该持有、等待还是降低暴露？'
+              : '例如：我已经持有这只基金，未来 6 个月应继续持有、分批增加，还是降低暴露？'}
           />
           <small>{question.trim().length}/500</small>
         </label>
@@ -831,6 +1036,47 @@ export default function AgentTab() {
           <label><input type="checkbox" checked={includeAlternatives} onChange={(event) => setIncludeAlternatives(event.target.checked)} />同类替代品</label>
         </div>
       </section>
+
+      {(batch || batchHistory.length > 0) && (
+        <section className="agent-batch-history" aria-label="批量研究历史">
+          <div className="agent-section-head">
+            <div><span className="eyebrow">Batch History</span><h3>最近批量任务</h3></div>
+            <button className="ghost" type="button" onClick={loadBatchHistory} title="刷新批量任务">
+              <RefreshCw size={14} aria-hidden="true" />刷新
+            </button>
+          </div>
+          <div className="agent-batch-history-list">
+            {batchHistory.map((item) => {
+              const [label, tone] = statusMeta(item.status)
+              return (
+                <button
+                  type="button"
+                  key={item.id}
+                  className={item.id === batch?.id ? 'selected' : ''}
+                  onClick={() => {
+                    setResearchMode('batch')
+                    localStorage.setItem('investment-agent-mode', 'batch')
+                    loadBatch(item.id)
+                  }}
+                >
+                  <Layers3 size={15} aria-hidden="true" />
+                  <span><b>{(item.items || []).map((row) => row.code).join(' · ')}</b><small>{timeText(item.created_at)}</small></span>
+                  <em className={`agent-status ${tone}`}>{label} {item.progress?.terminal || 0}/{item.progress?.total || 0}</em>
+                </button>
+              )
+            })}
+          </div>
+        </section>
+      )}
+
+      <AgentBatchView
+        batch={batch}
+        loading={loadingBatch}
+        selectedRunId={run?.id || ''}
+        onRefresh={() => loadBatch(batch?.id)}
+        onCancel={cancelBatch}
+        onSelectRun={loadRun}
+      />
 
       <section className="agent-history-panel" aria-label="Agent 运行历史">
         <div className="agent-section-head">
@@ -899,7 +1145,7 @@ export default function AgentTab() {
               >
                 <span className="agent-history-main">
                   <b>{item.summary?.code || item.input?.code || '-'} {item.summary?.name || '基金研究'}</b>
-                  <small>{item.parent_run_id ? '重跑 · ' : ''}{timeText(item.completed_at || item.created_at)}</small>
+                  <small>{item.input?.batch_id ? '批次 · ' : item.parent_run_id ? '重跑 · ' : ''}{timeText(item.completed_at || item.created_at)}</small>
                 </span>
                 <span className={`agent-status ${tone}`}>{label}</span>
               </button>
@@ -934,6 +1180,7 @@ export default function AgentTab() {
               <span className={`agent-status ${runStatusTone}`}>{runStatusLabel}</span>
               <h3>{result?.fund ? `${result.fund.code} ${result.fund.name}` : `${run.input?.code || '-'} 基金研究`}</h3>
               <small>Run ID: {run.id}</small>
+              {run.input?.batch_id && <small>所属 Batch: {run.input.batch_id}</small>}
               {run.parent_run_id && <small>来源 Run: {run.parent_run_id}</small>}
             </div>
             <div className="agent-run-actions">

@@ -14,9 +14,10 @@ from fastapi import APIRouter, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
 
 import storage
+from agent.batches import summarize_batch
 from agent.comparison import compare_run_results
 from agent.outcomes import DecisionOutcomeService, OutcomeEvaluationError
-from agent.repository import RUN_TERMINAL_STATUSES
+from agent.repository import AgentQueueCapacityError, RUN_TERMINAL_STATUSES
 from agent.worker import (
     registry,
     repository,
@@ -67,6 +68,45 @@ class CreateAgentRunRequest(BaseModel):
         return question
 
 
+class CreateAgentBatchRequest(BaseModel):
+    intent: Literal["fund_deep_research"] = "fund_deep_research"
+    codes: list[str] = Field(min_length=2, max_length=8)
+    months: int = Field(default=60, ge=6, le=120)
+    include_estimate: bool = False
+    include_disclosure_changes: bool = True
+    include_alternatives: bool = True
+    include_market_intelligence: bool = True
+    include_ai_synthesis: bool = True
+    include_portfolio_context: bool = True
+    question: str = Field(
+        default="比较这些基金未来 3-12 个月的市场证据、底层持仓、风险和组合重合度，我应该如何逐只管理？",
+        min_length=8,
+        max_length=500,
+    )
+    alternative_limit: int = Field(default=5, ge=3, le=8)
+    intelligence_holding_limit: int = Field(default=4, ge=2, le=6)
+    news_per_holding: int = Field(default=3, ge=1, le=5)
+
+    @field_validator("codes")
+    @classmethod
+    def validate_codes(cls, values: list[str]) -> list[str]:
+        codes = [str(value or "").strip() for value in values]
+        invalid = [code for code in codes if not re.fullmatch(r"\d{6}", code)]
+        if invalid:
+            raise ValueError(f"基金代码需要是 6 位数字:{','.join(invalid[:3])}")
+        if len(codes) != len(set(codes)):
+            raise ValueError("批量研究基金代码不能重复")
+        return codes
+
+    @field_validator("question")
+    @classmethod
+    def validate_question(cls, value: str) -> str:
+        question = re.sub(r"\s+", " ", str(value or "")).strip()
+        if len(question) < 8:
+            raise ValueError("研究目标至少需要 8 个字符")
+        return question
+
+
 class OutcomeScheduleRequest(BaseModel):
     enabled: bool
     interval_hours: int = Field(default=24, ge=12, le=168)
@@ -78,6 +118,13 @@ def _get_run_or_404(run_id: str) -> dict:
     if run is None:
         raise HTTPException(status_code=404, detail="Agent Run 不存在")
     return run
+
+
+def _get_batch_or_404(batch_id: str) -> dict:
+    batch = repository.get_batch(batch_id)
+    if batch is None:
+        raise HTTPException(status_code=404, detail="Agent Batch 不存在")
+    return batch
 
 
 def _encode_cursor(run: dict) -> str:
@@ -286,6 +333,91 @@ def create_agent_run(
     )
     start_worker()
     return {"created": created, "run": repository.get_run(run["id"])}
+
+
+@router.post("/batches", status_code=status.HTTP_202_ACCEPTED)
+def create_agent_batch(
+    request: CreateAgentBatchRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+):
+    if idempotency_key and len(idempotency_key) > 128:
+        raise HTTPException(status_code=400, detail="Idempotency-Key 不能超过 128 个字符")
+    if idempotency_key:
+        existing = repository.get_batch_by_idempotency_key("anonymous", idempotency_key)
+        if existing is not None:
+            return {"created": False, "batch": summarize_batch(existing)}
+
+    max_batch_size = max(2, min(8, int(os.getenv("AGENT_MAX_BATCH_SIZE", "6"))))
+    if len(request.codes) > max_batch_size:
+        raise HTTPException(
+            status_code=400,
+            detail=f"单批最多研究 {max_batch_size} 只基金；请拆分批次以保护真实数据源。",
+        )
+    max_pending = max(1, int(os.getenv("AGENT_MAX_PENDING_RUNS", "20")))
+    input_payload = request.model_dump()
+    profile = storage.get_investment_profile()
+    profile_version_id = (
+        str(profile.get("profile_version_id"))
+        if request.include_portfolio_context and profile.get("configured") and profile.get("profile_version_id")
+        else None
+    )
+    if profile_version_id:
+        input_payload["profile_version_id"] = profile_version_id
+    try:
+        batch, created = repository.create_batch(
+            request.intent,
+            input_payload,
+            tenant_id="public",
+            user_id="anonymous",
+            idempotency_key=idempotency_key,
+            profile_version_id=profile_version_id,
+            max_active_runs=max_pending,
+        )
+    except AgentQueueCapacityError as error:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"当前已有 {error.active} 个活动任务，本批需要 {error.requested} 个队列名额，"
+                f"超过系统上限 {error.maximum}。"
+            ),
+        ) from error
+    start_worker()
+    return {"created": created, "batch": summarize_batch(batch)}
+
+
+@router.get("/batches")
+def list_agent_batches(limit: int = Query(default=6, ge=1, le=20)):
+    items = [
+        summarize_batch(batch)
+        for batch in repository.list_batches(
+            tenant_id="public",
+            user_id="anonymous",
+            limit=limit,
+        )
+    ]
+    return {"items": items, "count": len(items)}
+
+
+@router.get("/batches/{batch_id}")
+def get_agent_batch(batch_id: str):
+    return summarize_batch(_get_batch_or_404(batch_id))
+
+
+@router.post("/batches/{batch_id}/cancel")
+def cancel_agent_batch(batch_id: str):
+    batch = _get_batch_or_404(batch_id)
+    requested = 0
+    for item in batch.get("items") or []:
+        run = item.get("run") or {}
+        if run.get("status") in RUN_TERMINAL_STATUSES:
+            continue
+        repository.request_cancel(str(run["id"]), actor_id="anonymous")
+        requested += 1
+    refreshed = repository.get_batch(batch_id)
+    return {
+        "cancel_requested_count": requested,
+        "batch": summarize_batch(refreshed or batch),
+    }
 
 
 @router.get("/runs")

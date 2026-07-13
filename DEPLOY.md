@@ -261,7 +261,30 @@ sudo systemctl status stock-assistant-api
 - 第一版只保存用户确认后的持仓结果，不长期保存原图。
 - 后续接入登录系统后，应把持仓表从默认用户迁移到真实 `user_id`。
 
-## 12. 启用证据约束的大模型研判
+## 12. 配置批量基金 Agent 容量
+
+2 核 4 GB 服务器建议保持以下配置：
+
+```ini
+Environment="AGENT_WORKER_CONCURRENCY=2"
+Environment="AGENT_MAX_BATCH_SIZE=6"
+Environment="AGENT_MAX_PENDING_RUNS=20"
+```
+
+- `AGENT_WORKER_CONCURRENCY` 是同时执行的单基金 Run 数，不是批次数。代码会把值限制在 `1-4`。
+- `AGENT_MAX_BATCH_SIZE` 默认允许一次提交 2-6 只基金，API 代码硬上限为 8。
+- `AGENT_MAX_PENDING_RUNS` 同时限制单基金任务和批次子任务，创建批次前会原子检查所需队列名额。
+- 单个基金的持仓/新闻工具内部还会使用短生命周期 I/O 线程；不要在 2 核机器上把 Run 并发直接提高到 4。
+
+修改后执行：
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart stock-assistant-api
+curl -s http://127.0.0.1:8000/api/v1/agent/batches?limit=1
+```
+
+## 13. 启用证据约束的大模型研判
 
 未配置模型时，Agent 会继续完成真实数据和确定性风险门禁，但明确显示
 `model_not_configured`，不会用模板文本冒充模型研判。

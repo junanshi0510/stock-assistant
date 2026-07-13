@@ -26,6 +26,16 @@ STEP_REUSABLE_STATUSES = {"succeeded", "partial"}
 STRATEGY_STATUSES = {"draft", "review", "shadow", "canary", "active", "paused", "retired"}
 
 
+class AgentQueueCapacityError(RuntimeError):
+    def __init__(self, *, active: int, requested: int, maximum: int) -> None:
+        self.active = int(active)
+        self.requested = int(requested)
+        self.maximum = int(maximum)
+        super().__init__(
+            f"活动任务 {self.active} + 本次 {self.requested} 超过队列上限 {self.maximum}"
+        )
+
+
 class _ClosingConnection(sqlite3.Connection):
     """Commit or roll back like sqlite's context manager, then always close."""
 
@@ -141,6 +151,35 @@ class AgentRepository:
 
                     CREATE INDEX IF NOT EXISTS idx_agent_runs_input
                     ON agent_runs(user_id, input_hash, status);
+
+                    CREATE TABLE IF NOT EXISTS agent_batches (
+                        id                TEXT PRIMARY KEY,
+                        tenant_id         TEXT NOT NULL,
+                        user_id           TEXT NOT NULL,
+                        intent            TEXT NOT NULL,
+                        input_json        TEXT NOT NULL,
+                        input_hash        TEXT NOT NULL,
+                        idempotency_key   TEXT,
+                        created_at        TEXT NOT NULL,
+                        updated_at        TEXT NOT NULL,
+                        UNIQUE(user_id, idempotency_key)
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_agent_batches_user
+                    ON agent_batches(tenant_id, user_id, created_at DESC);
+
+                    CREATE TABLE IF NOT EXISTS agent_batch_items (
+                        batch_id       TEXT NOT NULL REFERENCES agent_batches(id) ON DELETE CASCADE,
+                        run_id         TEXT NOT NULL UNIQUE REFERENCES agent_runs(id) ON DELETE CASCADE,
+                        sequence_no    INTEGER NOT NULL,
+                        code           TEXT NOT NULL,
+                        PRIMARY KEY (batch_id, run_id),
+                        UNIQUE(batch_id, sequence_no),
+                        UNIQUE(batch_id, code)
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_agent_batch_items_batch
+                    ON agent_batch_items(batch_id, sequence_no);
 
                     CREATE TABLE IF NOT EXISTS agent_steps (
                         id             TEXT PRIMARY KEY,
@@ -545,6 +584,14 @@ class AgentRepository:
         return item
 
     @staticmethod
+    def _batch_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        item = dict(row)
+        item["input"] = _load(item.pop("input_json", None), {})
+        return item
+
+    @staticmethod
     def _step_from_row(row: sqlite3.Row) -> dict[str, Any]:
         item = dict(row)
         item["input"] = _load(item.pop("input_json", None), {})
@@ -620,6 +667,195 @@ class AgentRepository:
             == item.get("cohort_sha256")
         )
         return item
+
+    def create_batch(
+        self,
+        intent: str,
+        input_payload: dict[str, Any],
+        *,
+        tenant_id: str = "public",
+        user_id: str = "anonymous",
+        idempotency_key: str | None = None,
+        profile_version_id: str | None = None,
+        max_active_runs: int | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        codes = [str(code).strip() for code in (input_payload.get("codes") or [])]
+        if len(codes) < 2:
+            raise ValueError("批量研究至少需要 2 只基金")
+        if len(codes) != len(set(codes)):
+            raise ValueError("批量研究基金代码不能重复")
+
+        normalized_input = _json(input_payload)
+        input_hash = hashlib.sha256(normalized_input.encode("utf-8")).hexdigest()
+        now = _utc_now()
+        batch_id = ""
+        created = False
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if idempotency_key:
+                existing = connection.execute(
+                    "SELECT id FROM agent_batches WHERE user_id=? AND idempotency_key=?",
+                    (user_id, idempotency_key),
+                ).fetchone()
+                if existing:
+                    batch_id = str(existing["id"])
+
+            if not batch_id:
+                if max_active_runs is not None:
+                    maximum = max(1, int(max_active_runs))
+                    active_row = connection.execute(
+                        "SELECT COUNT(*) AS count FROM agent_runs WHERE status IN ('queued', 'running')"
+                    ).fetchone()
+                    active = int(active_row["count"] if active_row else 0)
+                    if active + len(codes) > maximum:
+                        raise AgentQueueCapacityError(
+                            active=active,
+                            requested=len(codes),
+                            maximum=maximum,
+                        )
+                batch_id = _new_id("batch")
+                connection.execute(
+                    """
+                    INSERT INTO agent_batches (
+                        id, tenant_id, user_id, intent, input_json, input_hash,
+                        idempotency_key, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        batch_id,
+                        tenant_id,
+                        user_id,
+                        intent,
+                        normalized_input,
+                        input_hash,
+                        idempotency_key,
+                        now,
+                        now,
+                    ),
+                )
+                common_input = {
+                    key: value
+                    for key, value in input_payload.items()
+                    if key != "codes"
+                }
+                for sequence_no, code in enumerate(codes, start=1):
+                    run_id = _new_id("run")
+                    child_input = {
+                        **common_input,
+                        "code": code,
+                        "batch_id": batch_id,
+                    }
+                    normalized_child = _json(child_input)
+                    child_hash = hashlib.sha256(normalized_child.encode("utf-8")).hexdigest()
+                    connection.execute(
+                        """
+                        INSERT INTO agent_runs (
+                            id, tenant_id, user_id, intent, input_json, input_hash,
+                            idempotency_key, status, cancel_requested, created_at,
+                            updated_at, parent_run_id, profile_version_id
+                        ) VALUES (?, ?, ?, ?, ?, ?, NULL, 'queued', 0, ?, ?, NULL, ?)
+                        """,
+                        (
+                            run_id,
+                            tenant_id,
+                            user_id,
+                            intent,
+                            normalized_child,
+                            child_hash,
+                            now,
+                            now,
+                            profile_version_id,
+                        ),
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO agent_batch_items (batch_id, run_id, sequence_no, code)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (batch_id, run_id, sequence_no, code),
+                    )
+                    self._append_audit(
+                        connection,
+                        run_id,
+                        "run.created",
+                        {
+                            "intent": intent,
+                            "input_hash": child_hash,
+                            "status": "queued",
+                            "batch_id": batch_id,
+                            "batch_input_hash": input_hash,
+                            "batch_sequence_no": sequence_no,
+                            "profile_version_id": profile_version_id,
+                        },
+                        actor_type="user",
+                        actor_id=user_id,
+                    )
+                created = True
+        batch = self.get_batch(batch_id)
+        if batch is None:
+            raise RuntimeError(f"Agent Batch 创建后不可读取:{batch_id}")
+        return batch, created
+
+    def get_batch(self, batch_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            batch_row = connection.execute(
+                "SELECT * FROM agent_batches WHERE id=?",
+                (batch_id,),
+            ).fetchone()
+            batch = self._batch_from_row(batch_row)
+            if batch is None:
+                return None
+            rows = connection.execute(
+                """
+                SELECT runs.*, items.sequence_no AS batch_sequence_no,
+                       items.code AS batch_code
+                FROM agent_batch_items AS items
+                JOIN agent_runs AS runs ON runs.id=items.run_id
+                WHERE items.batch_id=?
+                ORDER BY items.sequence_no
+                """,
+                (batch_id,),
+            ).fetchall()
+        items = []
+        for row in rows:
+            run = self._run_from_row(row)
+            sequence_no = int(run.pop("batch_sequence_no"))
+            code = str(run.pop("batch_code"))
+            items.append({"sequence_no": sequence_no, "code": code, "run": run})
+        batch["items"] = items
+        return batch
+
+    def get_batch_by_idempotency_key(
+        self,
+        user_id: str,
+        idempotency_key: str,
+    ) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT id FROM agent_batches WHERE user_id=? AND idempotency_key=?",
+                (user_id, idempotency_key),
+            ).fetchone()
+        return self.get_batch(str(row["id"])) if row else None
+
+    def list_batches(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        limit: int = 8,
+    ) -> list[dict[str, Any]]:
+        page_size = max(1, min(30, int(limit)))
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id FROM agent_batches
+                WHERE tenant_id=? AND user_id=?
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (tenant_id, user_id, page_size),
+            ).fetchall()
+        return [batch for row in rows if (batch := self.get_batch(str(row["id"]))) is not None]
 
     def create_run(
         self,

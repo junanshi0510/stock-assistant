@@ -16,6 +16,30 @@ export function createFundResearchRun(payload) {
   })
 }
 
+export function createFundResearchBatch(payload) {
+  const idempotencyKey = newIdempotencyKey()
+  return getJson('/api/v1/agent/batches', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Idempotency-Key': idempotencyKey,
+    },
+    body: JSON.stringify({ intent: 'fund_deep_research', ...payload }),
+  })
+}
+
+export function fetchAgentBatch(batchId) {
+  return getJson(`/api/v1/agent/batches/${encodeURIComponent(batchId)}`)
+}
+
+export function fetchAgentBatches({ limit = 6 } = {}) {
+  return getJson(`/api/v1/agent/batches?limit=${encodeURIComponent(limit)}`)
+}
+
+export function cancelAgentBatch(batchId) {
+  return getJson(`/api/v1/agent/batches/${encodeURIComponent(batchId)}/cancel`, { method: 'POST' })
+}
+
 export function fetchAgentModelStatus() {
   return getJson('/api/v1/agent/model/status')
 }
