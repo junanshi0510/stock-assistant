@@ -20,6 +20,8 @@ from .outcomes import DecisionOutcomeService
 from .registry import build_default_registry
 from .repository import AgentRepository
 from .strategy_governance import StrategyGovernanceService
+from .strategy_shadow_outcomes import StrategyShadowOutcomeService
+from .strategy_shadow_worker import StrategyShadowOutcomeWorker
 from .workflow import AgentWorkflowRunner
 
 
@@ -95,23 +97,37 @@ strategy_governance.seed_defaults()
 registry = build_default_registry(strategy_governance)
 runner = AgentWorkflowRunner(repository, registry)
 outcome_service = DecisionOutcomeService(repository, registry)
+strategy_shadow_service = StrategyShadowOutcomeService(repository, registry)
 
 
-def _ensure_outcome_schedule(run: dict) -> None:
-    outcome_service.ensure_schedule_for_run(run, actor_id="agent-worker")
+def _ensure_terminal_observations(run: dict) -> None:
+    try:
+        outcome_service.ensure_schedule_for_run(run, actor_id="agent-worker")
+    except Exception:
+        logger.exception("个人决策 Outcome 调度创建失败:%s", run.get("id"))
+    try:
+        strategy_shadow_service.ensure_enrollment(run, actor_id="agent-worker")
+    except Exception:
+        logger.exception("策略 Shadow Outcome 入组失败:%s", run.get("id"))
 
 
 worker = AgentWorker(
     repository,
     runner,
     poll_interval=float(os.getenv("AGENT_WORKER_POLL_SECONDS", "0.75")),
-    terminal_callback=_ensure_outcome_schedule,
+    terminal_callback=_ensure_terminal_observations,
 )
 outcome_worker = OutcomeScheduleWorker(
     repository,
     outcome_service,
     poll_interval=float(os.getenv("AGENT_OUTCOME_POLL_SECONDS", "30")),
     lease_seconds=int(os.getenv("AGENT_OUTCOME_LEASE_SECONDS", "120")),
+)
+strategy_shadow_worker = StrategyShadowOutcomeWorker(
+    repository,
+    strategy_shadow_service,
+    poll_interval=float(os.getenv("AGENT_STRATEGY_SHADOW_POLL_SECONDS", "30")),
+    lease_seconds=int(os.getenv("AGENT_STRATEGY_SHADOW_LEASE_SECONDS", "120")),
 )
 
 
@@ -120,4 +136,5 @@ def start_worker() -> bool:
         return False
     run_started = worker.start()
     outcome_started = outcome_worker.start()
-    return run_started or outcome_started
+    strategy_shadow_started = strategy_shadow_worker.start()
+    return run_started or outcome_started or strategy_shadow_started

@@ -29,6 +29,7 @@ from akshare.utils import demjson
 
 from strategies.fund_conditioned_forward import evaluate_conditioned_forward_strategy
 from strategies.fund_decision_outcome import evaluate_fund_decision_outcome
+from strategies.fund_strategy_shadow_outcome import evaluate_fund_strategy_shadow_outcome
 from strategies.fund_market_profile import build_fund_market_profile
 from strategies.asset_level_recurrence import (
     evaluate_fund_level_recurrence,
@@ -1093,6 +1094,77 @@ def get_fund_decision_outcome(
             "peer_series_start": (peer_series or {}).get("series_start"),
             "peer_series_end": (peer_series or {}).get("series_end"),
             "no_proxy_fallback": True,
+        },
+    })
+    return result
+
+
+def get_fund_strategy_shadow_outcome(
+    code: str,
+    baseline_as_of: str,
+    baseline_nav: float,
+    signal_direction: str,
+    horizon: str,
+    observation_days: int,
+) -> dict:
+    """Evaluate a frozen versioned strategy signal with later confirmed NAV."""
+    code = str(code or "").strip()
+    if not re.fullmatch(r"\d{6}", code):
+        raise ValueError("基金代码需要是 6 位数字")
+    history = _fetch_nav_history(code, months=120)
+    points = [
+        {"date": str(row["date"]), "unit_nav": _num(row["unit_nav"])}
+        for _, row in history.iterrows()
+    ]
+    peer_series = None
+    peer_unavailable_reason = None
+    try:
+        peer_series = _fund_peer_comparison_series(code)
+    except Exception as error:
+        peer_unavailable_reason = f"provider_peer_series_unavailable:{error}"
+    result = evaluate_fund_strategy_shadow_outcome(
+        code=code,
+        baseline_as_of=baseline_as_of,
+        baseline_nav=baseline_nav,
+        signal_direction=signal_direction,
+        horizon=horizon,
+        observation_days=observation_days,
+        points=points,
+        peer_series=peer_series,
+        peer_unavailable_reason=peer_unavailable_reason,
+    )
+    provider_as_of = str(history.iloc[-1]["date"]) if not history.empty else str(baseline_as_of)
+    peer_status = (result.get("peer_comparison") or {}).get("status")
+    result.update({
+        "source": (
+            "东方财富基金确认净值 + 东方财富基金详情页同类平均"
+            if peer_series is not None
+            else "东方财富基金确认净值"
+        ),
+        "source_url": f"https://fund.eastmoney.com/{code}.html",
+        "provider_as_of": provider_as_of,
+        "source_refs": [
+            {
+                "provider": "东方财富基金净值走势 / 天天基金历史净值",
+                "fields": ["确认单位净值", "确认净值日期"],
+                "as_of": provider_as_of,
+            },
+            {
+                "provider": "东方财富基金详情页 Data_grandTotal",
+                "fields": ["同类平均累计收益"],
+                "available": peer_series is not None,
+                "as_of": (peer_series or {}).get("series_end"),
+            },
+        ],
+        "quality": {
+            "status": "complete" if peer_status == "available" else "partial",
+            "confirmed_nav_only": True,
+            "provider_observation_count": len(history),
+            "peer_comparator_status": peer_status or "not_evaluated",
+            "peer_provider_observation_count": (peer_series or {}).get("observation_count", 0),
+            "fund_provider_observation_count": (peer_series or {}).get("fund_observation_count", 0),
+            "no_synthetic_data": True,
+            "no_nearest_date_substitution": True,
         },
     })
     return result

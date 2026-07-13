@@ -63,6 +63,10 @@ export function fetchAgentOutcomeSchedule(runId) {
   return getJson(`/api/v1/agent/runs/${encodeURIComponent(runId)}/outcome-schedule`)
 }
 
+export function fetchAgentStrategyShadowOutcome(runId) {
+  return getJson(`/api/v1/agent/runs/${encodeURIComponent(runId)}/strategy-shadow-outcome`)
+}
+
 export function configureAgentOutcomeSchedule(runId, payload) {
   return getJson(`/api/v1/agent/runs/${encodeURIComponent(runId)}/outcome-schedule`, {
     method: 'PUT',

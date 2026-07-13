@@ -278,6 +278,64 @@ class AgentRepository:
                     CREATE INDEX IF NOT EXISTS idx_agent_strategy_audit
                     ON agent_strategy_audit_events(strategy_id, strategy_version, sequence_no);
 
+                    CREATE TABLE IF NOT EXISTS agent_strategy_shadow_enrollments (
+                        id                    TEXT PRIMARY KEY,
+                        run_id                TEXT NOT NULL UNIQUE
+                                                  REFERENCES agent_runs(id) ON DELETE CASCADE,
+                        tenant_id             TEXT NOT NULL,
+                        user_id               TEXT NOT NULL,
+                        strategy_id           TEXT NOT NULL,
+                        strategy_version      TEXT NOT NULL,
+                        manifest_sha256       TEXT NOT NULL,
+                        strategy_status       TEXT NOT NULL,
+                        governance_evidence_id TEXT NOT NULL
+                                                   REFERENCES agent_evidence(id) ON DELETE RESTRICT,
+                        signal_evidence_id    TEXT NOT NULL
+                                                   REFERENCES agent_evidence(id) ON DELETE RESTRICT,
+                        fund_code             TEXT NOT NULL,
+                        fund_name             TEXT,
+                        baseline_as_of        TEXT NOT NULL,
+                        baseline_nav          REAL NOT NULL,
+                        signal_direction      TEXT NOT NULL,
+                        signal_decision       TEXT NOT NULL,
+                        confidence_level      TEXT NOT NULL,
+                        horizon               TEXT NOT NULL,
+                        observation_days      INTEGER NOT NULL,
+                        signal_snapshot_json  TEXT NOT NULL,
+                        signal_snapshot_sha256 TEXT NOT NULL,
+                        status                TEXT NOT NULL,
+                        exclusion_reason      TEXT,
+                        blocking_enrollment_id TEXT,
+                        next_run_at           TEXT,
+                        lease_owner           TEXT,
+                        lease_expires_at      TEXT,
+                        attempt_count         INTEGER NOT NULL DEFAULT 0,
+                        consecutive_failures  INTEGER NOT NULL DEFAULT 0,
+                        last_started_at       TEXT,
+                        last_finished_at      TEXT,
+                        last_provider_as_of   TEXT,
+                        observed_as_of        TEXT,
+                        last_evidence_id      TEXT REFERENCES agent_evidence(id) ON DELETE SET NULL,
+                        last_error_code       TEXT,
+                        last_error_message    TEXT,
+                        created_at            TEXT NOT NULL,
+                        updated_at            TEXT NOT NULL,
+                        FOREIGN KEY (strategy_id, strategy_version)
+                            REFERENCES agent_strategy_versions(strategy_id, strategy_version)
+                            ON DELETE RESTRICT,
+                        FOREIGN KEY (blocking_enrollment_id)
+                            REFERENCES agent_strategy_shadow_enrollments(id)
+                            ON DELETE RESTRICT
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_agent_strategy_shadow_due
+                    ON agent_strategy_shadow_enrollments(status, next_run_at, lease_expires_at);
+
+                    CREATE INDEX IF NOT EXISTS idx_agent_strategy_shadow_version
+                    ON agent_strategy_shadow_enrollments(
+                        strategy_id, strategy_version, fund_code, horizon, baseline_as_of
+                    );
+
                     """
                 )
                 audit_columns = {
@@ -488,6 +546,19 @@ class AgentRepository:
     def _strategy_audit_from_row(row: sqlite3.Row) -> dict[str, Any]:
         item = dict(row)
         item["details"] = _load(item.pop("details_json", None), {})
+        return item
+
+    @staticmethod
+    def _strategy_shadow_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        item = dict(row)
+        snapshot = _load(item.pop("signal_snapshot_json", None), {})
+        item["signal_snapshot"] = snapshot
+        item["signal_snapshot_integrity_verified"] = (
+            hashlib.sha256(_json(snapshot).encode("utf-8")).hexdigest()
+            == item.get("signal_snapshot_sha256")
+        )
         return item
 
     def create_run(
@@ -2044,3 +2115,494 @@ class AgentRepository:
             "failing_sequence": None if items else 0,
             "chain_head": previous_hash,
         }
+
+    def list_unenrolled_strategy_shadow_runs(
+        self,
+        *,
+        limit: int = 100,
+        after_completed_at: str | None = None,
+        after_run_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return eligible-looking v4 runs in chronological order for unbiased backfill."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT runs.*
+                FROM agent_runs AS runs
+                LEFT JOIN agent_strategy_shadow_enrollments AS enrollments
+                    ON enrollments.run_id=runs.id
+                WHERE enrollments.id IS NULL
+                  AND runs.intent='fund_deep_research'
+                  AND runs.status IN ('completed', 'partial')
+                  AND runs.result_json IS NOT NULL
+                  AND json_extract(runs.result_json, '$.schema_version')='fund_deep_research.v4'
+                  AND json_extract(runs.result_json, '$.strategy.signal.direction')
+                      IN ('positive', 'negative')
+                  AND (
+                      ? IS NULL
+                      OR runs.completed_at>?
+                      OR (runs.completed_at=? AND runs.id>?)
+                  )
+                ORDER BY runs.completed_at ASC, runs.id ASC
+                LIMIT ?
+                """,
+                (
+                    after_completed_at,
+                    after_completed_at,
+                    after_completed_at,
+                    after_run_id or "",
+                    max(1, min(int(limit), 1000)),
+                ),
+            ).fetchall()
+        return [self._run_from_row(row) for row in rows]
+
+    def get_strategy_shadow_enrollment(self, run_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM agent_strategy_shadow_enrollments WHERE run_id=?",
+                (run_id,),
+            ).fetchone()
+        return self._strategy_shadow_from_row(row)
+
+    def list_strategy_shadow_enrollments(
+        self,
+        strategy_id: str,
+        strategy_version: str,
+        *,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM agent_strategy_shadow_enrollments
+                WHERE strategy_id=? AND strategy_version=?
+                ORDER BY baseline_as_of DESC, created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (
+                    strategy_id,
+                    strategy_version,
+                    max(1, min(int(limit), 2000)),
+                ),
+            ).fetchall()
+        return [self._strategy_shadow_from_row(row) for row in rows]
+
+    def count_strategy_shadow_enrollments(
+        self,
+        strategy_id: str,
+        strategy_version: str,
+    ) -> int:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM agent_strategy_shadow_enrollments
+                WHERE strategy_id=? AND strategy_version=?
+                """,
+                (strategy_id, strategy_version),
+            ).fetchone()
+        return int(row["count"] if row else 0)
+
+    def ensure_strategy_shadow_enrollment(
+        self,
+        run_id: str,
+        *,
+        strategy_id: str,
+        strategy_version: str,
+        manifest_sha256: str,
+        strategy_status: str,
+        governance_evidence_id: str,
+        signal_evidence_id: str,
+        fund_code: str,
+        fund_name: str | None,
+        baseline_as_of: str,
+        baseline_nav: float,
+        signal_direction: str,
+        signal_decision: str,
+        confidence_level: str,
+        horizon: str,
+        observation_days: int,
+        signal_snapshot: dict[str, Any],
+        due_at: str,
+        actor_id: str = "strategy-shadow-runtime-v1",
+        now: str | dt.datetime | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        """Persist every eligible signal, including deterministic overlap exclusions."""
+        if signal_direction not in {"positive", "negative"}:
+            raise ValueError("Shadow 入组信号必须是 positive 或 negative")
+        if int(observation_days) < 1:
+            raise ValueError("Shadow 入组观测窗口必须大于 0")
+        snapshot_json = _json(signal_snapshot)
+        snapshot_hash = hashlib.sha256(snapshot_json.encode("utf-8")).hexdigest()
+        now_text = _utc_iso(now)
+        due_text = _utc_iso(due_at)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT * FROM agent_strategy_shadow_enrollments WHERE run_id=?",
+                (run_id,),
+            ).fetchone()
+            if existing is not None:
+                item = self._strategy_shadow_from_row(existing)
+                if item["signal_snapshot_sha256"] != snapshot_hash:
+                    raise ValueError("Run 已经存在不同的 Shadow 入组快照")
+                return item, False
+            run = connection.execute(
+                "SELECT tenant_id, user_id FROM agent_runs WHERE id=?",
+                (run_id,),
+            ).fetchone()
+            if run is None:
+                raise KeyError(f"Agent Run 不存在:{run_id}")
+            candidates = connection.execute(
+                """
+                SELECT * FROM agent_strategy_shadow_enrollments
+                WHERE strategy_id=? AND strategy_version=? AND fund_code=? AND horizon=?
+                  AND baseline_as_of<=?
+                  AND status IN ('scheduled', 'retry_wait', 'blocked', 'observed')
+                ORDER BY baseline_as_of DESC, created_at DESC, id DESC
+                """,
+                (
+                    strategy_id,
+                    strategy_version,
+                    fund_code,
+                    horizon,
+                    baseline_as_of,
+                ),
+            ).fetchall()
+            blocker = None
+            exclusion_reason = None
+            for candidate in candidates:
+                if candidate["status"] == "observed":
+                    if str(candidate["observed_as_of"] or "") < str(baseline_as_of):
+                        continue
+                    exclusion_reason = "overlaps_observed_window"
+                elif candidate["status"] == "blocked":
+                    exclusion_reason = "prior_window_unresolved"
+                else:
+                    exclusion_reason = "prior_window_in_progress"
+                blocker = candidate
+                break
+            status = "excluded" if blocker is not None else "scheduled"
+            next_run_at = None if blocker is not None else due_text
+            enrollment_id = _new_id("shadow")
+            connection.execute(
+                """
+                INSERT INTO agent_strategy_shadow_enrollments (
+                    id, run_id, tenant_id, user_id, strategy_id, strategy_version,
+                    manifest_sha256, strategy_status, governance_evidence_id,
+                    signal_evidence_id, fund_code, fund_name, baseline_as_of,
+                    baseline_nav, signal_direction, signal_decision, confidence_level,
+                    horizon, observation_days, signal_snapshot_json,
+                    signal_snapshot_sha256, status, exclusion_reason,
+                    blocking_enrollment_id, next_run_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                          ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    enrollment_id,
+                    run_id,
+                    run["tenant_id"],
+                    run["user_id"],
+                    strategy_id,
+                    strategy_version,
+                    manifest_sha256,
+                    strategy_status,
+                    governance_evidence_id,
+                    signal_evidence_id,
+                    fund_code,
+                    fund_name,
+                    baseline_as_of,
+                    float(baseline_nav),
+                    signal_direction,
+                    signal_decision,
+                    confidence_level,
+                    horizon,
+                    int(observation_days),
+                    snapshot_json,
+                    snapshot_hash,
+                    status,
+                    exclusion_reason,
+                    blocker["id"] if blocker is not None else None,
+                    next_run_at,
+                    now_text,
+                    now_text,
+                ),
+            )
+            self._append_audit(
+                connection,
+                run_id,
+                "strategy.shadow.enrolled",
+                {
+                    "enrollment_id": enrollment_id,
+                    "strategy_id": strategy_id,
+                    "strategy_version": strategy_version,
+                    "manifest_sha256": manifest_sha256,
+                    "signal_snapshot_sha256": snapshot_hash,
+                    "fund_code": fund_code,
+                    "baseline_as_of": baseline_as_of,
+                    "signal_direction": signal_direction,
+                    "horizon": horizon,
+                    "observation_days": int(observation_days),
+                    "status": status,
+                    "exclusion_reason": exclusion_reason,
+                    "blocking_enrollment_id": blocker["id"] if blocker is not None else None,
+                    "next_run_at": next_run_at,
+                },
+                actor_id=actor_id,
+            )
+            row = connection.execute(
+                "SELECT * FROM agent_strategy_shadow_enrollments WHERE id=?",
+                (enrollment_id,),
+            ).fetchone()
+        return self._strategy_shadow_from_row(row), True
+
+    def claim_due_strategy_shadow_enrollment(
+        self,
+        worker_id: str,
+        *,
+        lease_seconds: int = 120,
+        now: str | dt.datetime | None = None,
+    ) -> dict[str, Any] | None:
+        now_dt = _as_utc_datetime(now)
+        now_text = _utc_iso(now_dt)
+        lease_expires_at = _utc_iso(now_dt + dt.timedelta(seconds=max(60, int(lease_seconds))))
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT * FROM agent_strategy_shadow_enrollments
+                WHERE status IN ('scheduled', 'retry_wait')
+                  AND next_run_at IS NOT NULL AND next_run_at<=?
+                  AND (lease_expires_at IS NULL OR lease_expires_at<=?)
+                ORDER BY next_run_at, id
+                LIMIT 1
+                """,
+                (now_text, now_text),
+            ).fetchone()
+            if row is None:
+                return None
+            changed = connection.execute(
+                """
+                UPDATE agent_strategy_shadow_enrollments
+                SET lease_owner=?, lease_expires_at=?, last_started_at=?,
+                    attempt_count=attempt_count+1, updated_at=?
+                WHERE id=? AND status IN ('scheduled', 'retry_wait')
+                  AND (lease_expires_at IS NULL OR lease_expires_at<=?)
+                """,
+                (worker_id, lease_expires_at, now_text, now_text, row["id"], now_text),
+            ).rowcount
+            if changed != 1:
+                return None
+            self._append_audit(
+                connection,
+                row["run_id"],
+                "strategy.shadow.observation.started",
+                {
+                    "enrollment_id": row["id"],
+                    "worker_id": worker_id,
+                    "lease_expires_at": lease_expires_at,
+                },
+                actor_id=worker_id,
+            )
+            claimed = connection.execute(
+                "SELECT * FROM agent_strategy_shadow_enrollments WHERE id=?",
+                (row["id"],),
+            ).fetchone()
+        return self._strategy_shadow_from_row(claimed)
+
+    def mark_strategy_shadow_pending(
+        self,
+        enrollment_id: str,
+        worker_id: str,
+        *,
+        provider_as_of: str,
+        available_observations: int,
+        retry_hours: int = 24,
+        now: str | dt.datetime | None = None,
+    ) -> dict[str, Any]:
+        now_dt = _as_utc_datetime(now)
+        now_text = _utc_iso(now_dt)
+        next_run_at = _utc_iso(now_dt + dt.timedelta(hours=max(12, min(int(retry_hours), 168))))
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            enrollment = connection.execute(
+                "SELECT * FROM agent_strategy_shadow_enrollments WHERE id=?",
+                (enrollment_id,),
+            ).fetchone()
+            if enrollment is None:
+                raise KeyError(f"Shadow 入组记录不存在:{enrollment_id}")
+            changed = connection.execute(
+                """
+                UPDATE agent_strategy_shadow_enrollments
+                SET status='scheduled', next_run_at=?, lease_owner=NULL,
+                    lease_expires_at=NULL, consecutive_failures=0,
+                    last_finished_at=?, last_provider_as_of=?,
+                    last_error_code=NULL, last_error_message=NULL, updated_at=?
+                WHERE id=? AND lease_owner=?
+                """,
+                (
+                    next_run_at,
+                    now_text,
+                    str(provider_as_of or ""),
+                    now_text,
+                    enrollment_id,
+                    worker_id,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise RuntimeError("Shadow 观测租约已失效，拒绝提交等待状态")
+            self._append_audit(
+                connection,
+                enrollment["run_id"],
+                "strategy.shadow.observation.pending",
+                {
+                    "enrollment_id": enrollment_id,
+                    "worker_id": worker_id,
+                    "provider_as_of": str(provider_as_of or ""),
+                    "available_observations": int(available_observations),
+                    "required_observations": int(enrollment["observation_days"]),
+                    "status": "scheduled",
+                    "next_run_at": next_run_at,
+                },
+                actor_id=worker_id,
+            )
+            row = connection.execute(
+                "SELECT * FROM agent_strategy_shadow_enrollments WHERE id=?",
+                (enrollment_id,),
+            ).fetchone()
+        return self._strategy_shadow_from_row(row)
+
+    def complete_strategy_shadow_enrollment(
+        self,
+        enrollment_id: str,
+        worker_id: str,
+        *,
+        provider_as_of: str,
+        observed_as_of: str,
+        evidence_id: str,
+        evidence_created: bool,
+        now: str | dt.datetime | None = None,
+    ) -> dict[str, Any]:
+        now_text = _utc_iso(now)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            enrollment = connection.execute(
+                "SELECT * FROM agent_strategy_shadow_enrollments WHERE id=?",
+                (enrollment_id,),
+            ).fetchone()
+            if enrollment is None:
+                raise KeyError(f"Shadow 入组记录不存在:{enrollment_id}")
+            changed = connection.execute(
+                """
+                UPDATE agent_strategy_shadow_enrollments
+                SET status='observed', next_run_at=NULL, lease_owner=NULL,
+                    lease_expires_at=NULL, consecutive_failures=0,
+                    last_finished_at=?, last_provider_as_of=?, observed_as_of=?,
+                    last_evidence_id=?, last_error_code=NULL,
+                    last_error_message=NULL, updated_at=?
+                WHERE id=? AND lease_owner=?
+                """,
+                (
+                    now_text,
+                    str(provider_as_of),
+                    str(observed_as_of),
+                    evidence_id,
+                    now_text,
+                    enrollment_id,
+                    worker_id,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise RuntimeError("Shadow 观测租约已失效，拒绝提交完成状态")
+            self._append_audit(
+                connection,
+                enrollment["run_id"],
+                "strategy.shadow.observation.completed",
+                {
+                    "enrollment_id": enrollment_id,
+                    "worker_id": worker_id,
+                    "provider_as_of": str(provider_as_of),
+                    "observed_as_of": str(observed_as_of),
+                    "evidence_id": evidence_id,
+                    "evidence_created": bool(evidence_created),
+                    "status": "observed",
+                    "next_run_at": None,
+                },
+                actor_id=worker_id,
+            )
+            row = connection.execute(
+                "SELECT * FROM agent_strategy_shadow_enrollments WHERE id=?",
+                (enrollment_id,),
+            ).fetchone()
+        return self._strategy_shadow_from_row(row)
+
+    def fail_strategy_shadow_enrollment(
+        self,
+        enrollment_id: str,
+        worker_id: str,
+        *,
+        error_code: str,
+        error_message: str,
+        retryable: bool,
+        now: str | dt.datetime | None = None,
+    ) -> dict[str, Any]:
+        retry_delays = (900, 3600, 14400, 43200, 86400, 86400, 86400)
+        now_dt = _as_utc_datetime(now)
+        now_text = _utc_iso(now_dt)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            enrollment = connection.execute(
+                "SELECT * FROM agent_strategy_shadow_enrollments WHERE id=?",
+                (enrollment_id,),
+            ).fetchone()
+            if enrollment is None:
+                raise KeyError(f"Shadow 入组记录不存在:{enrollment_id}")
+            failure_count = int(enrollment["consecutive_failures"]) + 1
+            retry_exhausted = bool(retryable and failure_count > len(retry_delays))
+            should_retry = bool(retryable and not retry_exhausted)
+            delay = retry_delays[min(failure_count - 1, len(retry_delays) - 1)]
+            next_run_at = _utc_iso(now_dt + dt.timedelta(seconds=delay)) if should_retry else None
+            status = "retry_wait" if should_retry else "blocked"
+            changed = connection.execute(
+                """
+                UPDATE agent_strategy_shadow_enrollments
+                SET status=?, next_run_at=?, lease_owner=NULL, lease_expires_at=NULL,
+                    consecutive_failures=?, last_finished_at=?, last_error_code=?,
+                    last_error_message=?, updated_at=?
+                WHERE id=? AND lease_owner=?
+                """,
+                (
+                    status,
+                    next_run_at,
+                    failure_count,
+                    now_text,
+                    str(error_code or "STRATEGY_SHADOW_OUTCOME_FAILED")[:100],
+                    str(error_message or "")[:500],
+                    now_text,
+                    enrollment_id,
+                    worker_id,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise RuntimeError("Shadow 观测租约已失效，拒绝提交失败状态")
+            self._append_audit(
+                connection,
+                enrollment["run_id"],
+                "strategy.shadow.observation.failed",
+                {
+                    "enrollment_id": enrollment_id,
+                    "worker_id": worker_id,
+                    "error_code": str(error_code),
+                    "retryable": bool(retryable),
+                    "retry_exhausted": retry_exhausted,
+                    "consecutive_failures": failure_count,
+                    "status": status,
+                    "next_run_at": next_run_at,
+                },
+                actor_id=worker_id,
+            )
+            row = connection.execute(
+                "SELECT * FROM agent_strategy_shadow_enrollments WHERE id=?",
+                (enrollment_id,),
+            ).fetchone()
+        return self._strategy_shadow_from_row(row)

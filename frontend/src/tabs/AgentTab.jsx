@@ -23,6 +23,7 @@ import {
   fetchAgentRun,
   fetchAgentRunComparison,
   fetchAgentRunEvaluations,
+  fetchAgentStrategyShadowOutcome,
   fetchAgentOutcomeSchedule,
   fetchAgentRuns,
   configureAgentOutcomeSchedule,
@@ -96,6 +97,14 @@ const STRATEGY_RELEASE_STATUS = {
   unregistered: '未注册',
 }
 
+const SHADOW_ENROLLMENT_STATUS = {
+  scheduled: '已入组，等待窗口',
+  retry_wait: '真实数据重试中',
+  observed: '已完成观测',
+  excluded: '非重叠规则排除',
+  blocked: '完整性门禁阻断',
+}
+
 const CONDITION_LABELS = {
   above_ma60: '净值位于 60 日均值上方',
   below_ma60: '净值位于 60 日均值下方',
@@ -160,7 +169,7 @@ function statusMeta(value) {
   return STATUS[value] || [value || '未知', 'partial']
 }
 
-function StrategyPanel({ strategy, onOpenEvidence, personalized = false }) {
+function StrategyPanel({ strategy, shadowOutcome, onOpenEvidence, personalized = false }) {
   const [decisionLabel, decisionTone, decisionNote] = STRATEGY_DECISION[strategy.decision]
     || STRATEGY_DECISION.data_required
   const condition = strategy.condition || {}
@@ -170,6 +179,12 @@ function StrategyPanel({ strategy, onOpenEvidence, personalized = false }) {
   const execution = governance.execution || {}
   const release = governance.release || {}
   const released = Boolean(execution.decision_use_allowed)
+  const shadowEnrollment = shadowOutcome?.enrollment || null
+  const shadowSummary = shadowOutcome?.strategy_summary || {}
+  const shadowObservation = shadowSummary.observation || {}
+  const shadowGate = shadowSummary.disclosure_gate || {}
+  const shadowVerification = shadowOutcome?.verification || null
+  const shadowEvidence = shadowOutcome?.observations?.[0] || null
   return (
     <section className="agent-strategy-panel" aria-label="基金历史条件策略">
       <div className="agent-section-head">
@@ -203,6 +218,43 @@ function StrategyPanel({ strategy, onOpenEvidence, personalized = false }) {
           <span>发布检查</span>
           <b>{release.passed_check_count ?? 0} / {release.required_check_count ?? '-'}</b>
           <small>{released ? '允许进入个人决策门禁' : '研究结果不生成投入金额'}</small>
+        </div>
+      </div>
+
+      <div className={`agent-shadow-enrollment ${shadowEnrollment?.status || 'unavailable'}`}>
+        <History size={17} aria-hidden="true" />
+        <div>
+          <span>Shadow Outcome 入组</span>
+          <b>
+            {shadowEnrollment
+              ? SHADOW_ENROLLMENT_STATUS[shadowEnrollment.status] || shadowEnrollment.status
+              : shadowOutcome?.eligibility?.eligible
+                ? '等待持久化入组'
+                : '当前信号不入组'}
+          </b>
+          <small>
+            {shadowEnrollment
+              ? `${shadowEnrollment.baseline_as_of} 基线 · ${shadowEnrollment.horizon} / ${shadowEnrollment.observation_days} 个后续确认净值`
+              : shadowOutcome?.eligibility?.reason || '未形成可验证入组状态'}
+          </small>
+        </div>
+        <div>
+          <span>策略版本样本</span>
+          <b>{shadowObservation.observed_count ?? 0} 已观测 / {shadowObservation.release_grade_count ?? 0} 完整基准</b>
+          <small>
+            {shadowGate.aggregate_available
+              ? '已达汇总披露门槛，仍需人工发布评审'
+              : '未达门槛，不展示胜率或平均收益'}
+          </small>
+        </div>
+        <div className="agent-shadow-integrity">
+          <span>入组完整性</span>
+          <b>{shadowVerification?.verified ? '快照与审计已验证' : shadowEnrollment ? '校验未通过' : '-'}</b>
+          {shadowEvidence?.evidence_id && (
+            <button className="ghost" onClick={() => onOpenEvidence(shadowEvidence.evidence_id)}>
+              <Database size={13} aria-hidden="true" />查看 Outcome Evidence
+            </button>
+          )}
         </div>
       </div>
 
@@ -322,12 +374,14 @@ export default function AgentTab() {
   const [outcomeSchedule, setOutcomeSchedule] = useState(null)
   const [outcomeEligibility, setOutcomeEligibility] = useState(null)
   const [loadingOutcomeSchedule, setLoadingOutcomeSchedule] = useState(false)
+  const [strategyShadowOutcome, setStrategyShadowOutcome] = useState(null)
 
   async function loadRun(runId, { quiet = false } = {}) {
     if (!runId) return
     if (!quiet) {
       setLoading(true)
       setComparison(null)
+      setStrategyShadowOutcome(null)
     }
     try {
       const data = await fetchAgentRun(runId)
@@ -382,6 +436,15 @@ export default function AgentTab() {
     }
   }
 
+  async function loadStrategyShadowOutcome(runId) {
+    if (!runId) return
+    try {
+      setStrategyShadowOutcome(await fetchAgentStrategyShadowOutcome(runId))
+    } catch (requestError) {
+      setError(requestError.message || '策略 Shadow Outcome 状态获取失败')
+    }
+  }
+
   function applyHistoryFilters(event) {
     event.preventDefault()
     const cleanCode = historyFilterDraft.code.trim()
@@ -421,12 +484,20 @@ export default function AgentTab() {
       loadHistory()
       loadEvaluations(run.id)
       loadOutcomeSchedule(run.id)
+      loadStrategyShadowOutcome(run.id)
     } else if (run?.id) {
       setEvaluations([])
       setOutcomeSchedule(null)
       setOutcomeEligibility(null)
+      setStrategyShadowOutcome(null)
     }
   }, [run?.id, run?.status])
+
+  useEffect(() => {
+    if (!run?.id || !strategyShadowOutcome?.eligibility?.eligible || strategyShadowOutcome?.enrollment) return undefined
+    const timer = window.setInterval(() => loadStrategyShadowOutcome(run.id), 5000)
+    return () => window.clearInterval(timer)
+  }, [run?.id, strategyShadowOutcome?.eligibility?.eligible, strategyShadowOutcome?.enrollment?.id])
 
   useEffect(() => {
     if (!run?.id || outcomeSchedule?.status !== 'active') return undefined
@@ -463,6 +534,7 @@ export default function AgentTab() {
     setEvaluations([])
     setOutcomeSchedule(null)
     setOutcomeEligibility(null)
+    setStrategyShadowOutcome(null)
     try {
       const data = await createFundResearchRun({
         code: clean,
@@ -504,6 +576,7 @@ export default function AgentTab() {
     setEvaluations([])
     setOutcomeSchedule(null)
     setOutcomeEligibility(null)
+    setStrategyShadowOutcome(null)
     try {
       const data = await rerunAgentRun(run.id)
       setRun(data.run)
@@ -887,6 +960,7 @@ export default function AgentTab() {
           {result.strategy && (
             <StrategyPanel
               strategy={result.strategy}
+              shadowOutcome={strategyShadowOutcome}
               onOpenEvidence={openEvidence}
               personalized={Boolean(result.personalized_decision)}
             />

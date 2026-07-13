@@ -17,7 +17,13 @@ import storage
 from agent.comparison import compare_run_results
 from agent.outcomes import DecisionOutcomeService, OutcomeEvaluationError
 from agent.repository import RUN_TERMINAL_STATUSES
-from agent.worker import registry, repository, start_worker, strategy_governance
+from agent.worker import (
+    registry,
+    repository,
+    start_worker,
+    strategy_governance,
+    strategy_shadow_service,
+)
 
 
 router = APIRouter(prefix="/api/v1/agent", tags=["投资 Agent"])
@@ -199,6 +205,22 @@ def get_agent_strategy(strategy_id: str, strategy_version: str):
     }
 
 
+@router.get("/strategies/{strategy_id}/{strategy_version}/shadow-outcomes")
+def get_agent_strategy_shadow_outcomes(
+    strategy_id: str,
+    strategy_version: str,
+    limit: int = Query(default=50, ge=1, le=500),
+):
+    report = strategy_shadow_service.report(
+        strategy_id,
+        strategy_version,
+        limit=limit,
+    )
+    if report is None:
+        raise HTTPException(status_code=404, detail="策略版本不存在")
+    return report
+
+
 @router.post("/runs", status_code=status.HTTP_202_ACCEPTED)
 def create_agent_run(
     request: CreateAgentRunRequest,
@@ -266,6 +288,50 @@ def list_agent_runs(
 @router.get("/runs/{run_id}")
 def get_agent_run(run_id: str):
     return _get_run_or_404(run_id)
+
+
+@router.get("/runs/{run_id}/strategy-shadow-outcome")
+def get_agent_run_strategy_shadow_outcome(run_id: str):
+    run = _get_run_or_404(run_id)
+    eligibility = strategy_shadow_service.eligibility(run)
+    enrollment = repository.get_strategy_shadow_enrollment(run_id)
+    verification = (
+        strategy_shadow_service.verify_enrollment(enrollment)
+        if enrollment is not None
+        else None
+    )
+    result_strategy = (run.get("result") or {}).get("strategy") or {}
+    strategy_id = str(result_strategy.get("strategy_id") or "")
+    strategy_version = str(result_strategy.get("strategy_version") or "")
+    report = (
+        strategy_shadow_service.report(strategy_id, strategy_version, limit=20)
+        if strategy_id and strategy_version
+        else None
+    )
+    observations = repository.list_evidence_by_type(
+        run_id,
+        "strategy_shadow_outcome",
+        include_payload=True,
+    )
+    return {
+        "eligibility": eligibility,
+        "enrollment": strategy_shadow_service.public_enrollment(enrollment),
+        "verification": verification,
+        "observations": [
+            {
+                "evidence_id": item["id"],
+                "as_of": item.get("as_of"),
+                "quality_status": item.get("quality_status"),
+                "schema_version": item.get("schema_version"),
+                "payload_sha256": item.get("payload_sha256"),
+                "integrity_verified": item.get("integrity_verified"),
+                "created_at": item.get("created_at"),
+            }
+            for item in observations
+        ],
+        "strategy_summary": report,
+        "policy": "策略 Shadow 样本由终态 Run 自动、按时间顺序入组；公网仅可读，不能手工挑样本、提前结算或改写基线。",
+    }
 
 
 @router.get("/runs/{run_id}/evaluations")

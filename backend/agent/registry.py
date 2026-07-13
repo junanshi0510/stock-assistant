@@ -107,6 +107,21 @@ def build_default_registry(strategy_governance: "StrategyGovernanceService") -> 
         ),
     ))
     registry.register(ToolDefinition(
+        name="fund.strategy_shadow_outcome.get",
+        version="1.0.0",
+        description="使用冻结策略版本信号、第 N 个后续真实确认净值和来源原生同类序列形成 Shadow Outcome。",
+        risk_level="R0",
+        timeout_seconds=45,
+        handler=lambda payload: fund_service.get_fund_strategy_shadow_outcome(
+            str(payload["code"]),
+            str(payload["baseline_as_of"]),
+            float(payload["baseline_nav"]),
+            str(payload["signal_direction"]),
+            str(payload["horizon"]),
+            int(payload["observation_days"]),
+        ),
+    ))
+    registry.register(ToolDefinition(
         name="fund.disclosure_changes.get",
         version="1.0.0",
         description="比较两个真实且不同的基金定期报告披露期。",

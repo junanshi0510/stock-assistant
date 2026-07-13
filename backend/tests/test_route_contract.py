@@ -76,8 +76,10 @@ EXPECTED_OPERATIONS = {
     "/api/v1/agent/tools": {"GET"},
     "/api/v1/agent/strategies": {"GET"},
     "/api/v1/agent/strategies/{strategy_id}/{strategy_version}": {"GET"},
+    "/api/v1/agent/strategies/{strategy_id}/{strategy_version}/shadow-outcomes": {"GET"},
     "/api/v1/agent/runs": {"GET", "POST"},
     "/api/v1/agent/runs/{run_id}": {"GET"},
+    "/api/v1/agent/runs/{run_id}/strategy-shadow-outcome": {"GET"},
     "/api/v1/agent/runs/{run_id}/evaluate": {"POST"},
     "/api/v1/agent/runs/{run_id}/evaluations": {"GET"},
     "/api/v1/agent/runs/{run_id}/outcome-schedule": {"GET", "PUT"},
@@ -140,6 +142,15 @@ class RouteContractTests(unittest.TestCase):
         self.assertEqual(public_event["actor_role"], "reviewer")
         self.assertEqual(public_event["details"]["to_status"], "canary")
         self.assertTrue(response["audit"]["verification"]["verified"])
+
+    def test_tool_catalog_exposes_versioned_shadow_outcome_as_read_only(self):
+        catalog = agent_router.get_agent_tool_catalog()["items"]
+        item = next(
+            value for value in catalog
+            if value["name"] == "fund.strategy_shadow_outcome.get"
+        )
+        self.assertEqual(item["version"], "1.0.0")
+        self.assertEqual(item["risk_level"], "R0")
 
 
 if __name__ == "__main__":
