@@ -321,3 +321,39 @@ Agent 页面新增只读 Shadow Outcome 面板，展示：
 5. 为达到披露门槛的策略执行独立样本、市场状态和回撤审查，不直接自动发布。
 
 只有这些基础能力形成闭环后，Agent 才能逐步从“给出研究意见”演进为“在明确风险预算内提供可验证的资金决策支持”。
+
+## 17. 生产部署验收
+
+- 部署提交：`aac12fe`。
+- 部署目录：`/opt/stock-assistant`。
+- 部署前在线备份：`/opt/stock-assistant-backups/stock_assistant-pre-shadow-outcomes-20260713T070006Z.db`。
+- 备份权限：`600`。
+- 备份校验：源库与备份库均为 `integrity=ok`，对象、Run 和 Evidence 数量一致。
+- 服务器隔离数据库全量测试：`165 passed`。
+- 前端生产构建：`1840` 个模块转换完成。
+- 生产依赖审计：`npm audit --omit=dev` 为 0 个漏洞。
+- 开发构建链审计仍有 2 个仅开发依赖告警，来自旧版 Vite/esbuild；生产只部署静态产物，不运行 Vite 开发服务器。修复要求升级到 Vite 8，属于需要单独验证 Node 版本和构建兼容性的后续依赖迁移，未在本次资金证据链发布中强制混入。
+- Nginx 配置检查通过，API 与 Nginx 服务均为 active。
+- 公网页面、工具目录 API 均返回 HTTP 200，并加载本次构建哈希资源。
+- 最近服务日志未发现 `Traceback`、`ERROR` 或 `Exception`。
+
+生产旧真实 Run `run_4857f68bcde94aec9c25e3ded60542e1` 已由启动回填自动入组：
+
+- 入组 ID：`shadow_c34fc83e5bec47fd99bf7dad0f747d77`。
+- 状态：`scheduled`。
+- 基线：`2026-07-09`。
+- 窗口：`6m / 126` 个后续确认净值。
+- 快照哈希与审计状态回放：通过。
+- 汇总指标：保持隐藏。
+
+随后从该 Run 发起一次真实生产重跑 `run_6b526785d3df40cb99128b78e3615406`，用于验证非重叠策略：
+
+- Run 状态：`completed`，生成 6 条原始研究 Evidence。
+- Shadow 状态：`excluded`。
+- 排除原因：`prior_window_in_progress`。
+- 阻塞样本：`shadow_c34fc83e5bec47fd99bf7dad0f747d77`。
+- Run 审计链：23 个事件，校验通过。
+- 当前账本：1 条 `scheduled`、1 条 `excluded`、0 条 Outcome Evidence。
+- 数据库最终检查：`integrity=ok`。
+
+该验证确认系统不会把同一策略版本、同一基金、同一窗口的高度重叠信号重复计入样本，也不会在 126 个真实确认净值到达前生成结果证据。
