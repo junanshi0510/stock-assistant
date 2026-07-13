@@ -3759,6 +3759,34 @@ tbody tr:hover { background: #f0f8f6; }
 
 .agent-scope-note svg { flex: 0 0 auto; margin-top: 1px; }
 
+.fund-recurrence-view { margin-top: 18px; }
+.agent-result-section .fund-recurrence-view { margin-top: 0; }
+.fund-recurrence-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.fund-recurrence-head h4 { margin: 4px 0 2px; font-size: 14px; letter-spacing: 0; }
+.fund-recurrence-head small { color: var(--faint); font-size: 9.5px; overflow-wrap: anywhere; }
+.fund-recurrence-head button { display: inline-flex; align-items: center; gap: 6px; }
+.fund-recurrence-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 13px; }
+.fund-recurrence-grid article { min-width: 0; padding: 11px 4px 8px; border-top: 2px solid #1e6f91; }
+.fund-recurrence-grid article.insufficient { border-top-color: #b9c9cd; }
+.fund-recurrence-grid header { display: flex; align-items: flex-start; justify-content: space-between; gap: 7px; }
+.fund-recurrence-grid header span,
+.fund-recurrence-grid header b { display: block; }
+.fund-recurrence-grid header span { color: var(--faint); font-size: 9.5px; }
+.fund-recurrence-grid header b { margin-top: 4px; font-size: 16px; }
+.fund-recurrence-grid header em { flex: 0 0 auto; padding: 3px 5px; border-radius: 3px; font-size: 8.5px; font-style: normal; font-weight: 800; }
+.fund-recurrence-grid header em.matched { color: #087d68; background: #e8f6f2; }
+.fund-recurrence-grid header em.nearest { color: #8a5a00; background: #fff5dc; }
+.fund-recurrence-grid header em.unavailable { color: #60737b; background: #edf1f2; }
+.fund-recurrence-grid dl { display: grid; gap: 8px; margin: 12px 0 9px; }
+.fund-recurrence-grid dl div { min-width: 0; padding-top: 7px; border-top: 1px solid var(--border); }
+.fund-recurrence-grid dt { color: var(--faint); font-size: 9px; }
+.fund-recurrence-grid dd { margin: 3px 0 0; font-size: 11px; font-weight: 800; overflow-wrap: anywhere; }
+.fund-recurrence-grid dl small { display: block; margin-top: 3px; color: var(--muted); font-size: 8.5px; line-height: 1.4; }
+.fund-recurrence-grid article > p { margin: 12px 0; color: var(--muted); font-size: 10px; }
+.fund-recurrence-grid footer { display: flex; align-items: flex-start; gap: 4px; color: var(--faint); font-size: 8.5px; line-height: 1.4; }
+.fund-recurrence-grid footer svg { flex: 0 0 auto; margin-top: 1px; }
+.fund-recurrence-policy { margin: 11px 0 0; color: var(--faint); font-size: 9.5px; line-height: 1.5; }
+
 .agent-strategy-panel { border-top: 3px solid #0f766e; }
 .agent-strategy-summary { display: grid; grid-template-columns: 1.25fr repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 16px; }
 .agent-strategy-summary > div { min-width: 0; min-height: 90px; padding: 11px; border-left: 2px solid var(--border-strong); background: #f8fafb; }
@@ -3898,6 +3926,7 @@ tbody tr:hover { background: #f0f8f6; }
   .agent-strategy-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .agent-strategy-condition { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .agent-strategy-horizons { grid-template-columns: 1fr; }
+  .fund-recurrence-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 720px) {
@@ -3959,4 +3988,7 @@ tbody tr:hover { background: #f0f8f6; }
   .agent-comparison-dimensions { grid-template-columns: 1fr; }
   .agent-strategy-summary,
   .agent-strategy-condition { grid-template-columns: 1fr; }
+  .fund-recurrence-head { align-items: stretch; flex-direction: column; }
+  .fund-recurrence-head button { justify-content: center; width: 100%; }
+  .fund-recurrence-grid { grid-template-columns: 1fr; }
 }

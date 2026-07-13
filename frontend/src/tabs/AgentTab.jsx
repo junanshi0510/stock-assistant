@@ -25,6 +25,7 @@ import {
   fetchAgentRuns,
   rerunAgentRun,
 } from '../api/agent'
+import FundReturnRecurrenceView from '../features/funds/FundReturnRecurrenceView'
 
 const TERMINAL = new Set(['completed', 'partial', 'failed', 'cancelled', 'abstained'])
 const EMPTY_HISTORY_FILTERS = { code: '', status: '' }
@@ -709,6 +710,12 @@ export default function AgentTab() {
           </section>
 
           {result.strategy && <StrategyPanel strategy={result.strategy} onOpenEvidence={openEvidence} />}
+
+          {result.return_recurrence && (
+            <section className="agent-result-section">
+              <FundReturnRecurrenceView data={result.return_recurrence} onOpenEvidence={openEvidence} />
+            </section>
+          )}
 
           <section className="agent-result-section">
             <div className="agent-section-head">

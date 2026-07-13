@@ -322,6 +322,7 @@ class AgentWorkflowRunner:
         metrics = analysis.get("metrics") or {}
         timing = analysis.get("timing") or {}
         conditioned_forward = analysis.get("conditioned_forward") or {}
+        return_recurrence = analysis.get("return_recurrence") or {}
         playbook = analysis.get("playbook") or {}
         role = playbook.get("role") or {}
 
@@ -389,6 +390,12 @@ class AgentWorkflowRunner:
                     )
                     if item:
                         facts.append(item)
+
+        recurrence_result = None
+        if return_recurrence:
+            recurrence_result = dict(return_recurrence)
+            recurrence_result["evidence_id"] = analysis_evidence["id"]
+            recurrence_result["evidence_ids"] = [analysis_evidence["id"]]
 
         estimate_payload = outputs.get("fund_estimate") or {}
         estimate_result = None
@@ -483,6 +490,7 @@ class AgentWorkflowRunner:
             },
             "facts": facts,
             "strategy": strategy_result,
+            "return_recurrence": recurrence_result,
             "risk_review": {
                 "red_flags": playbook.get("red_flags") or [],
                 "entry_rules": playbook.get("entry_rules") or [],
