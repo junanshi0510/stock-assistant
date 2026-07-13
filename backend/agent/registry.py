@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 import funds as fund_service
+from .portfolio_context import get_portfolio_context
+from strategies.personalized_fund_decision import evaluate_personalized_fund_decision
 
 
 ToolHandler = Callable[[dict[str, Any]], dict[str, Any]]
@@ -99,5 +101,28 @@ def build_default_registry() -> ToolRegistry:
             limit=int(payload.get("limit") or 5),
             months=int(payload.get("months") or 36),
         ),
+    ))
+    registry.register(ToolDefinition(
+        name="portfolio.context.get",
+        version="1.0.0",
+        description="读取用户已确认持仓、目标基金仓位和已保存投资约束，用于个人决策门禁。",
+        risk_level="R1",
+        timeout_seconds=5,
+        handler=get_portfolio_context,
+    ))
+    registry.register(ToolDefinition(
+        name="fund.personalized_decision.evaluate",
+        version="1.0.0",
+        description="把基金研究 Evidence 与用户组合 Evidence 代入版本化风险门禁和金额策略。",
+        risk_level="R1",
+        timeout_seconds=5,
+        handler=lambda payload: {
+            **evaluate_personalized_fund_decision(
+                payload["analysis"],
+                payload["context"],
+                planned_amount=payload.get("planned_amount"),
+            ),
+            "input_evidence_ids": payload.get("input_evidence_ids") or [],
+        },
     ))
     return registry

@@ -20,6 +20,9 @@ from agent.registry import ToolDefinition, ToolRegistry  # noqa: E402
 from agent.repository import AgentRepository  # noqa: E402
 from agent.workflow import AgentWorkflowRunner  # noqa: E402
 from routers import agent as agent_router  # noqa: E402
+from strategies.personalized_fund_decision import (  # noqa: E402
+    evaluate_personalized_fund_decision,
+)
 
 
 def _analysis(_payload):
@@ -196,6 +199,44 @@ def _alternatives(_payload):
     }
 
 
+def _portfolio_context(_payload):
+    return {
+        "status": "available",
+        "source": "confirmed_test_portfolio",
+        "data_classification": "private_financial",
+        "profile": {
+            "configured": True,
+            "risk": "balanced",
+            "horizon": "mid_long",
+            "monthly_budget": 1000,
+            "max_single_ratio": 35,
+        },
+        "portfolio": {
+            "holding_count": 2,
+            "amount_complete": True,
+            "total_amount": 10000,
+        },
+        "target_holding": {
+            "exists": True,
+            "amount": 1000,
+            "ratio": 10,
+            "profit": -50,
+            "profit_rate": -5,
+        },
+        "data_gaps": [],
+    }
+
+
+def _personalized_decision(payload):
+    result = evaluate_personalized_fund_decision(
+        payload["analysis"],
+        payload["context"],
+        planned_amount=payload.get("planned_amount"),
+    )
+    result["input_evidence_ids"] = payload.get("input_evidence_ids") or []
+    return result
+
+
 def _registry(
     alternatives_handler=_alternatives,
     analysis_handler=_analysis,
@@ -218,6 +259,22 @@ def _registry(
             timeout_seconds=timeout_overrides.get(name, timeout),
             handler=handler,
         ))
+    registry.register(ToolDefinition(
+        name="portfolio.context.get",
+        version="1.0.0",
+        description="portfolio.context.get",
+        risk_level="R1",
+        timeout_seconds=5,
+        handler=_portfolio_context,
+    ))
+    registry.register(ToolDefinition(
+        name="fund.personalized_decision.evaluate",
+        version="1.0.0",
+        description="fund.personalized_decision.evaluate",
+        risk_level="R1",
+        timeout_seconds=5,
+        handler=_personalized_decision,
+    ))
     return registry
 
 
@@ -238,6 +295,8 @@ class AgentRuntimeTests(unittest.TestCase):
             "include_disclosure_changes": True,
             "include_alternatives": True,
             "alternative_limit": 5,
+            "include_portfolio_context": True,
+            "planned_amount": 1000,
             **overrides,
         }
         created, is_new = self.repository.create_run("fund_deep_research", payload)
@@ -252,14 +311,15 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(request.months, 60)
         steps = AgentWorkflowRunner(self.repository, _registry())._fund_steps({"code": "001480"})
         self.assertEqual(steps[0].input_payload["months"], 60)
+        self.assertEqual(steps[1].key, "portfolio_context")
 
     def test_completed_run_persists_claims_evidence_and_hash_chained_audit(self):
         run = self._run()
 
         self.assertEqual(run["status"], "completed")
-        self.assertEqual(len(run["steps"]), 4)
-        self.assertEqual(len(run["evidence"]), 4)
-        self.assertGreaterEqual(len(run["claims"]), 7)
+        self.assertEqual(len(run["steps"]), 6)
+        self.assertEqual(len(run["evidence"]), 6)
+        self.assertGreaterEqual(len(run["claims"]), 11)
         self.assertEqual(run["result"]["fund"]["code"], "001480")
         self.assertEqual(run["result"]["schema_version"], "fund_deep_research.v2")
         self.assertEqual(run["result"]["alternatives"][0]["code"], "000001")
@@ -270,6 +330,18 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(
             run["result"]["strategy"]["evidence_ids"],
             [run["evidence"][0]["id"]],
+        )
+        self.assertEqual(
+            run["result"]["personalized_decision"]["strategy_id"],
+            "personalized_fund_decision",
+        )
+        self.assertEqual(
+            run["result"]["personalized_decision"]["decision"]["action"],
+            "consider_tranche",
+        )
+        self.assertEqual(
+            len(run["result"]["personalized_decision"]["evidence_ids"]),
+            3,
         )
         estimate_step = next(item for item in run["steps"] if item["step_key"] == "fund_estimate")
         estimate_evidence = next(
@@ -361,11 +433,11 @@ class AgentRuntimeTests(unittest.TestCase):
         estimate_step = next(item for item in run["steps"] if item["step_key"] == "fund_estimate")
         self.assertEqual(estimate_step["status"], "failed")
         self.assertEqual(estimate_step["error_code"], "TOOL_TIMEOUT")
-        self.assertEqual(len(run["evidence"]), 1)
+        self.assertEqual(len(run["evidence"]), 3)
 
         release_handler.set()
         time.sleep(0.05)
-        self.assertEqual(len(self.repository.get_run(run["id"])["evidence"]), 1)
+        self.assertEqual(len(self.repository.get_run(run["id"])["evidence"]), 3)
 
     def test_running_tool_can_be_cancelled_without_becoming_a_failure(self):
         def slow_analysis(payload):

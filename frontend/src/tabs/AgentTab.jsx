@@ -26,6 +26,7 @@ import {
   rerunAgentRun,
 } from '../api/agent'
 import AssetLevelRecurrenceView from '../components/AssetLevelRecurrenceView'
+import PersonalizedDecisionView from '../components/PersonalizedDecisionView'
 
 const TERMINAL = new Set(['completed', 'partial', 'failed', 'cancelled', 'abstained'])
 const EMPTY_HISTORY_FILTERS = { code: '', status: '' }
@@ -52,6 +53,8 @@ const STEP_LABELS = {
   'fund.estimate.get': '盘中估值核验',
   'fund.disclosure_changes.get': '定期报告披露变化',
   'fund.alternatives.get': '同类替代候选',
+  'portfolio.context.get': '真实持仓与投资约束',
+  'fund.personalized_decision.evaluate': '个人风险门禁与金额策略',
 }
 
 const STRATEGY_DECISION = {
@@ -138,7 +141,7 @@ function statusMeta(value) {
   return STATUS[value] || [value || '未知', 'partial']
 }
 
-function StrategyPanel({ strategy, onOpenEvidence }) {
+function StrategyPanel({ strategy, onOpenEvidence, personalized = false }) {
   const [decisionLabel, decisionTone, decisionNote] = STRATEGY_DECISION[strategy.decision]
     || STRATEGY_DECISION.data_required
   const condition = strategy.condition || {}
@@ -208,7 +211,12 @@ function StrategyPanel({ strategy, onOpenEvidence }) {
         </div>
         <div>
           <h4>适用性缺口</h4>
-          <p><ShieldCheck size={13} aria-hidden="true" />尚未应用你的风险偏好、预算、已有仓位和组合重合度</p>
+          <p>
+            <ShieldCheck size={13} aria-hidden="true" />
+            {personalized
+              ? '个人风险、期限和仓位约束已由上方决策策略单独校验'
+              : '尚未应用你的风险偏好、预算、已有仓位和组合重合度'}
+          </p>
           <p><ShieldCheck size={13} aria-hidden="true" />历史月末样本的前瞻窗口可能重叠，不能当作独立预测次数</p>
         </div>
       </div>
@@ -249,6 +257,8 @@ export default function AgentTab() {
   const [includeEstimate, setIncludeEstimate] = useState(false)
   const [includeDisclosure, setIncludeDisclosure] = useState(false)
   const [includeAlternatives, setIncludeAlternatives] = useState(false)
+  const [includePortfolioContext, setIncludePortfolioContext] = useState(true)
+  const [plannedAmount, setPlannedAmount] = useState('')
   const [run, setRun] = useState(null)
   const [loading, setLoading] = useState(false)
   const [history, setHistory] = useState({ items: [], next_cursor: null, has_more: false })
@@ -342,7 +352,8 @@ export default function AgentTab() {
   const progress = useMemo(() => {
     if (!run) return { completed: 0, total: 0 }
     const completed = (run.steps || []).filter((item) => ['succeeded', 'partial', 'failed'].includes(item.status)).length
-    const requested = 1 + Number(Boolean(run.input?.include_estimate))
+    const requested = 1 + (run.input?.include_portfolio_context === false ? 0 : 2)
+      + Number(Boolean(run.input?.include_estimate))
       + Number(Boolean(run.input?.include_disclosure_changes))
       + Number(Boolean(run.input?.include_alternatives))
     return { completed, total: Math.max(requested, run.steps?.length || 0) }
@@ -367,6 +378,8 @@ export default function AgentTab() {
         include_estimate: includeEstimate,
         include_disclosure_changes: includeDisclosure,
         include_alternatives: includeAlternatives,
+        include_portfolio_context: includePortfolioContext,
+        planned_amount: plannedAmount === '' ? null : Number(plannedAmount),
         alternative_limit: 5,
       })
       setRun(data.run)
@@ -458,11 +471,11 @@ export default function AgentTab() {
     <div className="agent-workspace">
       <section className="agent-heading">
         <div>
-          <span className="eyebrow">投资研究工作台</span>
-          <h2>基金深度研究任务</h2>
-          <p>围绕确认净值、回撤、波动和可选披露数据，形成一份可追溯的基金研究记录。</p>
+          <span className="eyebrow">持仓感知投资 Agent</span>
+          <h2>基金投资决策任务</h2>
+          <p>把真实基金证据与你确认的持仓、预算和风险上限合并，先过风险门禁，再形成可审计的行动建议。</p>
         </div>
-        <div className="agent-readonly-badge"><ShieldCheck size={16} aria-hidden="true" />R0 公共只读</div>
+        <div className="agent-readonly-badge"><ShieldCheck size={16} aria-hidden="true" />R0 公共数据 · R1 私有只读</div>
       </section>
 
       <section className="panel agent-launcher" aria-label="创建基金研究任务">
@@ -480,12 +493,24 @@ export default function AgentTab() {
               <option value={60}>60 个月</option>
             </select>
           </label>
+          <label className="field">
+            <span>本次计划投入</span>
+            <input
+              value={plannedAmount}
+              type="number"
+              min="0"
+              step="100"
+              placeholder="未填则用月度预算"
+              onChange={(event) => setPlannedAmount(event.target.value)}
+            />
+          </label>
           <button onClick={startResearch} disabled={loading || (run && !TERMINAL.has(run.status))}>
             <Play size={16} aria-hidden="true" />
             <span>{loading ? '正在创建' : '开始研究'}</span>
           </button>
         </div>
         <div className="agent-options" aria-label="研究范围">
+          <label><input type="checkbox" checked={includePortfolioContext} onChange={(event) => setIncludePortfolioContext(event.target.checked)} />应用真实持仓与约束</label>
           <label><input type="checkbox" checked={includeEstimate} onChange={(event) => setIncludeEstimate(event.target.checked)} />盘中估值核验</label>
           <label><input type="checkbox" checked={includeDisclosure} onChange={(event) => setIncludeDisclosure(event.target.checked)} />披露变化</label>
           <label><input type="checkbox" checked={includeAlternatives} onChange={(event) => setIncludeAlternatives(event.target.checked)} />同类替代品</label>
@@ -709,7 +734,17 @@ export default function AgentTab() {
             <div className="agent-scope-note"><CircleAlert size={15} aria-hidden="true" />{result.scope?.statement}</div>
           </section>
 
-          {result.strategy && <StrategyPanel strategy={result.strategy} onOpenEvidence={openEvidence} />}
+          {result.personalized_decision && (
+            <PersonalizedDecisionView decision={result.personalized_decision} onOpenEvidence={openEvidence} />
+          )}
+
+          {result.strategy && (
+            <StrategyPanel
+              strategy={result.strategy}
+              onOpenEvidence={openEvidence}
+              personalized={Boolean(result.personalized_decision)}
+            />
+          )}
 
           {result.level_recurrence && (
             <section className="agent-result-section">

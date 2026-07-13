@@ -28,6 +28,8 @@ class CreateAgentRunRequest(BaseModel):
     include_estimate: bool = False
     include_disclosure_changes: bool = False
     include_alternatives: bool = False
+    include_portfolio_context: bool = True
+    planned_amount: float | None = Field(default=None, ge=0)
     alternative_limit: int = Field(default=5, ge=3, le=8)
 
     @field_validator("code")
@@ -97,8 +99,11 @@ def _history_item(run: dict) -> dict:
 @router.get("/tools")
 def get_agent_tool_catalog():
     return {
-        "items": [item for item in registry.catalog() if item["risk_level"] == "R0"],
-        "policy": "当前公开 Agent 只注册 R0 公共只读工具。",
+        "items": [
+            item for item in registry.catalog()
+            if item["risk_level"] in {"R0", "R1"}
+        ],
+        "policy": "R0 只读取公共市场数据；R1 只读取用户已确认组合或执行确定性个人风险门禁，均不下单。",
     }
 
 

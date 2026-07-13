@@ -39,6 +39,7 @@ class WorkflowStep:
     tool_version: str
     required: bool
     input_payload: dict[str, Any]
+    runtime_input_payload: dict[str, Any] | None = None
 
 
 class RequiredToolError(RuntimeError):
@@ -131,6 +132,14 @@ class AgentWorkflowRunner:
             required=True,
             input_payload={"code": code, "months": months},
         )]
+        if payload.get("include_portfolio_context", True):
+            steps.append(WorkflowStep(
+                key="portfolio_context",
+                tool_name="portfolio.context.get",
+                tool_version="1.0.0",
+                required=True,
+                input_payload={"code": code},
+            ))
         if payload.get("include_estimate", False):
             steps.append(WorkflowStep(
                 key="fund_estimate",
@@ -203,9 +212,9 @@ class AgentWorkflowRunner:
                 return evidence.get("payload") or {}, evidence, None
 
         definition: ToolDefinition = self.registry.get(step.tool_name, step.tool_version)
-        if definition.risk_level != "R0":
+        if definition.risk_level not in {"R0", "R1"}:
             raise RequiredToolError(
-                f"公开基金工作流只允许 R0 工具:{definition.name}@{definition.version}"
+                f"当前基金工作流只允许 R0/R1 只读或确定性工具:{definition.name}@{definition.version}"
             )
         persisted_step = self.repository.start_step(
             run_id,
@@ -217,7 +226,11 @@ class AgentWorkflowRunner:
             input_payload=step.input_payload,
         )
         try:
-            output = self._invoke_tool(run_id, definition, step.input_payload)
+            output = self._invoke_tool(
+                run_id,
+                definition,
+                step.runtime_input_payload or step.input_payload,
+            )
             if not isinstance(output, dict):
                 raise TypeError("工具必须返回结构化对象")
             quality = self._quality_status(output)
@@ -227,9 +240,15 @@ class AgentWorkflowRunner:
                 persisted_step["id"],
                 status=step_status,
                 payload=output,
-                evidence_type="calculation" if step.key == "fund_analysis" else "provider_normalized",
-                subject_type="fund",
-                subject_id=code,
+                evidence_type=(
+                    "user_confirmed"
+                    if step.key == "portfolio_context"
+                    else "calculation"
+                    if step.key in {"fund_analysis", "personalized_decision"}
+                    else "provider_normalized"
+                ),
+                subject_type="portfolio" if step.key == "portfolio_context" else "fund",
+                subject_id="default" if step.key == "portfolio_context" else code,
                 provider=str(output.get("source") or definition.name),
                 source_url=str(output.get("source_url") or "") or None,
                 as_of=self._as_of(output, step.key),
@@ -390,6 +409,58 @@ class AgentWorkflowRunner:
                     if item:
                         facts.append(item)
 
+        personalized_decision = None
+        decision_payload = outputs.get("personalized_decision") or {}
+        decision_evidence = evidence.get("personalized_decision") or {}
+        if decision_payload:
+            personalized_decision = dict(decision_payload)
+            personalized_decision["evidence_id"] = decision_evidence.get("id")
+            personalized_decision["evidence_ids"] = [
+                item for item in (
+                    (evidence.get("fund_analysis") or {}).get("id"),
+                    (evidence.get("portfolio_context") or {}).get("id"),
+                    decision_evidence.get("id"),
+                ) if item
+            ]
+            for claim_key, label, value, unit in (
+                (
+                    "personal_current_ratio",
+                    "目标基金当前仓位",
+                    (decision_payload.get("portfolio") or {}).get("current_ratio"),
+                    "%",
+                ),
+                (
+                    "personal_max_single_ratio",
+                    "你的单品仓位上限",
+                    (decision_payload.get("portfolio") or {}).get("max_single_ratio"),
+                    "%",
+                ),
+                (
+                    "personal_allowed_amount",
+                    "本轮上限内可用总金额",
+                    (decision_payload.get("budget") or {}).get("allowed_full_amount"),
+                    "元",
+                ),
+                (
+                    "personal_first_tranche",
+                    "首批观察金额",
+                    (decision_payload.get("budget") or {}).get("first_tranche_amount"),
+                    "元",
+                ),
+            ):
+                if not decision_evidence.get("id"):
+                    continue
+                item = self._add_metric_claim(
+                    run_id,
+                    claim_key=claim_key,
+                    label=label,
+                    value=value,
+                    unit=unit,
+                    evidence_id=decision_evidence["id"],
+                )
+                if item:
+                    facts.append(item)
+
         estimate_payload = outputs.get("fund_estimate") or {}
         estimate_result = None
         level_recurrence_result = None
@@ -461,7 +532,14 @@ class AgentWorkflowRunner:
 
         role_label = role.get("label") or "观察仓"
         timing_label = timing.get("label") or analysis.get("trend_state") or "等待更多数据"
-        headline = f"{name} 当前研究定位为「{role_label}」，投入节奏为「{timing_label}」。"
+        if personalized_decision:
+            personal_decision = personalized_decision.get("decision") or {}
+            headline = (
+                f"{name} 个人决策为「{personal_decision.get('label') or '等待复核'}」。"
+                f"{personal_decision.get('rationale') or ''}"
+            )
+        else:
+            headline = f"{name} 当前研究定位为「{role_label}」，投入节奏为「{timing_label}」。"
         if unavailable:
             headline += " 部分真实数据暂不可用，结论范围已收窄。"
 
@@ -470,8 +548,12 @@ class AgentWorkflowRunner:
             "generated_at": _now(),
             "intent": "fund_deep_research",
             "scope": {
-                "personalized": False,
-                "statement": "本轮只分析公共基金数据，未读取用户持仓，不生成个性化仓位或交易指令。",
+                "personalized": personalized_decision is not None,
+                "statement": (
+                    "本轮读取用户已确认持仓和已保存投资约束，输出确定性风险门禁与研究金额；不读取未导入资产，不自动下单。"
+                    if personalized_decision is not None
+                    else "本轮只分析公共基金数据，未读取用户持仓，不生成个性化仓位或交易指令。"
+                ),
             },
             "fund": {
                 "code": code,
@@ -489,9 +571,11 @@ class AgentWorkflowRunner:
                 "minimum_holding_period": role.get("minimum_holding_period"),
                 "timing_label": timing_label,
                 "timing_score": timing.get("score"),
+                "personal_action": ((personalized_decision or {}).get("decision") or {}).get("action"),
             },
             "facts": facts,
             "strategy": strategy_result,
+            "personalized_decision": personalized_decision,
             "level_recurrence": level_recurrence_result,
             "risk_review": {
                 "red_flags": playbook.get("red_flags") or [],
@@ -526,7 +610,8 @@ class AgentWorkflowRunner:
         evidence: dict[str, dict[str, Any]] = {}
         unavailable: list[dict[str, Any]] = []
 
-        for index, step in enumerate(self._fund_steps(payload), start=1):
+        research_steps = self._fund_steps(payload)
+        for index, step in enumerate(research_steps, start=1):
             if self.repository.is_cancel_requested(run_id):
                 return self.repository.finish_run(run_id, status="cancelled", result=None)
             output, evidence_item, failure = self._execute_tool_step(
@@ -544,6 +629,41 @@ class AgentWorkflowRunner:
 
         if "fund_analysis" not in outputs or "fund_analysis" not in evidence:
             raise RequiredToolError("基金核心分析没有形成可验证 Evidence")
+
+        if "portfolio_context" in outputs and "portfolio_context" in evidence:
+            source_evidence_ids = [
+                evidence["fund_analysis"]["id"],
+                evidence["portfolio_context"]["id"],
+            ]
+            decision_step = WorkflowStep(
+                key="personalized_decision",
+                tool_name="fund.personalized_decision.evaluate",
+                tool_version="1.0.0",
+                required=True,
+                input_payload={
+                    "code": code,
+                    "planned_amount": payload.get("planned_amount"),
+                    "input_evidence_ids": source_evidence_ids,
+                },
+                runtime_input_payload={
+                    "analysis": outputs["fund_analysis"],
+                    "context": outputs["portfolio_context"],
+                    "planned_amount": payload.get("planned_amount"),
+                    "input_evidence_ids": source_evidence_ids,
+                },
+            )
+            output, evidence_item, failure = self._execute_tool_step(
+                run_id,
+                len(research_steps) + 1,
+                decision_step,
+                code,
+            )
+            if output is not None:
+                outputs[decision_step.key] = output
+            if evidence_item is not None:
+                evidence[decision_step.key] = evidence_item
+            if failure is not None:
+                unavailable.append(failure)
 
         if self.repository.is_cancel_requested(run_id):
             return self.repository.finish_run(run_id, status="cancelled", result=None)
