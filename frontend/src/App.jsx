@@ -5,6 +5,7 @@ import { fetchMarkets } from './api/market'
 import AccountMenu from './components/AccountMenu'
 import ChangePasswordScreen from './components/ChangePasswordScreen'
 import LoginScreen from './components/LoginScreen'
+import RegisterScreen from './components/RegisterScreen'
 
 const AdminTab = lazy(() => import('./tabs/AdminTab'))
 const AgentTab = lazy(() => import('./tabs/AgentTab'))
@@ -23,6 +24,9 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(true)
   const [user, setUser] = useState(null)
   const [authReadiness, setAuthReadiness] = useState(null)
+  const [authView, setAuthView] = useState('login')
+  const [loginPrefill, setLoginPrefill] = useState('')
+  const [authNotice, setAuthNotice] = useState('')
   const [changePasswordOpen, setChangePasswordOpen] = useState(false)
   const [markets, setMarkets] = useState(['A股', '港股', '美股'])
   const [tab, setTab] = useState('overview')
@@ -46,7 +50,12 @@ export default function App() {
       })
       .catch(() => { if (active) setUser(null) })
       .finally(() => { if (active) setAuthLoading(false) })
-    const unauthorized = () => { setUser(null); setTab('overview') }
+    const unauthorized = () => {
+      setUser(null)
+      setAuthView('login')
+      setAuthNotice('')
+      setTab('overview')
+    }
     globalThis.addEventListener('stock-assistant:unauthorized', unauthorized)
     return () => {
       active = false
@@ -74,13 +83,45 @@ export default function App() {
   async function logout() {
     try { await logoutAccount() } catch { /* session may already be invalid */ }
     setUser(null)
+    setAuthView('login')
+    setAuthNotice('')
     setTab('overview')
+  }
+
+  function authenticated(nextUser) {
+    setUser(nextUser)
+    setAuthView('login')
+    setAuthNotice('')
+  }
+
+  function registered(username) {
+    setLoginPrefill(username)
+    setAuthNotice('注册成功，请使用账号和密码登录。')
+    setAuthView('login')
   }
 
   if (authLoading) {
     return <main className="auth-shell"><div className="auth-loading"><span className="spinner" />正在验证会话</div></main>
   }
-  if (!user) return <LoginScreen readiness={authReadiness} onAuthenticated={setUser} />
+  if (!user) {
+    const canRegister = Boolean(
+      authReadiness?.ready && authReadiness?.self_registration_enabled,
+    )
+    if (authView === 'register' && canRegister) {
+      return <RegisterScreen
+        readiness={authReadiness}
+        onRegistered={registered}
+        onLogin={() => setAuthView('login')}
+      />
+    }
+    return <LoginScreen
+      readiness={authReadiness}
+      initialUsername={loginPrefill}
+      notice={authNotice}
+      onAuthenticated={authenticated}
+      onRegister={canRegister ? () => { setAuthNotice(''); setAuthView('register') } : null}
+    />
+  }
   if (user.must_change_password || changePasswordOpen) {
     return <ChangePasswordScreen
       forced={Boolean(user.must_change_password)}

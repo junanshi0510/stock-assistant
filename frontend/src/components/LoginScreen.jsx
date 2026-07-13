@@ -2,8 +2,8 @@ import { Eye, EyeOff, LockKeyhole, LogIn, TrendingUp } from 'lucide-react'
 import { useState } from 'react'
 import { loginAccount } from '../api/auth'
 
-export default function LoginScreen({ readiness, onAuthenticated }) {
-  const [username, setUsername] = useState('')
+export default function LoginScreen({ readiness, onAuthenticated, onRegister, initialUsername = '', notice = '' }) {
+  const [username, setUsername] = useState(initialUsername)
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -34,6 +34,17 @@ export default function LoginScreen({ readiness, onAuthenticated }) {
             <span>Investment Decision Workspace</span>
           </div>
         </div>
+
+        {onRegister && (
+          <div className="auth-mode-switch" role="tablist" aria-label="账户入口">
+            <button className="auth-mode-option active" type="button" role="tab" aria-selected="true">
+              登录
+            </button>
+            <button className="auth-mode-option" type="button" role="tab" aria-selected="false" onClick={onRegister}>
+              注册
+            </button>
+          </div>
+        )}
 
         <div className="auth-heading">
           <span className="auth-heading-icon" aria-hidden="true"><LockKeyhole size={17} /></span>
@@ -83,6 +94,7 @@ export default function LoginScreen({ readiness, onAuthenticated }) {
               {readiness.configured ? '系统尚未初始化管理员，请先在服务器执行初始化命令。' : '认证安全配置尚未完成，请联系服务器管理员。'}
             </div>
           )}
+          {notice && <div className="auth-message success-message" role="status">{notice}</div>}
           {error && <div className="auth-message error-message" role="alert">{error}</div>}
 
           <button className="auth-submit" type="submit" disabled={loading || unavailable}>

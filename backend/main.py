@@ -34,6 +34,7 @@ _allowed_origins = [
 _AUTH_PUBLIC_ROUTES = {
     ("GET", "/api/auth/session"),
     ("POST", "/api/auth/login"),
+    ("POST", "/api/auth/register"),
 }
 _PASSWORD_CHANGE_ROUTES = {
     "/api/auth/session",

@@ -106,6 +106,14 @@ sudo nano /etc/stock-assistant/stock-assistant.env
 
 把上一条命令生成的随机值写入 `AUTH_AUDIT_PEPPER`，不要提交到 Git。纯 HTTP IP 访问阶段设置 `AUTH_COOKIE_SECURE=false`；完成 HTTPS 后必须改为 `true`。已有 DeepSeek、OCR 等 Key 继续保留在同一文件中。
 
+普通用户自助注册由以下配置控制。注册接口只接收账号和密码，服务端固定创建 `user` 角色；管理员角色不能通过注册请求指定：
+
+```ini
+AUTH_SELF_REGISTRATION_ENABLED=true
+AUTH_REGISTRATION_LIMIT=5
+AUTH_REGISTRATION_WINDOW_MINUTES=60
+```
+
 初始化唯一的首个管理员。命令会在终端安全地输入两次密码，不会把密码写进 Shell 历史；旧版 `default` 持仓和 `anonymous` Agent Run 会一次性归属该管理员：
 
 ```bash
@@ -148,7 +156,7 @@ sudo systemctl enable --now stock-assistant-api
 sudo systemctl status stock-assistant-api
 ```
 
-认证验收：第一个接口应显示认证已初始化但当前未登录，第二个接口必须返回 `401`：
+认证验收：第一个接口应显示认证已初始化、开放注册但当前未登录，第二个接口必须返回 `401`。浏览器未登录时只能看到登录和注册界面：
 
 ```bash
 curl -i http://127.0.0.1:8000/api/auth/session

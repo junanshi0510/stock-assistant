@@ -8,6 +8,12 @@
 
 ## 最近更新
 
+### 2026-07-14：普通用户自助注册
+
+- 未登录访问时只呈现登录/注册入口，不渲染持仓、行情、研究、Agent 或系统管理界面；所有业务 API 仍由服务端统一返回 `401`，前端隐藏不作为权限边界。
+- 用户可只用账号和密码自行注册，无需管理员预先创建。注册接口固定创建 `user` 角色，不接受客户端传入角色或显示名，也不会自动登录或获得管理员权限。
+- 注册密码继续使用 Argon2id 保存，账号唯一；注册请求按客户端哈希限流，并写入不可变认证审计链。管理员角色只能通过已认证的管理员接口授予。
+
 ### 2026-07-13：用户登录、管理员权限与个人数据隔离
 
 - 新增服务端账户、角色、会话和权限系统。密码使用 Argon2id 保存；浏览器只接收随机会话 Cookie，Cookie 设置 `HttpOnly` 和 `SameSite=Lax`，数据库只保存 Token 哈希。
@@ -278,6 +284,9 @@ npm run dev
 | `AUTH_IDLE_MINUTES` | 会话空闲超时，默认 120 分钟 |
 | `AUTH_LOGIN_LIMIT` | 登录窗口内失败次数上限，默认 5 |
 | `AUTH_LOGIN_WINDOW_MINUTES` | 登录限流窗口，默认 15 分钟 |
+| `AUTH_SELF_REGISTRATION_ENABLED` | 是否开放普通用户自助注册；生产默认建议 `true` |
+| `AUTH_REGISTRATION_LIMIT` | 单个客户端在注册窗口内的尝试次数上限，默认 5 |
+| `AUTH_REGISTRATION_WINDOW_MINUTES` | 自助注册限流窗口，默认 60 分钟 |
 | `AGENT_MAX_PENDING_RUNS` | Agent 排队和运行任务总上限；默认 `20` |
 | `AGENT_MAX_BATCH_SIZE` | 单个基金研究批次上限；默认 `6`，代码硬上限 `8` |
 | `AGENT_WORKER_ENABLED` | 是否启动内置持久化 Worker；默认开启 |
@@ -335,7 +344,7 @@ backend/
     fund_market_profile.py        基金跨市场画像与 QDII 风险口径 1.0.0
     personalized_fund_decision.py 持仓感知的个人风险门禁与金额策略 1.0.0
   routers/
-    auth.py                登录、改密和管理员账户管理 API
+    auth.py                登录、自助注册、改密和管理员账户管理 API
     agent.py               Agent Batch/Run、重跑对比、Evidence 和 Audit API
     market.py              股票、板块、行情和市场日报接口
     funds.py               基金发现、研究、比较和替代品接口

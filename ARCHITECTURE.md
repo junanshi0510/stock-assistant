@@ -15,7 +15,7 @@
 `backend/routers/portfolio.py` 和 `backend/routers/agent.py`。
 数据抓取、分析和存储仍位于同名领域服务模块；路由层只负责请求校验、错误映射和服务编排。
 
-`backend/auth.py` 是身份边界：密码哈希、服务端 Session、CSRF、RBAC 和认证审计均在此实现。
+`backend/auth.py` 是身份边界：密码哈希、受限流的普通用户自助注册、服务端 Session、CSRF、RBAC 和认证审计均在此实现。公开注册不能接受角色字段，管理员授权只存在于受保护的管理接口。
 业务路由不得接收客户端 `user_id`，只能从 `request.state.principal.subject_id` 取得数据所有者。
 普通用户按资源 ID 查询时必须同时校验所有权；管理员例外必须显式经过 `require_admin` 或等价的
 服务端角色判断。前端菜单可见性只是体验层，不是授权边界。

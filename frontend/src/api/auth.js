@@ -12,6 +12,14 @@ export function loginAccount(username, password) {
   })
 }
 
+export function registerAccount(username, password) {
+  return getJson('/api/auth/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  })
+}
+
 export async function logoutAccount() {
   try {
     return await getJson('/api/auth/logout', { method: 'POST' })

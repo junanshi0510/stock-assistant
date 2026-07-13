@@ -33,6 +33,9 @@ def _settings(**overrides):
         "idle_minutes": 120,
         "login_limit": 3,
         "login_window_minutes": 15,
+        "self_registration_enabled": True,
+        "registration_limit": 5,
+        "registration_window_minutes": 60,
         "audit_pepper": "p" * 64,
         "trust_proxy": False,
     }
@@ -131,6 +134,76 @@ class AuthServiceTests(unittest.TestCase):
         with self.assertRaises(AuthError) as context:
             self.service.login("missing-user", "not-the-password", client_hash="client-a")
         self.assertEqual(context.exception.code, "login_rate_limited")
+
+    def test_self_registration_creates_only_ready_ordinary_users_and_is_audited(self):
+        self.service.bootstrap_admin("admin", "Bootstrap-Password-2026!")
+        registered = self.service.register_user(
+            "selfinvestor",
+            "Strong-Portfolio-Password-2026!",
+            client_hash="client-register",
+        )
+
+        self.assertEqual(registered["username"], "selfinvestor")
+        self.assertEqual(registered["role"], "user")
+        self.assertEqual(registered["status"], "active")
+        self.assertFalse(registered["must_change_password"])
+        self.assertIsNotNone(registered["password_changed_at"])
+        self.assertNotIn("password_hash", registered)
+
+        login = self.service.login(
+            "selfinvestor",
+            "Strong-Portfolio-Password-2026!",
+            client_hash="client-login",
+        )
+        self.assertFalse(login["user"]["must_change_password"])
+        events = self.service.list_audit(10)
+        registration = next(
+            event for event in events
+            if event["event_type"] == "user_self_registered"
+        )
+        self.assertEqual(registration["actor_user_id"], registered["id"])
+        self.assertEqual(registration["target_user_id"], registered["id"])
+        self.assertEqual(registration["details"]["role"], "user")
+        self.assertTrue(self.service.verify_audit()["verified"])
+
+    def test_self_registration_can_be_disabled_and_is_rate_limited(self):
+        disabled = AuthService(
+            str(Path(self.tempdir.name) / "registration-disabled.db"),
+            settings=_settings(self_registration_enabled=False),
+        )
+        disabled.bootstrap_admin("admin", "Bootstrap-Password-2026!")
+        with self.assertRaises(AuthError) as context:
+            disabled.register_user(
+                "investor01",
+                "Strong-Portfolio-Password-2026!",
+                client_hash="client-disabled",
+            )
+        self.assertEqual(context.exception.code, "self_registration_disabled")
+
+        limited = AuthService(
+            str(Path(self.tempdir.name) / "registration-limited.db"),
+            settings=_settings(registration_limit=2),
+        )
+        limited.bootstrap_admin("admin", "Bootstrap-Password-2026!")
+        limited.register_user(
+            "investor01",
+            "Strong-Portfolio-Password-2026!",
+            client_hash="shared-client",
+        )
+        with self.assertRaises(AuthError) as duplicate:
+            limited.register_user(
+                "investor01",
+                "Strong-Portfolio-Password-2026!",
+                client_hash="shared-client",
+            )
+        self.assertEqual(duplicate.exception.code, "username_exists")
+        with self.assertRaises(AuthError) as rate_limited:
+            limited.register_user(
+                "investor02",
+                "Another-Portfolio-Password-2026!",
+                client_hash="shared-client",
+            )
+        self.assertEqual(rate_limited.exception.code, "registration_rate_limited")
 
     def test_offline_admin_recovery_reenables_account_and_revokes_sessions(self):
         admin = self.service.bootstrap_admin("admin", "Bootstrap-Password-2026!")
@@ -348,6 +421,50 @@ class AuthApiBoundaryTests(unittest.TestCase):
         )
         self.assertEqual(unauthorized.status_code, 401)
         self.assertEqual(unauthorized.headers["access-control-allow-origin"], origin)
+
+    def test_public_registration_rejects_role_injection_and_creates_ordinary_user(self):
+        injected = self.client.post(
+            "/api/auth/register",
+            json={
+                "username": "injectedadmin",
+                "password": "Strong-Portfolio-Password-2026!",
+                "role": "admin",
+            },
+        )
+        self.assertEqual(injected.status_code, 422, injected.text)
+        self.assertFalse(
+            any(user["username"] == "injectedadmin" for user in self.service.list_users())
+        )
+
+        registered = self.client.post(
+            "/api/auth/register",
+            json={
+                "username": "selfinvestor",
+                "password": "Strong-Portfolio-Password-2026!",
+            },
+        )
+        self.assertEqual(registered.status_code, 201, registered.text)
+        payload = registered.json()
+        self.assertTrue(payload["registered"])
+        self.assertEqual(payload["user"]["role"], "user")
+        self.assertFalse(payload["user"]["must_change_password"])
+        self.assertNotIn("password_hash", payload["user"])
+        self.assertNotIn("set-cookie", registered.headers)
+
+        duplicate = self.client.post(
+            "/api/auth/register",
+            json={
+                "username": "selfinvestor",
+                "password": "Strong-Portfolio-Password-2026!",
+            },
+        )
+        self.assertEqual(duplicate.status_code, 409, duplicate.text)
+        self.assertEqual(duplicate.json()["detail"]["code"], "username_exists")
+
+        self._login("selfinvestor", "Strong-Portfolio-Password-2026!")
+        forbidden = self.client.get("/api/admin/overview")
+        self.assertEqual(forbidden.status_code, 403, forbidden.text)
+        self.assertEqual(forbidden.json()["detail"], "需要管理员权限")
 
     def test_cookie_csrf_forced_password_change_and_admin_rbac(self):
         anonymous = self.client.get("/api/markets")

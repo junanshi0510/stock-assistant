@@ -98,6 +98,9 @@ class AuthSettings:
     idle_minutes: int
     login_limit: int
     login_window_minutes: int
+    self_registration_enabled: bool
+    registration_limit: int
+    registration_window_minutes: int
     audit_pepper: str
     trust_proxy: bool
 
@@ -110,6 +113,11 @@ class AuthSettings:
             idle_minutes=_bounded_int("AUTH_IDLE_MINUTES", 120, 15, 1440),
             login_limit=_bounded_int("AUTH_LOGIN_LIMIT", 5, 3, 20),
             login_window_minutes=_bounded_int("AUTH_LOGIN_WINDOW_MINUTES", 15, 5, 120),
+            self_registration_enabled=_env_bool("AUTH_SELF_REGISTRATION_ENABLED", True),
+            registration_limit=_bounded_int("AUTH_REGISTRATION_LIMIT", 5, 1, 20),
+            registration_window_minutes=_bounded_int(
+                "AUTH_REGISTRATION_WINDOW_MINUTES", 60, 5, 1440
+            ),
             audit_pepper=str(os.getenv("AUTH_AUDIT_PEPPER") or "").strip(),
             trust_proxy=_env_bool("AUTH_TRUST_PROXY", False),
         )
@@ -261,6 +269,15 @@ class AuthService:
                     CREATE INDEX IF NOT EXISTS idx_auth_login_attempts_window
                     ON auth_login_attempts(attempted_at, username_hash, client_hash);
 
+                    CREATE TABLE IF NOT EXISTS auth_registration_attempts (
+                        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                        client_hash  TEXT NOT NULL,
+                        attempted_at TEXT NOT NULL
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_auth_registration_attempts_window
+                    ON auth_registration_attempts(attempted_at, client_hash);
+
                     CREATE TABLE IF NOT EXISTS auth_audit_events (
                         id              TEXT PRIMARY KEY,
                         sequence_no     INTEGER NOT NULL UNIQUE,
@@ -407,6 +424,7 @@ class AuthService:
                 or (self.settings.configuration_ready and initialized)
             ),
             "cookie_secure": self.settings.cookie_secure,
+            "self_registration_enabled": self.settings.self_registration_enabled,
         }
 
     def bootstrap_admin(
@@ -548,6 +566,124 @@ class AuthService:
                 row = connection.execute("SELECT * FROM auth_users WHERE id=?", (user_id,)).fetchone()
         except sqlite3.IntegrityError as error:
             raise AuthError("用户名已经存在", code="username_exists", status_code=409) from error
+        return self._public_user(row)
+
+    def _reserve_registration_attempt(self, client_hash: str) -> None:
+        cutoff = _iso(
+            _utc_now()
+            - dt.timedelta(minutes=self.settings.registration_window_minutes)
+        )
+        cleanup_cutoff = _iso(_utc_now() - dt.timedelta(days=1))
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "DELETE FROM auth_registration_attempts WHERE attempted_at<?",
+                (cleanup_cutoff,),
+            )
+            row = connection.execute(
+                """
+                SELECT COUNT(*) AS value FROM auth_registration_attempts
+                WHERE attempted_at>=? AND client_hash=?
+                """,
+                (cutoff, client_hash),
+            ).fetchone()
+            if int(row["value"] if row else 0) >= self.settings.registration_limit:
+                connection.commit()
+                raise AuthError(
+                    "注册尝试过于频繁，请稍后再试",
+                    code="registration_rate_limited",
+                    status_code=429,
+                )
+            connection.execute(
+                "INSERT INTO auth_registration_attempts(client_hash, attempted_at) VALUES (?, ?)",
+                (client_hash, _iso()),
+            )
+            connection.commit()
+
+    def register_user(
+        self,
+        username: str,
+        password: str,
+        *,
+        client_hash: str,
+    ) -> dict[str, Any]:
+        if not self.settings.required or not self.settings.self_registration_enabled:
+            raise AuthError(
+                "当前未开放用户注册",
+                code="self_registration_disabled",
+                status_code=403,
+            )
+        if not self.settings.configuration_ready:
+            raise AuthError(
+                "认证安全配置尚未完成",
+                code="auth_configuration_incomplete",
+                status_code=503,
+            )
+        if self.user_count() == 0:
+            raise AuthError(
+                "系统尚未初始化管理员",
+                code="auth_bootstrap_required",
+                status_code=503,
+            )
+
+        self._reserve_registration_attempt(client_hash)
+        normalized = self.normalize_username(username)
+        self.validate_password(password, username)
+        with self._connect() as connection:
+            if connection.execute(
+                "SELECT 1 FROM auth_users WHERE username_normalized=?",
+                (normalized,),
+            ).fetchone():
+                raise AuthError(
+                    "用户名已经存在",
+                    code="username_exists",
+                    status_code=409,
+                )
+
+        now = _iso()
+        user_id = _new_id("usr")
+        password_hash = self._password_hasher.hash(password)
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute(
+                    """
+                    INSERT INTO auth_users(
+                        id, subject_id, username, username_normalized, display_name,
+                        password_hash, role, status, must_change_password,
+                        created_at, updated_at, password_changed_at, created_by
+                    ) VALUES (?, ?, ?, ?, ?, ?, 'user', 'active', 0, ?, ?, ?, 'self-registration')
+                    """,
+                    (
+                        user_id,
+                        user_id,
+                        str(username).strip(),
+                        normalized,
+                        str(username).strip(),
+                        password_hash,
+                        now,
+                        now,
+                        now,
+                    ),
+                )
+                self._append_audit(
+                    connection,
+                    "user_self_registered",
+                    actor_user_id=user_id,
+                    target_user_id=user_id,
+                    details={"role": ROLE_USER},
+                    client_hash=client_hash,
+                )
+                connection.commit()
+                row = connection.execute(
+                    "SELECT * FROM auth_users WHERE id=?", (user_id,)
+                ).fetchone()
+        except sqlite3.IntegrityError as error:
+            raise AuthError(
+                "用户名已经存在",
+                code="username_exists",
+                status_code=409,
+            ) from error
         return self._public_user(row)
 
     def list_users(self) -> list[dict[str, Any]]:

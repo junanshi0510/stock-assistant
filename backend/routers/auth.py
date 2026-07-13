@@ -6,7 +6,7 @@ from __future__ import annotations
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from auth import (
     AuthError,
@@ -29,6 +29,13 @@ router = APIRouter(prefix="/api", tags=["身份与权限"])
 class LoginRequest(BaseModel):
     username: str = Field(min_length=1, max_length=64)
     password: SecretStr = Field(min_length=1, max_length=128)
+
+
+class RegisterRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    username: str = Field(min_length=3, max_length=32)
+    password: SecretStr = Field(min_length=12, max_length=128)
 
 
 class ChangePasswordRequest(BaseModel):
@@ -147,6 +154,24 @@ def login(request: Request, response: Response, payload: LoginRequest):
         "user": result["user"],
         "csrf_token": result["csrf_token"],
         "expires_at": result["expires_at"],
+    }
+
+
+@router.post("/auth/register", status_code=201)
+def register(request: Request, response: Response, payload: RegisterRequest):
+    _no_store(response)
+    try:
+        user = auth_service.register_user(
+            payload.username,
+            payload.password.get_secret_value(),
+            client_hash=_client_hash(request),
+        )
+    except AuthError as error:
+        _raise(error)
+    return {
+        "registered": True,
+        "user": user,
+        "message": "注册成功，请使用账号和密码登录。",
     }
 
 
