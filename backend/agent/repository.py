@@ -38,6 +38,22 @@ def _utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="milliseconds")
 
 
+def _as_utc_datetime(value: str | dt.datetime | None = None) -> dt.datetime:
+    if value is None:
+        return dt.datetime.now(dt.timezone.utc)
+    if isinstance(value, dt.datetime):
+        parsed = value
+    else:
+        parsed = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.astimezone(dt.timezone.utc)
+
+
+def _utc_iso(value: str | dt.datetime | None = None) -> str:
+    return _as_utc_datetime(value).isoformat(timespec="milliseconds")
+
+
 def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -164,6 +180,32 @@ class AgentRepository:
 
                     CREATE INDEX IF NOT EXISTS idx_agent_evidence_run
                     ON agent_evidence(run_id, created_at);
+
+                    CREATE TABLE IF NOT EXISTS agent_outcome_schedules (
+                        id                    TEXT PRIMARY KEY,
+                        run_id                TEXT NOT NULL UNIQUE REFERENCES agent_runs(id) ON DELETE CASCADE,
+                        tenant_id             TEXT NOT NULL,
+                        user_id               TEXT NOT NULL,
+                        status                TEXT NOT NULL,
+                        interval_hours        INTEGER NOT NULL,
+                        next_run_at           TEXT,
+                        lease_owner           TEXT,
+                        lease_expires_at      TEXT,
+                        attempt_count         INTEGER NOT NULL DEFAULT 0,
+                        consecutive_failures  INTEGER NOT NULL DEFAULT 0,
+                        last_started_at       TEXT,
+                        last_finished_at      TEXT,
+                        last_success_at       TEXT,
+                        last_provider_as_of   TEXT,
+                        last_evidence_id      TEXT REFERENCES agent_evidence(id) ON DELETE SET NULL,
+                        last_error_code       TEXT,
+                        last_error_message    TEXT,
+                        created_at            TEXT NOT NULL,
+                        updated_at            TEXT NOT NULL
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_agent_outcome_schedule_due
+                    ON agent_outcome_schedules(status, next_run_at, lease_expires_at);
 
                     CREATE TABLE IF NOT EXISTS agent_claims (
                         id            TEXT PRIMARY KEY,
@@ -308,6 +350,10 @@ class AgentRepository:
         item = dict(row)
         item["value"] = _load(item.pop("value_json", None), None)
         return item
+
+    @staticmethod
+    def _outcome_schedule_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
+        return dict(row) if row is not None else None
 
     def create_run(
         self,
@@ -722,6 +768,7 @@ class AgentRepository:
         schema_version: str,
         quality_status: str,
         payload: dict[str, Any],
+        actor_type: str = "user",
         actor_id: str = "anonymous",
     ) -> tuple[dict[str, Any], bool]:
         """Append immutable evidence after a Run completes, idempotent per observed snapshot."""
@@ -787,7 +834,7 @@ class AgentRepository:
                     "payload_sha256": payload_hash,
                     "quality_status": quality_status,
                 },
-                actor_type="user",
+                actor_type=actor_type,
                 actor_id=actor_id,
             )
             self._append_audit(
@@ -800,7 +847,7 @@ class AgentRepository:
                     "as_of": as_of,
                     "schema_version": schema_version,
                 },
-                actor_type="user",
+                actor_type=actor_type,
                 actor_id=actor_id,
             )
             row = connection.execute(
@@ -829,6 +876,419 @@ class AgentRepository:
             self._evidence_from_row(row, include_payload=include_payload)
             for row in rows
         ]
+
+    def get_outcome_schedule(self, run_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM agent_outcome_schedules WHERE run_id=?",
+                (run_id,),
+            ).fetchone()
+        return self._outcome_schedule_from_row(row)
+
+    def list_unscheduled_terminal_runs(
+        self,
+        *,
+        actions: tuple[str, ...],
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        if not actions:
+            return []
+        placeholders = ",".join("?" for _ in actions)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT runs.*
+                FROM agent_runs AS runs
+                LEFT JOIN agent_outcome_schedules AS schedules ON schedules.run_id=runs.id
+                WHERE schedules.id IS NULL
+                  AND runs.intent='fund_deep_research'
+                  AND runs.status IN ('completed', 'partial')
+                  AND runs.result_json IS NOT NULL
+                  AND json_extract(
+                      runs.result_json,
+                      '$.personalized_decision.decision.action'
+                  ) IN ({placeholders})
+                ORDER BY runs.completed_at DESC, runs.id DESC
+                LIMIT ?
+                """,
+                (*actions, max(1, min(int(limit), 1000))),
+            ).fetchall()
+        return [self._run_from_row(row) for row in rows]
+
+    def ensure_outcome_schedule(
+        self,
+        run_id: str,
+        *,
+        interval_hours: int = 24,
+        actor_type: str = "system",
+        actor_id: str = "agent-runtime-v1",
+        now: str | dt.datetime | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        """Create an active schedule once without overriding a later user pause."""
+        interval = int(interval_hours)
+        if interval < 12 or interval > 168:
+            raise ValueError("结果观察间隔必须在 12 至 168 小时之间")
+        now_dt = _as_utc_datetime(now)
+        now_text = _utc_iso(now_dt)
+        next_run_at = _utc_iso(now_dt + dt.timedelta(hours=interval))
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT * FROM agent_outcome_schedules WHERE run_id=?",
+                (run_id,),
+            ).fetchone()
+            if existing is not None:
+                return self._outcome_schedule_from_row(existing), False
+            run = connection.execute(
+                "SELECT tenant_id, user_id FROM agent_runs WHERE id=?",
+                (run_id,),
+            ).fetchone()
+            if run is None:
+                raise KeyError(f"Agent Run 不存在:{run_id}")
+            schedule_id = _new_id("schedule")
+            connection.execute(
+                """
+                INSERT INTO agent_outcome_schedules (
+                    id, run_id, tenant_id, user_id, status, interval_hours,
+                    next_run_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)
+                """,
+                (
+                    schedule_id,
+                    run_id,
+                    run["tenant_id"],
+                    run["user_id"],
+                    interval,
+                    next_run_at,
+                    now_text,
+                    now_text,
+                ),
+            )
+            self._append_audit(
+                connection,
+                run_id,
+                "outcome.schedule.created",
+                {
+                    "schedule_id": schedule_id,
+                    "interval_hours": interval,
+                    "next_run_at": next_run_at,
+                    "status": "active",
+                },
+                actor_type=actor_type,
+                actor_id=actor_id,
+            )
+            row = connection.execute(
+                "SELECT * FROM agent_outcome_schedules WHERE id=?",
+                (schedule_id,),
+            ).fetchone()
+        return self._outcome_schedule_from_row(row), True
+
+    def configure_outcome_schedule(
+        self,
+        run_id: str,
+        *,
+        enabled: bool,
+        interval_hours: int = 24,
+        run_immediately: bool = False,
+        actor_id: str = "anonymous",
+        now: str | dt.datetime | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        """Persist a user's schedule setting and preserve it across process restarts."""
+        interval = int(interval_hours)
+        if interval < 12 or interval > 168:
+            raise ValueError("结果观察间隔必须在 12 至 168 小时之间")
+        now_dt = _as_utc_datetime(now)
+        now_text = _utc_iso(now_dt)
+        next_run_at = (
+            now_text
+            if enabled and run_immediately
+            else _utc_iso(now_dt + dt.timedelta(hours=interval)) if enabled else None
+        )
+        desired_status = "active" if enabled else "paused"
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            run = connection.execute(
+                "SELECT tenant_id, user_id FROM agent_runs WHERE id=?",
+                (run_id,),
+            ).fetchone()
+            if run is None:
+                raise KeyError(f"Agent Run 不存在:{run_id}")
+            existing = connection.execute(
+                "SELECT * FROM agent_outcome_schedules WHERE run_id=?",
+                (run_id,),
+            ).fetchone()
+            changed = (
+                existing is None
+                or existing["status"] != desired_status
+                or int(existing["interval_hours"]) != interval
+                or bool(run_immediately and enabled)
+            )
+            if existing is None:
+                schedule_id = _new_id("schedule")
+                connection.execute(
+                    """
+                    INSERT INTO agent_outcome_schedules (
+                        id, run_id, tenant_id, user_id, status, interval_hours,
+                        next_run_at, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        schedule_id,
+                        run_id,
+                        run["tenant_id"],
+                        run["user_id"],
+                        desired_status,
+                        interval,
+                        next_run_at,
+                        now_text,
+                        now_text,
+                    ),
+                )
+                event_type = "outcome.schedule.created"
+            else:
+                schedule_id = existing["id"]
+                if changed:
+                    if enabled:
+                        if existing["status"] == "paused":
+                            connection.execute(
+                                """
+                                UPDATE agent_outcome_schedules
+                                SET status=?, interval_hours=?, next_run_at=?,
+                                    consecutive_failures=0, last_error_code=NULL,
+                                    last_error_message=NULL, updated_at=?
+                                WHERE id=?
+                                """,
+                                (desired_status, interval, next_run_at, now_text, schedule_id),
+                            )
+                        else:
+                            connection.execute(
+                                """
+                                UPDATE agent_outcome_schedules
+                                SET status=?, interval_hours=?, next_run_at=?, updated_at=?
+                                WHERE id=?
+                                """,
+                                (desired_status, interval, next_run_at, now_text, schedule_id),
+                            )
+                    else:
+                        connection.execute(
+                            """
+                            UPDATE agent_outcome_schedules
+                            SET status=?, interval_hours=?, next_run_at=NULL,
+                                lease_owner=NULL, lease_expires_at=NULL, updated_at=?
+                            WHERE id=?
+                            """,
+                            (desired_status, interval, now_text, schedule_id),
+                        )
+                event_type = "outcome.schedule.resumed" if enabled else "outcome.schedule.paused"
+            if changed:
+                self._append_audit(
+                    connection,
+                    run_id,
+                    event_type,
+                    {
+                        "schedule_id": schedule_id,
+                        "interval_hours": interval,
+                        "next_run_at": next_run_at,
+                        "status": desired_status,
+                        "run_immediately": bool(run_immediately),
+                    },
+                    actor_type="user",
+                    actor_id=actor_id,
+                )
+            row = connection.execute(
+                "SELECT * FROM agent_outcome_schedules WHERE id=?",
+                (schedule_id,),
+            ).fetchone()
+        return self._outcome_schedule_from_row(row), changed
+
+    def claim_due_outcome_schedule(
+        self,
+        worker_id: str,
+        *,
+        lease_seconds: int = 120,
+        now: str | dt.datetime | None = None,
+    ) -> dict[str, Any] | None:
+        now_dt = _as_utc_datetime(now)
+        now_text = _utc_iso(now_dt)
+        lease_expires_at = _utc_iso(now_dt + dt.timedelta(seconds=max(60, int(lease_seconds))))
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT * FROM agent_outcome_schedules
+                WHERE status='active' AND next_run_at IS NOT NULL AND next_run_at<=?
+                  AND (lease_expires_at IS NULL OR lease_expires_at<=?)
+                ORDER BY next_run_at, id
+                LIMIT 1
+                """,
+                (now_text, now_text),
+            ).fetchone()
+            if row is None:
+                return None
+            changed = connection.execute(
+                """
+                UPDATE agent_outcome_schedules
+                SET lease_owner=?, lease_expires_at=?, last_started_at=?,
+                    attempt_count=attempt_count+1, updated_at=?
+                WHERE id=? AND status='active'
+                  AND (lease_expires_at IS NULL OR lease_expires_at<=?)
+                """,
+                (worker_id, lease_expires_at, now_text, now_text, row["id"], now_text),
+            ).rowcount
+            if changed != 1:
+                return None
+            self._append_audit(
+                connection,
+                row["run_id"],
+                "outcome.schedule.started",
+                {
+                    "schedule_id": row["id"],
+                    "worker_id": worker_id,
+                    "lease_expires_at": lease_expires_at,
+                },
+                actor_id=worker_id,
+            )
+            claimed = connection.execute(
+                "SELECT * FROM agent_outcome_schedules WHERE id=?",
+                (row["id"],),
+            ).fetchone()
+        return self._outcome_schedule_from_row(claimed)
+
+    def complete_outcome_schedule(
+        self,
+        schedule_id: str,
+        worker_id: str,
+        *,
+        provider_as_of: str,
+        evidence_id: str,
+        evidence_created: bool,
+        now: str | dt.datetime | None = None,
+    ) -> dict[str, Any]:
+        now_dt = _as_utc_datetime(now)
+        now_text = _utc_iso(now_dt)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            schedule = connection.execute(
+                "SELECT * FROM agent_outcome_schedules WHERE id=?",
+                (schedule_id,),
+            ).fetchone()
+            if schedule is None:
+                raise KeyError(f"结果观察计划不存在:{schedule_id}")
+            next_run_at = _utc_iso(
+                now_dt + dt.timedelta(hours=int(schedule["interval_hours"]))
+            )
+            changed = connection.execute(
+                """
+                UPDATE agent_outcome_schedules
+                SET next_run_at=?, lease_owner=NULL, lease_expires_at=NULL,
+                    consecutive_failures=0, last_finished_at=?, last_success_at=?,
+                    last_provider_as_of=?, last_evidence_id=?, last_error_code=NULL,
+                    last_error_message=NULL, updated_at=?
+                WHERE id=? AND lease_owner=?
+                """,
+                (
+                    next_run_at,
+                    now_text,
+                    now_text,
+                    str(provider_as_of),
+                    evidence_id,
+                    now_text,
+                    schedule_id,
+                    worker_id,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise RuntimeError("结果观察计划租约已失效，拒绝提交完成状态")
+            self._append_audit(
+                connection,
+                schedule["run_id"],
+                "outcome.schedule.succeeded",
+                {
+                    "schedule_id": schedule_id,
+                    "worker_id": worker_id,
+                    "provider_as_of": str(provider_as_of),
+                    "evidence_id": evidence_id,
+                    "evidence_created": bool(evidence_created),
+                    "next_run_at": next_run_at,
+                },
+                actor_id=worker_id,
+            )
+            row = connection.execute(
+                "SELECT * FROM agent_outcome_schedules WHERE id=?",
+                (schedule_id,),
+            ).fetchone()
+        return self._outcome_schedule_from_row(row)
+
+    def fail_outcome_schedule(
+        self,
+        schedule_id: str,
+        worker_id: str,
+        *,
+        error_code: str,
+        error_message: str,
+        retryable: bool,
+        now: str | dt.datetime | None = None,
+    ) -> dict[str, Any]:
+        retry_delays = (900, 3600, 14400, 43200)
+        now_dt = _as_utc_datetime(now)
+        now_text = _utc_iso(now_dt)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            schedule = connection.execute(
+                "SELECT * FROM agent_outcome_schedules WHERE id=?",
+                (schedule_id,),
+            ).fetchone()
+            if schedule is None:
+                raise KeyError(f"结果观察计划不存在:{schedule_id}")
+            failure_count = int(schedule["consecutive_failures"]) + 1
+            retry_exhausted = bool(retryable and failure_count > len(retry_delays))
+            should_retry = bool(retryable and not retry_exhausted)
+            delay = retry_delays[min(failure_count - 1, len(retry_delays) - 1)]
+            next_run_at = _utc_iso(now_dt + dt.timedelta(seconds=delay)) if should_retry else None
+            next_status = "active" if should_retry else "paused"
+            changed = connection.execute(
+                """
+                UPDATE agent_outcome_schedules
+                SET status=?, next_run_at=?, lease_owner=NULL, lease_expires_at=NULL,
+                    consecutive_failures=?, last_finished_at=?, last_error_code=?,
+                    last_error_message=?, updated_at=?
+                WHERE id=? AND lease_owner=?
+                """,
+                (
+                    next_status,
+                    next_run_at,
+                    failure_count,
+                    now_text,
+                    str(error_code or "OUTCOME_EVALUATION_FAILED")[:100],
+                    str(error_message or "")[:500],
+                    now_text,
+                    schedule_id,
+                    worker_id,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise RuntimeError("结果观察计划租约已失效，拒绝提交失败状态")
+            self._append_audit(
+                connection,
+                schedule["run_id"],
+                "outcome.schedule.failed",
+                {
+                    "schedule_id": schedule_id,
+                    "worker_id": worker_id,
+                    "error_code": str(error_code),
+                    "retryable": bool(retryable),
+                    "retry_exhausted": retry_exhausted,
+                    "consecutive_failures": failure_count,
+                    "next_run_at": next_run_at,
+                    "status": next_status,
+                },
+                actor_id=worker_id,
+            )
+            row = connection.execute(
+                "SELECT * FROM agent_outcome_schedules WHERE id=?",
+                (schedule_id,),
+            ).fetchone()
+        return self._outcome_schedule_from_row(row)
 
     def fail_step(
         self,

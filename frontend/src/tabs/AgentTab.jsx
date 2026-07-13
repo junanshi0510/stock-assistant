@@ -23,7 +23,9 @@ import {
   fetchAgentRun,
   fetchAgentRunComparison,
   fetchAgentRunEvaluations,
+  fetchAgentOutcomeSchedule,
   fetchAgentRuns,
+  configureAgentOutcomeSchedule,
   evaluateAgentRun,
   rerunAgentRun,
 } from '../api/agent'
@@ -279,6 +281,9 @@ export default function AgentTab() {
   const [loadingComparison, setLoadingComparison] = useState(false)
   const [evaluations, setEvaluations] = useState([])
   const [loadingEvaluation, setLoadingEvaluation] = useState(false)
+  const [outcomeSchedule, setOutcomeSchedule] = useState(null)
+  const [outcomeEligibility, setOutcomeEligibility] = useState(null)
+  const [loadingOutcomeSchedule, setLoadingOutcomeSchedule] = useState(false)
 
   async function loadRun(runId, { quiet = false } = {}) {
     if (!runId) return
@@ -328,6 +333,17 @@ export default function AgentTab() {
     }
   }
 
+  async function loadOutcomeSchedule(runId) {
+    if (!runId) return
+    try {
+      const data = await fetchAgentOutcomeSchedule(runId)
+      setOutcomeSchedule(data.schedule || null)
+      setOutcomeEligibility(data.eligibility || null)
+    } catch (requestError) {
+      setError(requestError.message || '自动结果观察计划获取失败')
+    }
+  }
+
   function applyHistoryFilters(event) {
     event.preventDefault()
     const cleanCode = historyFilterDraft.code.trim()
@@ -366,10 +382,23 @@ export default function AgentTab() {
     if (run?.id && TERMINAL.has(run.status)) {
       loadHistory()
       loadEvaluations(run.id)
+      loadOutcomeSchedule(run.id)
     } else if (run?.id) {
       setEvaluations([])
+      setOutcomeSchedule(null)
+      setOutcomeEligibility(null)
     }
   }, [run?.id, run?.status])
+
+  useEffect(() => {
+    if (!run?.id || outcomeSchedule?.status !== 'active') return undefined
+    const timer = window.setInterval(() => {
+      loadOutcomeSchedule(run.id)
+      loadEvaluations(run.id)
+      loadRun(run.id, { quiet: true })
+    }, 15000)
+    return () => window.clearInterval(timer)
+  }, [run?.id, outcomeSchedule?.status])
 
   const progress = useMemo(() => {
     if (!run) return { completed: 0, total: 0 }
@@ -394,6 +423,8 @@ export default function AgentTab() {
     setAudit(null)
     setComparison(null)
     setEvaluations([])
+    setOutcomeSchedule(null)
+    setOutcomeEligibility(null)
     try {
       const data = await createFundResearchRun({
         code: clean,
@@ -433,6 +464,8 @@ export default function AgentTab() {
     setAudit(null)
     setComparison(null)
     setEvaluations([])
+    setOutcomeSchedule(null)
+    setOutcomeEligibility(null)
     try {
       const data = await rerunAgentRun(run.id)
       setRun(data.run)
@@ -498,6 +531,23 @@ export default function AgentTab() {
       setError(requestError.message || '真实确认净值结果评估失败')
     } finally {
       setLoadingEvaluation(false)
+    }
+  }
+
+  async function configureOutcomeSchedule(payload) {
+    if (!run?.id || !TERMINAL.has(run.status)) return
+    setLoadingOutcomeSchedule(true)
+    setError('')
+    try {
+      const data = await configureAgentOutcomeSchedule(run.id, payload)
+      setOutcomeSchedule(data.schedule || null)
+      setOutcomeEligibility(data.eligibility || null)
+      setAudit(null)
+      await loadRun(run.id, { quiet: true })
+    } catch (requestError) {
+      setError(requestError.message || '自动结果观察计划更新失败')
+    } finally {
+      setLoadingOutcomeSchedule(false)
     }
   }
 
@@ -782,6 +832,10 @@ export default function AgentTab() {
             loading={loadingEvaluation}
             onEvaluate={evaluateOutcome}
             onOpenEvidence={openEvidence}
+            schedule={outcomeSchedule}
+            eligibility={outcomeEligibility}
+            loadingSchedule={loadingOutcomeSchedule}
+            onConfigureSchedule={configureOutcomeSchedule}
           />
 
           {result.personalized_decision && (

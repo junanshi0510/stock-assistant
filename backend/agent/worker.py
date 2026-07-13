@@ -13,7 +13,10 @@ import os
 import threading
 import time
 import uuid
+from typing import Callable
 
+from .outcome_worker import OutcomeScheduleWorker
+from .outcomes import DecisionOutcomeService
 from .registry import build_default_registry
 from .repository import AgentRepository
 from .workflow import AgentWorkflowRunner
@@ -29,10 +32,12 @@ class AgentWorker:
         runner: AgentWorkflowRunner,
         *,
         poll_interval: float = 0.75,
+        terminal_callback: Callable[[dict], None] | None = None,
     ) -> None:
         self.repository = repository
         self.runner = runner
         self.poll_interval = max(0.1, float(poll_interval))
+        self.terminal_callback = terminal_callback
         self.worker_id = f"worker_{uuid.uuid4().hex}"
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -64,27 +69,52 @@ class AgentWorker:
     def _loop(self) -> None:
         while not self._stop.is_set():
             try:
-                run = self.repository.claim_next_run(self.worker_id)
-                if run is None:
+                if not self.run_once():
                     self._stop.wait(self.poll_interval)
-                    continue
-                self.runner.execute(run)
             except Exception:
                 logger.exception("Agent Worker 循环异常")
                 time.sleep(min(2.0, self.poll_interval * 2))
+
+    def run_once(self) -> bool:
+        run = self.repository.claim_next_run(self.worker_id)
+        if run is None:
+            return False
+        finished = self.runner.execute(run)
+        if self.terminal_callback is not None:
+            try:
+                self.terminal_callback(finished)
+            except Exception:
+                logger.exception("Agent Run 终态回调失败:%s", run.get("id"))
+        return True
 
 
 repository = AgentRepository()
 registry = build_default_registry()
 runner = AgentWorkflowRunner(repository, registry)
+outcome_service = DecisionOutcomeService(repository, registry)
+
+
+def _ensure_outcome_schedule(run: dict) -> None:
+    outcome_service.ensure_schedule_for_run(run, actor_id="agent-worker")
+
+
 worker = AgentWorker(
     repository,
     runner,
     poll_interval=float(os.getenv("AGENT_WORKER_POLL_SECONDS", "0.75")),
+    terminal_callback=_ensure_outcome_schedule,
+)
+outcome_worker = OutcomeScheduleWorker(
+    repository,
+    outcome_service,
+    poll_interval=float(os.getenv("AGENT_OUTCOME_POLL_SECONDS", "30")),
+    lease_seconds=int(os.getenv("AGENT_OUTCOME_LEASE_SECONDS", "120")),
 )
 
 
 def start_worker() -> bool:
     if os.getenv("AGENT_WORKER_ENABLED", "1").strip().lower() in {"0", "false", "no"}:
         return False
-    return worker.start()
+    run_started = worker.start()
+    outcome_started = outcome_worker.start()
+    return run_started or outcome_started

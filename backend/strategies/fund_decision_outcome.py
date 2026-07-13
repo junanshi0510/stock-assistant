@@ -11,13 +11,13 @@ from typing import Any, Iterable
 EVALUATOR_ID = "fund_decision_outcome"
 EVALUATOR_VERSION = "1.0.0"
 _MILESTONES = (5, 20, 60, 120)
-_ACTIONABLE = {
+ACTIONABLE_DECISION_ACTIONS = frozenset({
     "consider_tranche",
     "wait",
     "do_not_add",
     "hold_no_add",
     "reduce_exposure",
-}
+})
 
 
 def _number(value: Any) -> float | None:
@@ -40,7 +40,7 @@ def _return_pct(baseline: float, value: float) -> float:
 
 
 def _interpret(action: str, return_pct: float | None, sample_count: int) -> dict[str, Any]:
-    if action not in _ACTIONABLE:
+    if action not in ACTIONABLE_DECISION_ACTIONS:
         return {
             "status": "not_scored",
             "label": "原决策不可执行或不包含方向",
@@ -128,7 +128,7 @@ def evaluate_fund_decision_outcome(
         "code": str(code),
         "decision": {
             "action": str(action or ""),
-            "actionable": str(action or "") in _ACTIONABLE,
+            "actionable": str(action or "") in ACTIONABLE_DECISION_ACTIONS,
         },
         "baseline": {
             "as_of": baseline_date.isoformat(),

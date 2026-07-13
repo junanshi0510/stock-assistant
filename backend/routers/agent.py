@@ -8,13 +8,13 @@ import binascii
 import json
 import os
 import re
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from typing import Literal
 
 from fastapi import APIRouter, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
 
 from agent.comparison import compare_run_results
+from agent.outcomes import DecisionOutcomeService, OutcomeEvaluationError
 from agent.repository import RUN_TERMINAL_STATUSES
 from agent.worker import registry, repository, start_worker
 
@@ -40,6 +40,12 @@ class CreateAgentRunRequest(BaseModel):
         if not re.fullmatch(r"\d{6}", code):
             raise ValueError("基金代码需要是 6 位数字")
         return code
+
+
+class OutcomeScheduleRequest(BaseModel):
+    enabled: bool
+    interval_hours: int = Field(default=24, ge=12, le=168)
+    run_immediately: bool = False
 
 
 def _get_run_or_404(run_id: str) -> dict:
@@ -97,37 +103,34 @@ def _history_item(run: dict) -> dict:
     }
 
 
-def _decision_baseline(run: dict) -> dict:
-    result = run.get("result") or {}
-    fund = result.get("fund") or {}
-    baseline_nav = fund.get("unit_nav")
-    if baseline_nav is None:
-        claim = next(
-            (item for item in run.get("claims") or [] if item.get("claim_key") == "latest_nav"),
-            None,
-        )
-        baseline_nav = ((claim or {}).get("value") or {}).get("value")
-    action = ((result.get("personalized_decision") or {}).get("decision") or {}).get("action")
+def _schedule_view(schedule: dict | None) -> dict | None:
+    if schedule is None:
+        return None
     return {
-        "code": str(fund.get("code") or (run.get("input") or {}).get("code") or ""),
-        "name": fund.get("name"),
-        "baseline_as_of": str(fund.get("as_of") or ""),
-        "baseline_nav": baseline_nav,
-        "action": str(action or "research_only"),
+        key: schedule.get(key)
+        for key in (
+            "id",
+            "run_id",
+            "status",
+            "interval_hours",
+            "next_run_at",
+            "attempt_count",
+            "consecutive_failures",
+            "last_started_at",
+            "last_finished_at",
+            "last_success_at",
+            "last_provider_as_of",
+            "last_evidence_id",
+            "last_error_code",
+            "last_error_message",
+            "created_at",
+            "updated_at",
+        )
     }
 
 
-def _invoke_outcome_tool(payload: dict) -> dict:
-    definition = registry.get("fund.decision_outcome.get", "1.0.0")
-    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="agent-outcome-evaluation")
-    future = executor.submit(definition.handler, payload)
-    try:
-        return future.result(timeout=float(definition.timeout_seconds))
-    except FutureTimeoutError as error:
-        future.cancel()
-        raise HTTPException(status_code=504, detail="真实确认净值评估超过执行时限") from error
-    finally:
-        executor.shutdown(wait=False, cancel_futures=True)
+def _outcome_service() -> DecisionOutcomeService:
+    return DecisionOutcomeService(repository, registry)
 
 
 @router.get("/tools")
@@ -220,60 +223,63 @@ def list_agent_run_evaluations(run_id: str):
     }
 
 
-@router.post("/runs/{run_id}/evaluate")
-def evaluate_agent_run(run_id: str):
+@router.get("/runs/{run_id}/outcome-schedule")
+def get_agent_run_outcome_schedule(run_id: str):
     run = _get_run_or_404(run_id)
-    if run["status"] not in RUN_TERMINAL_STATUSES or not run.get("result"):
-        raise HTTPException(status_code=409, detail="只有已形成研究结果的终态 Run 可以评估")
-    if run.get("intent") != "fund_deep_research":
-        raise HTTPException(status_code=409, detail="当前只支持基金深度研究 Run 的结果评估")
-    integrity = repository.verify_run_evidence_integrity(run_id)
-    if not integrity["verified"]:
-        raise HTTPException(status_code=409, detail="原 Run 的 Evidence 或审计链校验失败，已拒绝评估")
-    source_audit = repository.verify_audit_chain(run_id)
-    baseline = _decision_baseline(run)
-    if not re.fullmatch(r"\d{6}", baseline["code"]):
-        raise HTTPException(status_code=409, detail="原 Run 缺少有效基金代码")
-    if not baseline["baseline_as_of"] or baseline["baseline_nav"] is None:
-        raise HTTPException(status_code=409, detail="原 Run 缺少不可变的确认净值基线")
-    try:
-        outcome = _invoke_outcome_tool(baseline)
-    except HTTPException:
-        raise
-    except Exception as error:
-        raise HTTPException(status_code=502, detail=f"真实确认净值结果评估失败:{error}") from error
-    outcome["source_run"] = {
-        "run_id": run_id,
-        "completed_at": run.get("completed_at"),
-        "result_schema_version": (run.get("result") or {}).get("schema_version"),
-        "evidence_count": integrity.get("evidence_count"),
-        "audit_chain_head": source_audit.get("chain_head"),
+    service = _outcome_service()
+    return {
+        "eligibility": service.eligibility(run),
+        "schedule": _schedule_view(repository.get_outcome_schedule(run_id)),
+        "policy": (
+            "只有包含方向性动作且拥有不可变确认净值基线的终态基金 Run 才能自动观察；"
+            "计划保存在数据库中，由带租约的 Worker 执行，进程重启不会丢失。"
+        ),
     }
-    as_of = str(outcome.get("provider_as_of") or baseline["baseline_as_of"])
-    evidence, created = repository.add_post_run_evidence(
+
+
+@router.put("/runs/{run_id}/outcome-schedule")
+def configure_agent_run_outcome_schedule(run_id: str, request: OutcomeScheduleRequest):
+    run = _get_run_or_404(run_id)
+    service = _outcome_service()
+    eligibility = service.eligibility(run)
+    existing = repository.get_outcome_schedule(run_id)
+    if request.enabled and not eligibility["eligible"]:
+        raise HTTPException(
+            status_code=409,
+            detail=f"当前 Run 不可启用自动结果观察:{eligibility['reason']}",
+        )
+    if not request.enabled and existing is None:
+        return {
+            "changed": False,
+            "eligibility": eligibility,
+            "schedule": None,
+        }
+    schedule, changed = repository.configure_outcome_schedule(
         run_id,
-        evidence_type="outcome_observation",
-        subject_type="fund",
-        subject_id=baseline["code"],
-        provider=str(outcome.get("source") or "fund.decision_outcome.get"),
-        source_url=str(outcome.get("source_url") or "") or None,
-        as_of=as_of,
-        schema_version=str(outcome.get("evaluator_version") or "1.0.0"),
-        quality_status="complete",
-        payload=outcome,
+        enabled=request.enabled,
+        interval_hours=request.interval_hours,
+        run_immediately=request.run_immediately,
         actor_id="anonymous",
     )
-    persisted_outcome = evidence.get("payload") or {}
+    if request.enabled:
+        start_worker()
     return {
-        "created": created,
-        "evaluation": {
-            **persisted_outcome,
-            "evidence_id": evidence["id"],
-            "payload_sha256": evidence["payload_sha256"],
-            "integrity_verified": evidence.get("integrity_verified"),
-            "created_at": evidence["created_at"],
-        },
+        "changed": changed,
+        "eligibility": eligibility,
+        "schedule": _schedule_view(schedule),
     }
+
+
+@router.post("/runs/{run_id}/evaluate")
+def evaluate_agent_run(run_id: str):
+    try:
+        return _outcome_service().evaluate_run(
+            run_id,
+            actor_type="user",
+            actor_id="anonymous",
+        )
+    except OutcomeEvaluationError as error:
+        raise HTTPException(status_code=error.http_status, detail=str(error)) from error
 
 
 @router.get("/runs/{run_id}/comparison")

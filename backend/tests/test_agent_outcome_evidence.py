@@ -133,7 +133,11 @@ class AgentOutcomeEvidenceTests(unittest.TestCase):
         recomputed = {**_outcome(), "recomputed_but_not_persisted": True}
         with (
             patch.object(agent_router, "repository", self.repository),
-            patch.object(agent_router, "_invoke_outcome_tool", side_effect=[_outcome(), recomputed]) as tool,
+            patch.object(
+                agent_router.DecisionOutcomeService,
+                "_invoke_tool",
+                side_effect=[_outcome(), recomputed],
+            ) as tool,
         ):
             first = agent_router.evaluate_agent_run(self.run_id)
             second = agent_router.evaluate_agent_run(self.run_id)

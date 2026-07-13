@@ -58,3 +58,15 @@ export function fetchAgentRunEvaluations(runId) {
 export function evaluateAgentRun(runId) {
   return getJson(`/api/v1/agent/runs/${encodeURIComponent(runId)}/evaluate`, { method: 'POST' })
 }
+
+export function fetchAgentOutcomeSchedule(runId) {
+  return getJson(`/api/v1/agent/runs/${encodeURIComponent(runId)}/outcome-schedule`)
+}
+
+export function configureAgentOutcomeSchedule(runId, payload) {
+  return getJson(`/api/v1/agent/runs/${encodeURIComponent(runId)}/outcome-schedule`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
