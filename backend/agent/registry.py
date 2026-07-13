@@ -90,6 +90,19 @@ def build_default_registry() -> ToolRegistry:
         handler=lambda payload: fund_service.get_fund_market_profile(str(payload["code"])),
     ))
     registry.register(ToolDefinition(
+        name="fund.decision_outcome.get",
+        version="1.0.0",
+        description="使用原 Run 保存的确认净值基线和之后的真实确认净值评估决策后果。",
+        risk_level="R0",
+        timeout_seconds=45,
+        handler=lambda payload: fund_service.get_fund_decision_outcome(
+            str(payload["code"]),
+            str(payload["baseline_as_of"]),
+            float(payload["baseline_nav"]),
+            str(payload.get("action") or ""),
+        ),
+    ))
+    registry.register(ToolDefinition(
         name="fund.disclosure_changes.get",
         version="1.0.0",
         description="比较两个真实且不同的基金定期报告披露期。",

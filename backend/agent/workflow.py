@@ -575,6 +575,7 @@ class AgentWorkflowRunner:
                 "code": code,
                 "name": name,
                 "as_of": analysis.get("as_of"),
+                "unit_nav": latest.get("unit_nav"),
                 "sample_count": analysis.get("sample_count"),
                 "trend_state": analysis.get("trend_state"),
             },

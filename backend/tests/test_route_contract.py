@@ -68,6 +68,8 @@ EXPECTED_OPERATIONS = {
     "/api/v1/agent/tools": {"GET"},
     "/api/v1/agent/runs": {"GET", "POST"},
     "/api/v1/agent/runs/{run_id}": {"GET"},
+    "/api/v1/agent/runs/{run_id}/evaluate": {"POST"},
+    "/api/v1/agent/runs/{run_id}/evaluations": {"GET"},
     "/api/v1/agent/runs/{run_id}/comparison": {"GET"},
     "/api/v1/agent/runs/{run_id}/rerun": {"POST"},
     "/api/v1/agent/runs/{run_id}/cancel": {"POST"},

@@ -28,6 +28,7 @@ import akshare as ak
 from akshare.utils import demjson
 
 from strategies.fund_conditioned_forward import evaluate_conditioned_forward_strategy
+from strategies.fund_decision_outcome import evaluate_fund_decision_outcome
 from strategies.fund_market_profile import build_fund_market_profile
 from strategies.asset_level_recurrence import (
     evaluate_fund_level_recurrence,
@@ -948,6 +949,41 @@ def get_fund_market_profile(code: str) -> dict:
                 "available": bool(fact_sheet),
             },
         ],
+    })
+    return result
+
+
+def get_fund_decision_outcome(
+    code: str,
+    baseline_as_of: str,
+    baseline_nav: float,
+    action: str,
+) -> dict:
+    """Compare a saved decision baseline with later real confirmed NAV values."""
+    code = str(code or "").strip()
+    if not re.fullmatch(r"\d{6}", code):
+        raise ValueError("基金代码需要是 6 位数字")
+    history = _fetch_nav_history(code, months=120)
+    points = [
+        {"date": str(row["date"]), "unit_nav": _num(row["unit_nav"])}
+        for _, row in history.iterrows()
+    ]
+    result = evaluate_fund_decision_outcome(
+        code=code,
+        baseline_as_of=baseline_as_of,
+        baseline_nav=baseline_nav,
+        action=action,
+        points=points,
+    )
+    provider_as_of = str(history.iloc[-1]["date"]) if not history.empty else str(baseline_as_of)
+    result.update({
+        "source": "东方财富基金净值走势 / 天天基金历史净值",
+        "source_url": f"https://fund.eastmoney.com/{code}.html",
+        "provider_as_of": provider_as_of,
+        "quality": {
+            "confirmed_nav_only": True,
+            "provider_observation_count": len(history),
+        },
     })
     return result
 

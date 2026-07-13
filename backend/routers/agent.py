@@ -8,6 +8,7 @@ import binascii
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from typing import Literal
 
 from fastapi import APIRouter, Header, HTTPException, Query, status
@@ -96,6 +97,39 @@ def _history_item(run: dict) -> dict:
     }
 
 
+def _decision_baseline(run: dict) -> dict:
+    result = run.get("result") or {}
+    fund = result.get("fund") or {}
+    baseline_nav = fund.get("unit_nav")
+    if baseline_nav is None:
+        claim = next(
+            (item for item in run.get("claims") or [] if item.get("claim_key") == "latest_nav"),
+            None,
+        )
+        baseline_nav = ((claim or {}).get("value") or {}).get("value")
+    action = ((result.get("personalized_decision") or {}).get("decision") or {}).get("action")
+    return {
+        "code": str(fund.get("code") or (run.get("input") or {}).get("code") or ""),
+        "name": fund.get("name"),
+        "baseline_as_of": str(fund.get("as_of") or ""),
+        "baseline_nav": baseline_nav,
+        "action": str(action or "research_only"),
+    }
+
+
+def _invoke_outcome_tool(payload: dict) -> dict:
+    definition = registry.get("fund.decision_outcome.get", "1.0.0")
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="agent-outcome-evaluation")
+    future = executor.submit(definition.handler, payload)
+    try:
+        return future.result(timeout=float(definition.timeout_seconds))
+    except FutureTimeoutError as error:
+        future.cancel()
+        raise HTTPException(status_code=504, detail="真实确认净值评估超过执行时限") from error
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
 @router.get("/tools")
 def get_agent_tool_catalog():
     return {
@@ -164,6 +198,82 @@ def list_agent_runs(
 @router.get("/runs/{run_id}")
 def get_agent_run(run_id: str):
     return _get_run_or_404(run_id)
+
+
+@router.get("/runs/{run_id}/evaluations")
+def list_agent_run_evaluations(run_id: str):
+    _get_run_or_404(run_id)
+    items = repository.list_evidence_by_type(run_id, "outcome_observation")
+    return {
+        "items": [
+            {
+                **(item.get("payload") or {}),
+                "evidence_id": item["id"],
+                "payload_sha256": item["payload_sha256"],
+                "integrity_verified": item.get("integrity_verified"),
+                "created_at": item["created_at"],
+            }
+            for item in items
+        ],
+        "count": len(items),
+        "policy": "每个真实净值截止日只保存一份不可变评估；新净值产生新 Evidence，不覆盖旧评估。",
+    }
+
+
+@router.post("/runs/{run_id}/evaluate")
+def evaluate_agent_run(run_id: str):
+    run = _get_run_or_404(run_id)
+    if run["status"] not in RUN_TERMINAL_STATUSES or not run.get("result"):
+        raise HTTPException(status_code=409, detail="只有已形成研究结果的终态 Run 可以评估")
+    if run.get("intent") != "fund_deep_research":
+        raise HTTPException(status_code=409, detail="当前只支持基金深度研究 Run 的结果评估")
+    integrity = repository.verify_run_evidence_integrity(run_id)
+    if not integrity["verified"]:
+        raise HTTPException(status_code=409, detail="原 Run 的 Evidence 或审计链校验失败，已拒绝评估")
+    source_audit = repository.verify_audit_chain(run_id)
+    baseline = _decision_baseline(run)
+    if not re.fullmatch(r"\d{6}", baseline["code"]):
+        raise HTTPException(status_code=409, detail="原 Run 缺少有效基金代码")
+    if not baseline["baseline_as_of"] or baseline["baseline_nav"] is None:
+        raise HTTPException(status_code=409, detail="原 Run 缺少不可变的确认净值基线")
+    try:
+        outcome = _invoke_outcome_tool(baseline)
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(status_code=502, detail=f"真实确认净值结果评估失败:{error}") from error
+    outcome["source_run"] = {
+        "run_id": run_id,
+        "completed_at": run.get("completed_at"),
+        "result_schema_version": (run.get("result") or {}).get("schema_version"),
+        "evidence_count": integrity.get("evidence_count"),
+        "audit_chain_head": source_audit.get("chain_head"),
+    }
+    as_of = str(outcome.get("provider_as_of") or baseline["baseline_as_of"])
+    evidence, created = repository.add_post_run_evidence(
+        run_id,
+        evidence_type="outcome_observation",
+        subject_type="fund",
+        subject_id=baseline["code"],
+        provider=str(outcome.get("source") or "fund.decision_outcome.get"),
+        source_url=str(outcome.get("source_url") or "") or None,
+        as_of=as_of,
+        schema_version=str(outcome.get("evaluator_version") or "1.0.0"),
+        quality_status="complete",
+        payload=outcome,
+        actor_id="anonymous",
+    )
+    persisted_outcome = evidence.get("payload") or {}
+    return {
+        "created": created,
+        "evaluation": {
+            **persisted_outcome,
+            "evidence_id": evidence["id"],
+            "payload_sha256": evidence["payload_sha256"],
+            "integrity_verified": evidence.get("integrity_verified"),
+            "created_at": evidence["created_at"],
+        },
+    }
 
 
 @router.get("/runs/{run_id}/comparison")

@@ -50,3 +50,11 @@ export function fetchAgentEvidence(runId, evidenceId) {
 export function fetchAgentAudit(runId) {
   return getJson(`/api/v1/agent/runs/${encodeURIComponent(runId)}/audit`)
 }
+
+export function fetchAgentRunEvaluations(runId) {
+  return getJson(`/api/v1/agent/runs/${encodeURIComponent(runId)}/evaluations`)
+}
+
+export function evaluateAgentRun(runId) {
+  return getJson(`/api/v1/agent/runs/${encodeURIComponent(runId)}/evaluate`, { method: 'POST' })
+}

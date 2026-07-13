@@ -709,6 +709,127 @@ class AgentRepository:
             ).fetchone()
         return self._evidence_from_row(row, include_payload=True)
 
+    def add_post_run_evidence(
+        self,
+        run_id: str,
+        *,
+        evidence_type: str,
+        subject_type: str,
+        subject_id: str,
+        provider: str,
+        source_url: str | None,
+        as_of: str,
+        schema_version: str,
+        quality_status: str,
+        payload: dict[str, Any],
+        actor_id: str = "anonymous",
+    ) -> tuple[dict[str, Any], bool]:
+        """Append immutable evidence after a Run completes, idempotent per observed snapshot."""
+        if not str(as_of or "").strip():
+            raise ValueError("追加 Evidence 必须提供数据截止时间")
+        now = _utc_now()
+        payload_json = _json(payload)
+        payload_hash = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            run = connection.execute(
+                "SELECT status FROM agent_runs WHERE id=?",
+                (run_id,),
+            ).fetchone()
+            if run is None:
+                raise KeyError(f"Agent Run 不存在:{run_id}")
+            if run["status"] not in RUN_TERMINAL_STATUSES:
+                raise ValueError("只有终态 Agent Run 才能追加结果评估 Evidence")
+            existing = connection.execute(
+                """
+                SELECT * FROM agent_evidence
+                WHERE run_id=? AND evidence_type=? AND as_of=? AND schema_version=?
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (run_id, evidence_type, as_of, schema_version),
+            ).fetchone()
+            if existing is not None:
+                return self._evidence_from_row(existing, include_payload=True), False
+
+            evidence_id = _new_id("ev")
+            connection.execute(
+                """
+                INSERT INTO agent_evidence (
+                    id, run_id, step_id, evidence_type, subject_type, subject_id,
+                    provider, source_url, observed_at, as_of, schema_version,
+                    quality_status, payload_json, payload_sha256, created_at
+                ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    evidence_id,
+                    run_id,
+                    evidence_type,
+                    subject_type,
+                    subject_id,
+                    provider,
+                    source_url,
+                    now,
+                    as_of,
+                    schema_version,
+                    quality_status,
+                    payload_json,
+                    payload_hash,
+                    now,
+                ),
+            )
+            self._append_audit(
+                connection,
+                run_id,
+                "evidence.created",
+                {
+                    "evidence_id": evidence_id,
+                    "step_id": None,
+                    "payload_sha256": payload_hash,
+                    "quality_status": quality_status,
+                },
+                actor_type="user",
+                actor_id=actor_id,
+            )
+            self._append_audit(
+                connection,
+                run_id,
+                "outcome.evaluation.created",
+                {
+                    "evidence_id": evidence_id,
+                    "evidence_type": evidence_type,
+                    "as_of": as_of,
+                    "schema_version": schema_version,
+                },
+                actor_type="user",
+                actor_id=actor_id,
+            )
+            row = connection.execute(
+                "SELECT * FROM agent_evidence WHERE id=?",
+                (evidence_id,),
+            ).fetchone()
+        return self._evidence_from_row(row, include_payload=True), True
+
+    def list_evidence_by_type(
+        self,
+        run_id: str,
+        evidence_type: str,
+        *,
+        include_payload: bool = True,
+    ) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM agent_evidence
+                WHERE run_id=? AND evidence_type=?
+                ORDER BY as_of DESC, created_at DESC, id DESC
+                """,
+                (run_id, evidence_type),
+            ).fetchall()
+        return [
+            self._evidence_from_row(row, include_payload=include_payload)
+            for row in rows
+        ]
+
     def fail_step(
         self,
         run_id: str,

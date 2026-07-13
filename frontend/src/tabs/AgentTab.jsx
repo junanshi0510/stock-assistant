@@ -22,12 +22,15 @@ import {
   fetchAgentEvidence,
   fetchAgentRun,
   fetchAgentRunComparison,
+  fetchAgentRunEvaluations,
   fetchAgentRuns,
+  evaluateAgentRun,
   rerunAgentRun,
 } from '../api/agent'
 import AssetLevelRecurrenceView from '../components/AssetLevelRecurrenceView'
 import PersonalizedDecisionView from '../components/PersonalizedDecisionView'
 import FundMarketProfileView from '../components/FundMarketProfileView'
+import DecisionOutcomeView from '../components/DecisionOutcomeView'
 
 const TERMINAL = new Set(['completed', 'partial', 'failed', 'cancelled', 'abstained'])
 const EMPTY_HISTORY_FILTERS = { code: '', status: '' }
@@ -274,6 +277,8 @@ export default function AgentTab() {
   const [loadingAudit, setLoadingAudit] = useState(false)
   const [comparison, setComparison] = useState(null)
   const [loadingComparison, setLoadingComparison] = useState(false)
+  const [evaluations, setEvaluations] = useState([])
+  const [loadingEvaluation, setLoadingEvaluation] = useState(false)
 
   async function loadRun(runId, { quiet = false } = {}) {
     if (!runId) return
@@ -313,6 +318,16 @@ export default function AgentTab() {
     }
   }
 
+  async function loadEvaluations(runId) {
+    if (!runId) return
+    try {
+      const data = await fetchAgentRunEvaluations(runId)
+      setEvaluations(data.items || [])
+    } catch (requestError) {
+      setError(requestError.message || '决策结果评估记录获取失败')
+    }
+  }
+
   function applyHistoryFilters(event) {
     event.preventDefault()
     const cleanCode = historyFilterDraft.code.trim()
@@ -348,7 +363,12 @@ export default function AgentTab() {
   }, [run?.id, run?.status])
 
   useEffect(() => {
-    if (run?.id && TERMINAL.has(run.status)) loadHistory()
+    if (run?.id && TERMINAL.has(run.status)) {
+      loadHistory()
+      loadEvaluations(run.id)
+    } else if (run?.id) {
+      setEvaluations([])
+    }
   }, [run?.id, run?.status])
 
   const progress = useMemo(() => {
@@ -373,6 +393,7 @@ export default function AgentTab() {
     setSelectedEvidence(null)
     setAudit(null)
     setComparison(null)
+    setEvaluations([])
     try {
       const data = await createFundResearchRun({
         code: clean,
@@ -411,6 +432,7 @@ export default function AgentTab() {
     setSelectedEvidence(null)
     setAudit(null)
     setComparison(null)
+    setEvaluations([])
     try {
       const data = await rerunAgentRun(run.id)
       setRun(data.run)
@@ -457,6 +479,25 @@ export default function AgentTab() {
       setError(requestError.message || '重跑结果对比失败')
     } finally {
       setLoadingComparison(false)
+    }
+  }
+
+  async function evaluateOutcome() {
+    if (!run?.id || !result || !TERMINAL.has(run.status)) return
+    setLoadingEvaluation(true)
+    setError('')
+    try {
+      const data = await evaluateAgentRun(run.id)
+      setEvaluations((current) => {
+        const withoutCurrent = current.filter((item) => item.evidence_id !== data.evaluation.evidence_id)
+        return [data.evaluation, ...withoutCurrent]
+      })
+      setAudit(null)
+      await loadRun(run.id, { quiet: true })
+    } catch (requestError) {
+      setError(requestError.message || '真实确认净值结果评估失败')
+    } finally {
+      setLoadingEvaluation(false)
     }
   }
 
@@ -735,6 +776,13 @@ export default function AgentTab() {
             </div>
             <div className="agent-scope-note"><CircleAlert size={15} aria-hidden="true" />{result.scope?.statement}</div>
           </section>
+
+          <DecisionOutcomeView
+            evaluation={evaluations[0] || null}
+            loading={loadingEvaluation}
+            onEvaluate={evaluateOutcome}
+            onOpenEvidence={openEvidence}
+          />
 
           {result.personalized_decision && (
             <PersonalizedDecisionView decision={result.personalized_decision} onOpenEvidence={openEvidence} />
