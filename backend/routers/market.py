@@ -175,6 +175,21 @@ def quote(market: str = Query(...), symbol: str = Query(..., min_length=1)):
         raise HTTPException(status_code=502, detail=f"行情快照获取失败:{error}")
 
 
+@router.get("/api/quote/level-history")
+def quote_level_history(
+    market: str = Query(...),
+    symbol: str = Query(..., min_length=1),
+    months: int = Query(60, ge=6, le=120),
+):
+    _validate_market(market)
+    try:
+        return quotes_mod.get_quote_level_history(market, symbol, months=months)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    except Exception as error:
+        raise HTTPException(status_code=502, detail=f"实时价位历史到达分析失败:{error}")
+
+
 @router.get("/api/ml")
 def ml(
     market: str = Query(...),

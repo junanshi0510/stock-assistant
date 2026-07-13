@@ -1,5 +1,4 @@
 import FundMetricCard from './FundMetricCard'
-import FundReturnRecurrenceView from './FundReturnRecurrenceView'
 import { deltaClass, num, pct } from './fundFormatters'
 
 /** Renders decision guidance derived from a single fund's real historical data. */
@@ -81,7 +80,6 @@ export default function FundDecisionView({ fund }) {
               </table>
             </div>
           )}
-          <FundReturnRecurrenceView data={fund.return_recurrence} />
           <p className="hint" style={{ marginTop: 12 }}>{fund.timing.method}</p>
         </div>
       )}

@@ -32,8 +32,8 @@ export function fetchFundamentals(market, symbol) {
 }
 
 export function fetchQuote(market, symbol) {
-  const query = new URLSearchParams({ market, symbol })
-  return getJson(`/api/quote?${query.toString()}`)
+  const query = new URLSearchParams({ market, symbol, months: '60' })
+  return getJson(`/api/quote/level-history?${query.toString()}`)
 }
 
 export function fetchMl(market, symbol, horizon = 10) {

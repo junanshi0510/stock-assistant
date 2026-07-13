@@ -6,6 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import pandas as pd
+
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
@@ -25,7 +27,14 @@ class FundEstimateTests(unittest.TestCase):
             "estimate_nav": 2.55,
             "estimate_return": 2.0,
         }
-        with patch.object(funds, "_fetch_profile", return_value=profile):
+        history = pd.DataFrame([
+            {"date": "2026-07-08", "unit_nav": 2.6},
+            {"date": "2026-07-09", "unit_nav": 2.5},
+        ])
+        with (
+            patch.object(funds, "_fetch_profile", return_value=profile),
+            patch.object(funds, "_fetch_nav_history", return_value=history),
+        ):
             result = funds.get_fund_estimate("110022")
 
         self.assertEqual(result["status"], "available")
@@ -33,6 +42,8 @@ class FundEstimateTests(unittest.TestCase):
         self.assertEqual(result["estimate"]["unit_nav"], 2.55)
         self.assertEqual(result["estimate"]["change_pct"], 2.0)
         self.assertEqual(result["estimate"]["change_value"], 0.05)
+        self.assertEqual(result["level_recurrence"]["status"], "crossed_between")
+        self.assertEqual(result["level_recurrence"]["target"]["value"], 2.55)
         self.assertIn("不等于基金最终确认净值", result["policy"])
 
     def test_missing_estimate_is_explicit_instead_of_reusing_confirmed_nav(self):
@@ -51,6 +62,7 @@ class FundEstimateTests(unittest.TestCase):
         self.assertEqual(result["status"], "unavailable")
         self.assertEqual(result["confirmed"]["unit_nav"], 2.5)
         self.assertIsNone(result["estimate"]["unit_nav"])
+        self.assertEqual(result["level_recurrence"]["status"], "unavailable")
         self.assertIn("不会用历史净值", result["reason"])
 
     def test_invalid_code_is_rejected(self):

@@ -322,7 +322,6 @@ class AgentWorkflowRunner:
         metrics = analysis.get("metrics") or {}
         timing = analysis.get("timing") or {}
         conditioned_forward = analysis.get("conditioned_forward") or {}
-        return_recurrence = analysis.get("return_recurrence") or {}
         playbook = analysis.get("playbook") or {}
         role = playbook.get("role") or {}
 
@@ -391,17 +390,13 @@ class AgentWorkflowRunner:
                     if item:
                         facts.append(item)
 
-        recurrence_result = None
-        if return_recurrence:
-            recurrence_result = dict(return_recurrence)
-            recurrence_result["evidence_id"] = analysis_evidence["id"]
-            recurrence_result["evidence_ids"] = [analysis_evidence["id"]]
-
         estimate_payload = outputs.get("fund_estimate") or {}
         estimate_result = None
+        level_recurrence_result = None
         if estimate_payload:
             estimate_data = estimate_payload.get("estimate") or {}
             confirmed_data = estimate_payload.get("confirmed") or {}
+            estimate_evidence_id = (evidence.get("fund_estimate") or {}).get("id")
             estimate_result = {
                 "status": estimate_payload.get("status") or "unavailable",
                 "confirmed_date": confirmed_data.get("date"),
@@ -410,8 +405,15 @@ class AgentWorkflowRunner:
                 "estimate_nav": estimate_data.get("unit_nav"),
                 "estimate_change_pct": estimate_data.get("change_pct"),
                 "policy": estimate_payload.get("policy"),
-                "evidence_id": (evidence.get("fund_estimate") or {}).get("id"),
+                "evidence_id": estimate_evidence_id,
             }
+            level_recurrence = estimate_payload.get("level_recurrence") or {}
+            if level_recurrence:
+                level_recurrence_result = dict(level_recurrence)
+                level_recurrence_result["evidence_id"] = estimate_evidence_id
+                level_recurrence_result["evidence_ids"] = (
+                    [estimate_evidence_id] if estimate_evidence_id else []
+                )
             if estimate_payload.get("status") == "available" and estimate_result["evidence_id"]:
                 estimate_claim = self._add_metric_claim(
                     run_id,
@@ -490,7 +492,7 @@ class AgentWorkflowRunner:
             },
             "facts": facts,
             "strategy": strategy_result,
-            "return_recurrence": recurrence_result,
+            "level_recurrence": level_recurrence_result,
             "risk_review": {
                 "red_flags": playbook.get("red_flags") or [],
                 "entry_rules": playbook.get("entry_rules") or [],

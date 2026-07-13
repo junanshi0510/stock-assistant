@@ -21,6 +21,7 @@ EXPECTED_OPERATIONS = {
     "/api/backtest": {"GET"},
     "/api/fundamentals": {"GET"},
     "/api/quote": {"GET"},
+    "/api/quote/level-history": {"GET"},
     "/api/ml": {"GET"},
     "/api/news": {"GET"},
     "/api/compare": {"GET"},

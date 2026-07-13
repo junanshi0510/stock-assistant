@@ -28,7 +28,10 @@ import akshare as ak
 from akshare.utils import demjson
 
 from strategies.fund_conditioned_forward import evaluate_conditioned_forward_strategy
-from strategies.fund_return_recurrence import evaluate_fund_return_recurrence
+from strategies.asset_level_recurrence import (
+    evaluate_fund_level_recurrence,
+    unavailable_level_recurrence,
+)
 
 
 _CACHE_TTL = 300
@@ -2470,10 +2473,41 @@ def get_fund_estimate(code: str) -> dict:
             **base,
             "status": "unavailable",
             "reason": "数据源当前未提供盘中估算净值，系统不会用历史净值或模拟数据替代。",
+            "level_recurrence": unavailable_level_recurrence(
+                asset_type="fund",
+                reason="没有真实盘中估算净值，无法分析该估值上一次到达时间。",
+                target_label="盘中估算净值",
+                target_as_of=profile.get("estimate_date") or "",
+                target_source="东方财富基金估值",
+            ),
         }
+    try:
+        history = _fetch_nav_history(code, months=120)
+        points = [
+            {"date": str(row["date"]), "unit_nav": _num(row["unit_nav"])}
+            for _, row in history.iterrows()
+        ]
+        level_recurrence = evaluate_fund_level_recurrence(
+            estimate_nav=estimate_nav,
+            estimate_as_of=str(profile.get("estimate_date") or ""),
+            estimate_source="东方财富基金估值",
+            points=points,
+            history_source="东方财富基金净值走势 / 天天基金历史净值",
+            code=code,
+        )
+    except Exception as error:
+        level_recurrence = unavailable_level_recurrence(
+            asset_type="fund",
+            reason=f"真实确认净值历史当前不可用: {error}",
+            target_label="盘中估算净值",
+            target_value=estimate_nav,
+            target_as_of=profile.get("estimate_date") or "",
+            target_source="东方财富基金估值",
+        )
     return {
         **base,
         "status": "available",
+        "level_recurrence": level_recurrence,
         "method": {
             "estimate": "估算涨跌优先使用数据源给出的估算涨跌幅；缺失时才用估算净值相对上一确认净值计算。",
             "cache": f"估值响应最多缓存 {_PROFILE_CACHE_TTL} 秒，避免频繁请求上游数据源。",
@@ -2923,12 +2957,40 @@ def _percentile_rank(values: list[float], current: float | None) -> float | None
     return sum(1 for v in clean if v <= current) / len(clean) * 100
 
 
-def _fund_timing_profile(
-    df: pd.DataFrame,
-    metrics: dict,
-    recovery_profile: dict,
-    return_recurrence: dict | None = None,
-) -> dict:
+def _rolling_return_profile(nav: list[float], windows: list[tuple[str, int]]) -> list[dict]:
+    rows = []
+    for label, days in windows:
+        if len(nav) <= days:
+            rows.append({
+                "label": label,
+                "days": days,
+                "current_return": None,
+                "historical_percentile": None,
+                "avg_return": None,
+                "positive_ratio": None,
+                "sample_count": 0,
+            })
+            continue
+        values = []
+        for idx in range(days, len(nav)):
+            base = nav[idx - days]
+            latest = nav[idx]
+            if base and base > 0:
+                values.append((latest / base - 1) * 100)
+        current = values[-1] if values else None
+        rows.append({
+            "label": label,
+            "days": days,
+            "current_return": _round(current),
+            "historical_percentile": _round(_percentile_rank(values, current)),
+            "avg_return": _round(statistics.fmean(values)) if values else None,
+            "positive_ratio": _round(sum(1 for v in values if v > 0) / len(values) * 100) if values else None,
+            "sample_count": len(values),
+        })
+    return rows
+
+
+def _fund_timing_profile(df: pd.DataFrame, metrics: dict, recovery_profile: dict) -> dict:
     points = []
     for _, row in df.iterrows():
         value = _num(row["unit_nav"])
@@ -2968,7 +3030,7 @@ def _fund_timing_profile(
     ret_20 = _period_return(df, 30)
     ret_60 = _period_return(df, 90)
     ret_120 = _period_return(df, 180)
-    rolling_returns = (return_recurrence or {}).get("items") or []
+    rolling_returns = _rolling_return_profile(nav, [("近1月", 20), ("近3月", 60), ("近6月", 120)])
 
     score = 50
     signals = []
@@ -3437,8 +3499,7 @@ def analyze_fund(code: str, months: int = 36, *, include_profile: bool = True) -
         "dca_score": dca_score,
         "dca_label": dca_label,
     }
-    return_recurrence = evaluate_fund_return_recurrence(nav_points)
-    timing = _fund_timing_profile(df, metrics, recovery_profile, return_recurrence)
+    timing = _fund_timing_profile(df, metrics, recovery_profile)
     playbook = _fund_investment_playbook(metrics, timing, fact_sheet, style, calendar_returns, recovery_profile)
     conditioned_forward = evaluate_conditioned_forward_strategy(nav_points)
     return {
@@ -3464,7 +3525,6 @@ def analyze_fund(code: str, months: int = 36, *, include_profile: bool = True) -
         "metrics": metrics,
         "timing": timing,
         "conditioned_forward": conditioned_forward,
-        "return_recurrence": return_recurrence,
         "playbook": playbook,
         "drawdown_recovery": recovery_profile,
         "calendar_returns": calendar_returns,

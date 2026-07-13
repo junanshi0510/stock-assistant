@@ -1,4 +1,5 @@
 import { Gauge, RefreshCw } from 'lucide-react'
+import AssetLevelRecurrenceView from '../../components/AssetLevelRecurrenceView'
 import FundMetricCard from './FundMetricCard'
 import { deltaClass, num, pct } from './fundFormatters'
 
@@ -44,6 +45,7 @@ export default function FundEstimateView({ code, estimate, error, loading, onLoa
             <span className="tag neutral">确认净值日期 {confirmed.date || '-'}</span>
             <span className="tag neutral">估值时间 {current.time || '-'}</span>
           </div>
+          <AssetLevelRecurrenceView data={estimate.level_recurrence} />
           <p className="hint" style={{ marginTop: 12 }}>{estimate.policy} 数据源: {estimate.source}。</p>
         </>
       )}

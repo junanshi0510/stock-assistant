@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { createChart } from 'lightweight-charts'
 import { fetchFundamentals, fetchMl, fetchNews, fetchCompare, fetchQuote } from '../api/market'
+import AssetLevelRecurrenceView from '../components/AssetLevelRecurrenceView'
 
 function useLazy(fetcher, market, symbol, trigger) {
   const [state, setState] = useState({ loading: false, error: '', data: null })
@@ -67,6 +68,7 @@ export function QuoteSection({ market, symbol, trigger }) {
             <div className="ind"><div className="k">PE</div><div className="v">{data.pe ?? '—'}</div></div>
             <div className="ind"><div className="k">市值</div><div className="v">{fmtMoney(data.market_cap)}</div></div>
           </div>
+          <AssetLevelRecurrenceView data={data.level_recurrence} />
         </>
       )}
     </div>

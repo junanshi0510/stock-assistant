@@ -25,7 +25,7 @@ import {
   fetchAgentRuns,
   rerunAgentRun,
 } from '../api/agent'
-import FundReturnRecurrenceView from '../features/funds/FundReturnRecurrenceView'
+import AssetLevelRecurrenceView from '../components/AssetLevelRecurrenceView'
 
 const TERMINAL = new Set(['completed', 'partial', 'failed', 'cancelled', 'abstained'])
 const EMPTY_HISTORY_FILTERS = { code: '', status: '' }
@@ -711,9 +711,9 @@ export default function AgentTab() {
 
           {result.strategy && <StrategyPanel strategy={result.strategy} onOpenEvidence={openEvidence} />}
 
-          {result.return_recurrence && (
+          {result.level_recurrence && (
             <section className="agent-result-section">
-              <FundReturnRecurrenceView data={result.return_recurrence} onOpenEvidence={openEvidence} />
+              <AssetLevelRecurrenceView data={result.level_recurrence} onOpenEvidence={openEvidence} />
             </section>
           )}
 

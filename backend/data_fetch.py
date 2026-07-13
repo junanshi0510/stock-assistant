@@ -373,6 +373,94 @@ def _src_us_sina(symbol, start, end):
     return ak.stock_us_daily(symbol=symbol.upper(), adjust="qfq")
 
 
+# 当前成交价必须与未复权历史价格比较，否则分红、拆股会造成虚假的价位命中。
+def _src_a_tushare_raw(symbol, start, end):
+    ts, _pro = _tushare()
+    suffix = (".SH" if symbol.startswith(("6", "9"))
+              else ".BJ" if symbol.startswith(("4", "8")) else ".SZ")
+    df = ts.pro_bar(ts_code=symbol + suffix, adj=None,
+                    start_date=start, end_date=end, freq="D")
+    if df is None or df.empty:
+        raise RuntimeError("Tushare 返回空")
+    return df.rename(columns={"trade_date": "date", "vol": "volume"})
+
+
+def _src_a_tencent_raw(symbol, start, end):
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        df = ak.stock_zh_a_hist_tx(
+            symbol=_sina_a_symbol(symbol),
+            start_date=start,
+            end_date=min(end, datetime.date.today().strftime("%Y%m%d")),
+            adjust="",
+            timeout=12,
+        )
+    if df is None or df.empty:
+        raise RuntimeError("腾讯证券返回空")
+    df = df.copy()
+    if "amount" in df.columns and "volume" not in df.columns:
+        df["volume"] = df["amount"]
+    return df
+
+
+def _src_a_baostock_raw(symbol, start, end):
+    prefix = ("sh." if symbol.startswith(("6", "9"))
+              else "bj." if symbol.startswith(("4", "8")) else "sz.")
+    with _bs_lock:
+        bs = _bs()
+        rs = bs.query_history_k_data_plus(
+            prefix + symbol,
+            "date,open,high,low,close,volume",
+            start_date=_ymd_dash(start),
+            end_date=min(_ymd_dash(end), datetime.date.today().strftime("%Y-%m-%d")),
+            frequency="d",
+            adjustflag="3",
+        )
+        rows = []
+        while rs.error_code == "0" and rs.next():
+            rows.append(rs.get_row_data())
+    if rs.error_code != "0":
+        raise RuntimeError(f"BaoStock 查询失败: {rs.error_msg}")
+    return pd.DataFrame(rows, columns=["date", "open", "high", "low", "close", "volume"])
+
+
+def _src_a_em_raw(symbol, start, end):
+    return ak.stock_zh_a_hist(
+        symbol=symbol, period="daily", start_date=start, end_date=end, adjust=""
+    )
+
+
+def _src_hk_em_raw(symbol, start, end):
+    return ak.stock_hk_hist(
+        symbol=symbol, period="daily", start_date=start, end_date=end, adjust=""
+    )
+
+
+def _src_us_polygon_raw(symbol, start, end):
+    if not config.POLYGON_API_KEY:
+        raise SourceUnavailable("未配置 POLYGON_API_KEY")
+    url = (f"https://api.polygon.io/v2/aggs/ticker/{symbol.upper()}"
+           f"/range/1/day/{_ymd_dash(start)}/{_ymd_dash(end)}")
+    response = requests.get(
+        url,
+        params={"adjusted": "false", "sort": "asc", "limit": 50000, "apiKey": config.POLYGON_API_KEY},
+        timeout=15,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    rows = payload.get("results") or []
+    if not rows:
+        raise RuntimeError(f"Polygon 无数据 (status={payload.get('status')})")
+    df = pd.DataFrame(rows)
+    df["date"] = pd.to_datetime(df["t"], unit="ms")
+    return df.rename(columns={"o": "open", "h": "high", "l": "low", "c": "close", "v": "volume"})
+
+
+def _src_us_em_raw(symbol, start, end):
+    return ak.stock_us_hist(
+        symbol=_resolve_us_code(symbol), period="daily", start_date=start, end_date=end, adjust=""
+    )
+
+
 # 每个市场的数据源优先级:专业源在前,免费备用源在后,自动降级。
 _SOURCES = {
     "A股": [("Tushare", _src_a_tushare), ("腾讯证券", _src_a_tencent), ("BaoStock", _src_a_baostock),
@@ -381,6 +469,24 @@ _SOURCES = {
             ("东方财富", _src_hk_em), ("新浪", _src_hk_sina)],
     "美股": [("Polygon", _src_us_polygon), ("AlphaVantage", _src_us_alphavantage),
             ("东方财富", _src_us_em), ("新浪", _src_us_sina)],
+}
+
+_PRICE_LEVEL_SOURCES = {
+    "A股": [
+        ("Tushare 未复权日线", _src_a_tushare_raw),
+        ("腾讯证券未复权日线", _src_a_tencent_raw),
+        ("BaoStock 未复权日线", _src_a_baostock_raw),
+        ("东方财富未复权日线", _src_a_em_raw),
+    ],
+    "港股": [
+        ("Tushare 港股日线", _src_hk_tushare),
+        ("东方财富港股未复权日线", _src_hk_em_raw),
+    ],
+    "美股": [
+        ("Polygon 未复权日线", _src_us_polygon_raw),
+        ("Alpha Vantage 未复权日线", _src_us_alphavantage),
+        ("东方财富美股未复权日线", _src_us_em_raw),
+    ],
 }
 
 
@@ -450,3 +556,41 @@ def get_history_months(market: str, symbol: str, months: int,
     cutoff = pd.to_datetime(end - datetime.timedelta(days=months * 31))
     sliced = full[full["date"] >= cutoff].reset_index(drop=True)
     return sliced if not sliced.empty else full
+
+
+def get_price_level_history_months(
+    market: str,
+    symbol: str,
+    months: int = 60,
+) -> tuple[pd.DataFrame, str]:
+    """Fetch unadjusted daily bars for comparing with a current live price."""
+    symbol = str(symbol or "").strip()
+    if market not in _PRICE_LEVEL_SOURCES:
+        raise ValueError(f"不支持的市场: {market}(可选: {MARKETS})")
+    months = max(6, min(120, int(months)))
+    end = datetime.date.today()
+    start = end - datetime.timedelta(days=months * 31)
+    start_text = start.strftime("%Y%m%d")
+    end_text = end.strftime("%Y%m%d")
+    cache_key = ("price_level_raw", market, symbol, start_text, end_text)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached["frame"].copy(), cached["source"]
+
+    errors = []
+    for source_name, source in _PRICE_LEVEL_SOURCES[market]:
+        try:
+            raw = _retry(source, symbol, start_text, end_text, attempts=2)
+            frame = _filter_dates(_normalize(raw), start_text, end_text)
+            if frame.empty:
+                errors.append(f"{source_name}: 返回空数据")
+                continue
+            _cache_put(cache_key, {"frame": frame.copy(), "source": source_name})
+            return frame, source_name
+        except SourceUnavailable:
+            continue
+        except Exception as error:
+            errors.append(f"{source_name}: {str(error)[:100]}")
+    if errors:
+        raise ValueError("未复权历史价格获取失败:\n" + "\n".join(errors))
+    raise ValueError("没有已配置且可用的未复权历史价格源。")

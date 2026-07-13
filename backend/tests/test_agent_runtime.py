@@ -99,49 +99,6 @@ def _analysis(_payload):
             "method": {"sampling": "calendar_month_last_observation"},
             "limitations": ["historical_results_are_not_forecasts"],
         },
-        "return_recurrence": {
-            "metric_id": "fund_return_recurrence",
-            "metric_version": "1.0.0",
-            "as_of": "2026-07-10",
-            "coverage": {
-                "observation_count": 500,
-                "start_date": "2020-01-02",
-                "end_date": "2026-07-10",
-            },
-            "items": [{
-                "key": "3m",
-                "label": "近3月",
-                "observations": 60,
-                "days": 60,
-                "status": "available",
-                "current_return": 8.2,
-                "historical_percentile": 72.0,
-                "average_return": 3.1,
-                "avg_return": 3.1,
-                "positive_ratio": 58.0,
-                "sample_count": 440,
-                "recurrence": {
-                    "status": "matched",
-                    "tolerance_pp": 0.2,
-                    "current_episode": {
-                        "start_date": "2026-07-08",
-                        "end_date": "2026-07-10",
-                        "observation_count": 3,
-                    },
-                    "previous": {
-                        "date": "2025-11-18",
-                        "return": 8.1,
-                        "difference_pp": -0.1,
-                        "absolute_difference_pp": 0.1,
-                        "calendar_days_ago": 234,
-                        "observations_ago": 160,
-                        "method": "prior_independent_episode_within_tolerance",
-                    },
-                },
-            }],
-            "method": {"match": "skip_current_contiguous_tolerance_band"},
-            "policy": "历史重现不代表未来收益。",
-        },
         "trend_state": "震荡观察",
         "playbook": {
             "role": {
@@ -166,6 +123,38 @@ def _estimate(_payload):
         "code": "001480",
         "confirmed": {"date": "2026-07-10", "unit_nav": 1.2345},
         "estimate": {"time": "2026-07-11 14:30", "unit_nav": 1.22, "change_pct": -1.17},
+        "level_recurrence": {
+            "metric_id": "asset_level_recurrence",
+            "metric_version": "1.0.0",
+            "asset_type": "fund",
+            "code": "001480",
+            "status": "crossed_between",
+            "target": {
+                "label": "盘中估算净值",
+                "value": 1.22,
+                "as_of": "2026-07-11 14:30",
+                "source": "真实盘中估值测试快照",
+            },
+            "history": {
+                "source": "真实确认净值测试快照",
+                "adjustment": "confirmed_unit_nav",
+                "granularity": "confirmed_nav_date",
+                "observation_count": 500,
+                "start_date": "2020-01-02",
+                "end_date": "2026-07-10",
+            },
+            "occurrence": {
+                "kind": "crossing_interval",
+                "from_date": "2026-06-01",
+                "from_value": 1.21,
+                "to_date": "2026-06-02",
+                "to_value": 1.23,
+                "direction": "up",
+                "calendar_days_ago": 39,
+            },
+            "nearest": {"date": "2026-06-01", "value": 1.21, "difference": -0.01},
+            "policy": "估值不是确认净值。",
+        },
         "policy": "估值不等于确认净值。",
     }
 
@@ -282,14 +271,16 @@ class AgentRuntimeTests(unittest.TestCase):
             run["result"]["strategy"]["evidence_ids"],
             [run["evidence"][0]["id"]],
         )
-        self.assertEqual(
-            run["result"]["return_recurrence"]["evidence_ids"],
-            [run["evidence"][0]["id"]],
+        estimate_step = next(item for item in run["steps"] if item["step_key"] == "fund_estimate")
+        estimate_evidence = next(
+            item for item in run["evidence"] if item["step_id"] == estimate_step["id"]
         )
         self.assertEqual(
-            run["result"]["return_recurrence"]["metric_version"],
-            "1.0.0",
+            run["result"]["level_recurrence"]["evidence_ids"],
+            [estimate_evidence["id"]],
         )
+        self.assertEqual(run["result"]["level_recurrence"]["metric_version"], "1.0.0")
+        self.assertEqual(run["result"]["level_recurrence"]["status"], "crossed_between")
         fact_labels = {item["label"] for item in run["result"]["facts"]}
         self.assertIn("历史相似条件后 6 个月正收益比例", fact_labels)
         self.assertIn("历史相似条件后 6 个月中位收益", fact_labels)
