@@ -16,7 +16,7 @@ from .llm_gateway import LLMGateway, ModelInvocationError, ModelUnavailableError
 
 
 PROMPT_TEMPLATE_ID = "fund_decision_synthesis"
-PROMPT_TEMPLATE_VERSION = "1.3.0"
+PROMPT_TEMPLATE_VERSION = "1.4.0"
 OUTPUT_SCHEMA_VERSION = "fund_ai_synthesis.v1"
 
 DecisionAction = Literal[
@@ -415,6 +415,72 @@ def _quality_diagnostics(
     }
 
 
+def _schema_diagnostics(error: json.JSONDecodeError | ValidationError) -> dict[str, Any]:
+    if isinstance(error, json.JSONDecodeError):
+        return {
+            "json_error": {
+                "path": "$",
+                "type": "json_invalid",
+                "message": str(error.msg)[:160],
+                "line": error.lineno,
+                "column": error.colno,
+            }
+        }
+
+    errors = []
+    for item in error.errors(include_url=False)[:12]:
+        value = item.get("input")
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            safe_value: Any = str(value)[:80] if isinstance(value, str) else value
+        else:
+            safe_value = type(value).__name__
+        errors.append({
+            "path": ".".join(str(part) for part in item.get("loc") or ()) or "$",
+            "type": str(item.get("type") or "schema_error"),
+            "message": str(item.get("msg") or "Schema validation failed")[:160],
+            "input": safe_value,
+        })
+    return {"schema_errors": errors}
+
+
+def _output_example(action: str, evidence_id: str) -> dict[str, Any]:
+    assessment = {
+        "title": "根据证据生成简短标题",
+        "assessment": "根据输入证据形成定性判断，并说明后续需要复核的条件。",
+        "direction": "neutral",
+        "horizon": "3_12m",
+        "evidence_ids": [evidence_id],
+    }
+    return {
+        "status": "insufficient" if action in _BLOCKING_ACTIONS else "ready",
+        "action": action,
+        "confidence": "low",
+        "headline": "根据本轮证据生成可复核结论",
+        "answer": "综合已提供证据给出定性判断，并保留关键未知项和失效条件。",
+        "market_view": {**assessment, "title": "市场环境"},
+        "fund_view": {**assessment, "title": "基金状态"},
+        "portfolio_view": {**assessment, "title": "组合适配"},
+        "catalysts": [],
+        "risks": [{**assessment, "title": "主要风险", "direction": "negative"}],
+        "counter_evidence": [],
+        "unknowns": [],
+        "action_plan": {
+            "current_action": action,
+            "rationale": "遵守确定性动作门禁，并按证据变化复核当前判断。",
+            "review_after_days": 30,
+            "add_conditions": [],
+            "reduce_conditions": [],
+            "invalidation_conditions": [],
+        },
+        "coverage": {
+            "market": "partial",
+            "holdings": "partial",
+            "news": "partial",
+            "portfolio": "unavailable",
+        },
+    }
+
+
 _SYSTEM_PROMPT = """你是金融投资助手中的证据合成模型。你的任务不是预测必涨必跌，而是基于已提供的真实、结构化 Evidence，为一只基金形成 3-12 个月的可复核研判。
 
 必须遵守：
@@ -522,21 +588,35 @@ class InvestmentSynthesisService:
         synthesis = None
         repair_codes: list[str] = []
         repair_diagnostics: dict[str, Any] = {}
+        example_evidence_id = sorted(allowed_evidence_ids)[0] if allowed_evidence_ids else ""
+        output_example = _output_example(
+            str(context.get("allowed_action") or "research_only"),
+            example_evidence_id,
+        )
         runtime_contract = (
             "\n\n本次运行时硬约束："
             f"allowed_action 的唯一合法值是 {_canonical(context.get('allowed_action'))}；"
             f"Evidence ID 完整白名单是 {_canonical(sorted(allowed_evidence_ids))}。"
             "所有 evidence_ids 只能逐字复制白名单中的值，禁止缩写、改写或创建新 ID。"
+            "枚举只能使用 Schema 中的原始值，尤其 horizon 只能是 now、1_3m、3_12m、long_term，"
+            "禁止生成 3_6m 等自定义区间。"
             "所有自然语言字符串必须通过正则扫描：禁止出现类似 12.3%、100元、3万元、2亿美元的精确金融数字；"
             "需要讨论数值时只写定性方向并引用 Evidence ID。"
+            "下面是使用本轮合法 action 和 Evidence ID 生成的完整 JSON 结构示例。"
+            "它只用于约束字段、层级和枚举；必须根据输入 Evidence 重写自然语言内容，不得照抄示例判断："
+            f"{_canonical(output_example)}"
         )
         for attempt_index in range(2):
             system_prompt = _SYSTEM_PROMPT + runtime_contract
             if repair_codes:
                 unknown_ids = repair_diagnostics.get("unknown_evidence_ids") or []
+                schema_errors = repair_diagnostics.get("schema_errors") or []
+                json_error = repair_diagnostics.get("json_error") or {}
                 system_prompt += (
                     "\n\n这是唯一一次纠错重试。上一次输出已丢弃，不要引用或复述它。"
                     f"确定性门禁错误代码：{','.join(repair_codes)}。"
+                    f"上一次 Schema 字段错误：{_canonical(schema_errors)}；"
+                    f"上一次 JSON 语法错误：{_canonical(json_error)}；"
                     f"上一次使用的白名单外 ID：{_canonical(unknown_ids)}；"
                     f"含精确金融数字的字符串数量：{int(repair_diagnostics.get('exact_financial_string_count') or 0)}。"
                     "请从原始 Evidence 重新生成：action 与 current_action 必须等于 allowed_action；"
@@ -577,6 +657,7 @@ class InvestmentSynthesisService:
             except (json.JSONDecodeError, ValidationError) as error:
                 truncated = invocation_summary.get("finish_reason") in {"length", "max_tokens"}
                 repair_codes = ["model_output_truncated" if truncated else "model_schema_failed"]
+                repair_diagnostics = _schema_diagnostics(error)
                 if attempt_index == 0:
                     continue
                 return {
@@ -588,7 +669,7 @@ class InvestmentSynthesisService:
                         if truncated else "模型输出未通过结构化 Schema 校验。"
                     ),
                     "provider": provider_status,
-                    "validation_error": str(error)[:500],
+                    "validation": repair_diagnostics,
                     "invocation": invocation_summary,
                     "invocation_attempts": invocation_attempts,
                     "prompt": {

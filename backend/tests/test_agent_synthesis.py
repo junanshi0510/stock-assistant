@@ -160,6 +160,32 @@ class InvestmentSynthesisTests(unittest.TestCase):
         self.assertEqual(sent["private_context"]["status"], "not_shared_with_model")
         self.assertEqual(sent["private_evidence_ids"], [])
         self.assertTrue(result["quality"]["passed"])
+        prompt = gateway.calls[0]["system_prompt"]
+        self.assertIn('"current_action":"research_only"', prompt)
+        self.assertIn('"horizon":"3_12m"', prompt)
+        self.assertIn('"evidence_ids":["ev_analysis"]', prompt)
+
+    def test_schema_failure_repair_includes_exact_field_and_invalid_enum(self):
+        invalid = _model_output()
+        invalid["market_view"]["horizon"] = "3_6m"
+        gateway = _SequenceGateway([invalid, _model_output()])
+        service = InvestmentSynthesisService(gateway)
+        context = _context()
+
+        result = service.synthesize({
+            "context": context,
+            "context_sha256": __import__("hashlib").sha256(
+                json.dumps(context, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest(),
+        })
+
+        self.assertEqual(result["status"], "available")
+        self.assertEqual(len(gateway.calls), 2)
+        repair_prompt = gateway.calls[1]["system_prompt"]
+        self.assertIn("model_schema_failed", repair_prompt)
+        self.assertIn("market_view.horizon", repair_prompt)
+        self.assertIn("3_6m", repair_prompt)
+        self.assertIn("literal_error", repair_prompt)
 
     def test_truncated_json_is_reported_with_safe_invocation_metadata(self):
         gateway = _TruncatedGateway()
