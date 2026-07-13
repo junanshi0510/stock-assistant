@@ -359,4 +359,58 @@ build passed in 2.73s
 
 ## 19. 生产部署与验证
 
-本节在云端部署完成后追加真实备份、迁移、构建、服务、策略状态、真实 Run、Evidence、审计和日志验证结果。
+部署日期：`2026-07-13`
+
+应用提交：`9831f94 feat: enforce strategy release governance`
+
+### 19.1 数据库备份与迁移
+
+- 在拉取代码前使用 SQLite Online Backup API 备份生产库。
+- 备份位于代码仓库之外：`/opt/stock-assistant-backups/stock_assistant-pre-strategy-gate-20260713T055846Z.db`。
+- 备份大小 `2,007,040 bytes`。
+- 源库和备份库 `PRAGMA integrity_check` 均为 `ok`。
+- 备份包含 `16` 张表、`11` 个索引和 `4` 个触发器。
+- 服务重启后自动建立策略注册表和审计表，生产库再次校验为 `ok`。
+
+### 19.2 云端测试与构建
+
+- 在隔离的临时 Agent 数据库上执行后端全量回归：`145` 项通过，用时 `8.334s`。
+- 前端生产构建处理 `1840` 个 modules，用时 `4.34s`。
+- `npm audit --omit=dev` 结果为 `0 vulnerabilities`。
+- Nginx 配置检查成功，API 服务重启后状态为 `active`。
+
+### 19.3 生产策略门禁
+
+生产注册结果：
+
+- 精确版本：`fund_conditioned_forward_return@1.0.0`。
+- 状态：`shadow`。
+- 清单哈希：校验通过。
+- 审计链：`1` 个注册事件，校验通过。
+- 注册表状态重放：校验通过。
+- 发布检查：`0/6`，`release_ready=false`。
+- 通过 CLI 尝试 `shadow -> canary` 被真实拒绝，拒绝后仍为 Shadow，且没有追加伪状态事件。
+- 公网详情接口审计投影不含 `actor_id` 和内部 `reason`。
+
+### 19.4 真实基金 Agent Run
+
+生产发起一条真实基金任务：
+
+- Run ID：`run_4857f68bcde94aec9c25e3ded60542e1`。
+- 基金：`013403` 华夏恒生科技 ETF 发起式联接 (QDII) C。
+- 真实净值数据截至：`2026-07-09`。
+- Run 状态：`completed`，Schema：`fund_deep_research.v4`。
+- Evidence：`6` 条。
+- Governance Evidence：`ev_ec0de3821d214358843f0a9f80b8860d`，类型 `governance`，质量 `complete`，载荷哈希校验通过。
+- Governance Evidence 内部状态为 `shadow`，`decision_use_allowed=false`，策略审计校验通过。
+- 个人结果：`strategy_not_released`，整体状态 `abstained`。
+- `allowed_full_amount=null`，`first_tranche_amount=null`，验证 Shadow 没有生成新增投入金额。
+- Run 审计链：`22` 个事件，校验通过。
+- Outcome 资格：`eligible=false`，原因 `decision_not_directional`，未创建调度。
+- 该验收只新增 Agent Run/Evidence/审计记录，没有新增、修改或删除持仓和交易记录。
+
+### 19.5 对外可用性与日志
+
+- 绕过本机代理直连验证：首页 `200`，入口资产 `200`，策略 API `200`。
+- 本机系统代理路径曾产生一次中间代理 `502`；直连服务器正常，且 Nginx error log 为空，因此不是本次部署故障。
+- API journal 显示启动、策略读取、Run、Evidence、审计和 Outcome 请求均为成功响应，未出现 traceback 或应用错误。
