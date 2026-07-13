@@ -1,4 +1,4 @@
-export default function WorkspaceHeader({ eyebrow, title, description, views, activeView, onViewChange, ariaLabel }) {
+export default function WorkspaceHeader({ eyebrow, title, description, views = [], activeView, onViewChange, ariaLabel }) {
   return (
     <section className="workspace-header">
       <div>
@@ -6,7 +6,7 @@ export default function WorkspaceHeader({ eyebrow, title, description, views, ac
         <h2>{title}</h2>
         <p>{description}</p>
       </div>
-      <div className="workspace-nav" role="tablist" aria-label={ariaLabel}>
+      {views.length > 0 && <div className="workspace-nav" role="tablist" aria-label={ariaLabel}>
         {views.map((view) => (
           <button
             key={view.id}
@@ -19,7 +19,7 @@ export default function WorkspaceHeader({ eyebrow, title, description, views, ac
             {view.label}
           </button>
         ))}
-      </div>
+      </div>}
     </section>
   )
 }

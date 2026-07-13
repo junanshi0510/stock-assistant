@@ -9,7 +9,9 @@ from time import monotonic
 from typing import Any
 
 import holdings as holdings_mod
+import holding_thesis
 import market_daily as market_daily_mod
+import portfolio_action_report
 import portfolio_review
 import storage
 
@@ -53,6 +55,193 @@ def _action(
         "target": target,
         "action_label": action_label,
         "source": source,
+    }
+
+
+def _workflow_stage(
+    stage_id: str,
+    order: int,
+    title: str,
+    state: str,
+    metric: str,
+    description: str,
+    target: str,
+    action_label: str,
+) -> dict:
+    return {
+        "id": stage_id,
+        "order": order,
+        "title": title,
+        "state": state,
+        "metric": metric,
+        "description": description,
+        "target": target,
+        "action_label": action_label,
+    }
+
+
+def _decision_workflow(profile: dict, portfolio: dict) -> dict:
+    """Describe one ordered path from confirmed facts to an actionable report."""
+    summary = portfolio.get("summary") or {}
+    allocation = portfolio.get("allocation") or []
+    holding_count = int(summary.get("holding_count") or 0)
+    amount_complete = bool(holding_count) and len(allocation) >= holding_count and all(
+        (_number(item.get("amount")) or 0) > 0 for item in allocation
+    )
+    holdings_complete = portfolio.get("status") == "available" and amount_complete
+    policy_complete = bool(
+        holdings_complete
+        and profile.get("configured")
+        and not profile.get("review_required")
+        and profile.get("integrity_verified", True)
+    )
+
+    thesis_data = None
+    thesis_error = None
+    try:
+        thesis_data = holding_thesis.list_with_coverage()
+    except Exception as error:
+        thesis_error = str(error)[:240]
+    thesis_coverage = (thesis_data or {}).get("coverage") or {}
+    active_thesis_count = int(thesis_coverage.get("active_thesis_count") or 0)
+    verified_thesis_count = int(thesis_coverage.get("verified_thesis_count") or 0)
+    thesis_complete = bool(
+        policy_complete
+        and holding_count > 0
+        and active_thesis_count == holding_count
+        and verified_thesis_count == holding_count
+    )
+
+    ledger_error = portfolio.get("ledger_error")
+    transaction_count = int((portfolio.get("ledger_summary") or {}).get("transaction_count") or 0)
+    performance_status = (portfolio.get("performance") or {}).get("status")
+    ledger_complete = bool(
+        thesis_complete
+        and not ledger_error
+        and transaction_count > 0
+        and performance_status == "available"
+    )
+
+    report = None
+    report_error = None
+    try:
+        report = portfolio_action_report.load_latest_action_report()
+    except Exception as error:
+        report_error = str(error)[:240]
+    report_current = bool(
+        report
+        and (report.get("binding") or {}).get("current")
+        and (report.get("integrity") or {}).get("verified")
+        and report.get("status") in {"reviewable", "partial"}
+    )
+    report_complete = bool(ledger_complete and report_current)
+
+    if portfolio.get("status") != "available":
+        holdings_state = "unavailable"
+        holdings_metric = "真实持仓读取失败"
+    elif holdings_complete:
+        holdings_state = "complete"
+        holdings_metric = f"{holding_count} 项，金额已确认"
+    else:
+        holdings_state = "incomplete"
+        holdings_metric = "尚未完成持仓确认" if holding_count == 0 else f"{holding_count} 项，金额待补齐"
+
+    if not holdings_complete:
+        policy_state = "blocked"
+    elif policy_complete:
+        policy_state = "complete"
+    else:
+        policy_state = "incomplete"
+
+    if not policy_complete:
+        thesis_state = "blocked"
+    elif thesis_error:
+        thesis_state = "unavailable"
+    elif thesis_complete:
+        thesis_state = "complete"
+    else:
+        thesis_state = "incomplete"
+
+    if not thesis_complete:
+        ledger_state = "blocked"
+    elif ledger_error:
+        ledger_state = "unavailable"
+    elif ledger_complete:
+        ledger_state = "complete"
+    else:
+        ledger_state = "incomplete"
+
+    if not ledger_complete:
+        report_state = "blocked"
+    elif report_error:
+        report_state = "unavailable"
+    elif report_complete:
+        report_state = "complete"
+    else:
+        report_state = "incomplete"
+
+    stages = [
+        _workflow_stage(
+            "holdings", 1, "持仓事实", holdings_state, holdings_metric,
+            "确认当前金额、收益和份额，所有后续结论都绑定这份真实资产快照。",
+            "portfolio", "确认真实持仓",
+        ),
+        _workflow_stage(
+            "policy", 2, "投资政策", policy_state,
+            (
+                f"V{profile.get('version_no')} 已激活"
+                if policy_complete else "等待确认风险与仓位上限"
+            ),
+            "先确定投资期限、预算和风险边界，系统不会把默认值当成你的政策。",
+            "profile", "设置投资政策",
+        ),
+        _workflow_stage(
+            "theses", 3, "持有纪律", thesis_state,
+            (
+                "版本库暂不可用"
+                if thesis_error else f"{active_thesis_count}/{holding_count} 项已建立"
+            ),
+            "逐项记录为什么持有、何时复核以及哪些条件要求停止新增或退出复核。",
+            "portfolio", "补齐持有逻辑",
+        ),
+        _workflow_stage(
+            "ledger", 4, "交易账本", ledger_state,
+            (
+                "账本暂不可用"
+                if ledger_error else f"{transaction_count} 笔，收益口径{('完整' if performance_status == 'available' else '待补齐')}"
+            ),
+            "用真实买卖、费用和现金流区分浮盈、已实现收益与资金投入效果。",
+            "ledger", "补录交易账本",
+        ),
+        _workflow_stage(
+            "report", 5, "组合报告", report_state,
+            (
+                "当前报告完整且已绑定"
+                if report_complete else "等待生成或刷新当前报告"
+            ),
+            "把仓位上限、重复暴露、真实回撤和持有纪律汇总为唯一行动顺序。",
+            "portfolio", "生成组合报告",
+        ),
+    ]
+    completed_count = sum(item["state"] == "complete" for item in stages)
+    next_action = next(
+        (item for item in stages if item["state"] in {"incomplete", "unavailable"}),
+        None,
+    )
+    errors = [
+        {"scope": "持有纪律", "error": thesis_error},
+        {"scope": "组合报告", "error": report_error},
+    ]
+    return {
+        "schema_version": "investment_decision_workflow.v1",
+        "status": "ready" if report_complete else "setup_required",
+        "decision_ready": report_complete,
+        "completed_count": completed_count,
+        "total_count": len(stages),
+        "progress_pct": round(completed_count / len(stages) * 100),
+        "stages": stages,
+        "next_action": next_action,
+        "errors": [item for item in errors if item.get("error")],
     }
 
 
@@ -525,6 +714,7 @@ def build_decision_center() -> dict:
         # the HTTP response or replace unavailable data with a synthetic result.
         pool.shutdown(wait=False, cancel_futures=True)
 
+    workflow = _decision_workflow(profile, portfolio)
     actions = _portfolio_actions(profile, portfolio) + _market_actions(market)
     if not actions and portfolio.get("status") == "available" and market.get("status") == "available":
         actions.append(_action(
@@ -563,6 +753,7 @@ def build_decision_center() -> dict:
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "policy": "行动清单只使用用户确认持仓和已标注的真实来源；它用于风险复盘与研究排序，不提供买卖指令或收益承诺。",
         "profile": profile,
+        "workflow": workflow,
         "portfolio": portfolio,
         "market": market,
         "actions": actions[:12],

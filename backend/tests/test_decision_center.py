@@ -15,6 +15,55 @@ import decision_center  # noqa: E402
 
 
 class DecisionCenterTests(unittest.TestCase):
+    def test_workflow_exposes_one_ordered_next_action(self):
+        profile = {"configured": False, "review_required": False}
+        portfolio = {
+            "status": "available",
+            "summary": {"holding_count": 2},
+            "allocation": [{"amount": 600}, {"amount": 400}],
+            "ledger_summary": {"transaction_count": 0},
+            "performance": {"status": "unavailable"},
+        }
+        with patch.object(decision_center.holding_thesis, "list_with_coverage", return_value={
+            "coverage": {"active_thesis_count": 0, "verified_thesis_count": 0},
+        }), patch.object(decision_center.portfolio_action_report, "load_latest_action_report", return_value=None):
+            workflow = decision_center._decision_workflow(profile, portfolio)
+
+        states = {item["id"]: item["state"] for item in workflow["stages"]}
+        self.assertEqual(states["holdings"], "complete")
+        self.assertEqual(states["policy"], "incomplete")
+        self.assertEqual(states["theses"], "blocked")
+        self.assertEqual(workflow["next_action"]["id"], "policy")
+        self.assertEqual(workflow["progress_pct"], 20)
+
+    def test_workflow_is_ready_only_when_every_evidence_gate_is_current(self):
+        profile = {
+            "configured": True,
+            "review_required": False,
+            "integrity_verified": True,
+            "version_no": 3,
+        }
+        portfolio = {
+            "status": "available",
+            "summary": {"holding_count": 2},
+            "allocation": [{"amount": 600}, {"amount": 400}],
+            "ledger_summary": {"transaction_count": 4},
+            "performance": {"status": "available"},
+        }
+        with patch.object(decision_center.holding_thesis, "list_with_coverage", return_value={
+            "coverage": {"active_thesis_count": 2, "verified_thesis_count": 2},
+        }), patch.object(decision_center.portfolio_action_report, "load_latest_action_report", return_value={
+            "status": "reviewable",
+            "binding": {"current": True},
+            "integrity": {"verified": True},
+        }):
+            workflow = decision_center._decision_workflow(profile, portfolio)
+
+        self.assertTrue(workflow["decision_ready"])
+        self.assertEqual(workflow["completed_count"], 5)
+        self.assertEqual(workflow["progress_pct"], 100)
+        self.assertIsNone(workflow["next_action"])
+
     def test_real_portfolio_evidence_creates_review_queue(self):
         portfolio = {
             "source": "confirmed holdings / real fund NAV",

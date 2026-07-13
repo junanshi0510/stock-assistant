@@ -1,13 +1,15 @@
 import { useEffect, useState } from 'react'
 import WorkspaceHeader from '../components/WorkspaceHeader'
+import InvestmentPolicyPanel from '../features/portfolio/InvestmentPolicyPanel'
 import HoldingsTab from './HoldingsTab'
 import PortfolioLedgerTab from './PortfolioLedgerTab'
 import WatchlistTab from './WatchlistTab'
 
 const VIEWS = [
-  { id: 'holdings', label: '真实持仓', description: '导入、确认和体检你的基金与股票' },
-  { id: 'ledger', label: '交易与复盘', description: '记录成本、核对份额并复盘仓位纪律' },
-  { id: 'watchlist', label: '自选与提醒', description: '跟踪研究中的股票和评分变化' },
+  { id: 'holdings', label: '持仓与纪律', description: '确认资产事实并为每项持仓建立持有与退出规则' },
+  { id: 'policy', label: '投资政策', description: '确认预算、期限和组合风险边界' },
+  { id: 'ledger', label: '交易账本', description: '记录真实现金流、费用和成本变化' },
+  { id: 'watchlist', label: '观察清单', description: '跟踪尚未进入组合的研究对象' },
 ]
 
 export default function PortfolioTab({ goAnalyze, activeView = 'holdings', onViewChange }) {
@@ -35,6 +37,7 @@ export default function PortfolioTab({ goAnalyze, activeView = 'holdings', onVie
         ariaLabel="我的组合功能"
       />
       {view === 'holdings' && <HoldingsTab />}
+      {view === 'policy' && <InvestmentPolicyPanel />}
       {view === 'ledger' && <PortfolioLedgerTab />}
       {view === 'watchlist' && <WatchlistTab goAnalyze={goAnalyze} />}
     </>

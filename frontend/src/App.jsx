@@ -1,26 +1,23 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
-import { Bot, BriefcaseBusiness, ChartNoAxesCombined, FlaskConical, Info, Landmark, LayoutDashboard, TrendingUp } from 'lucide-react'
+import { Bot, BriefcaseBusiness, Info, LayoutDashboard, Search, TrendingUp } from 'lucide-react'
 import { fetchMarkets } from './api/market'
 
-const BacktestTab = lazy(() => import('./tabs/BacktestTab'))
 const AgentTab = lazy(() => import('./tabs/AgentTab'))
-const FundTab = lazy(() => import('./tabs/FundTab'))
 const DashboardTab = lazy(() => import('./tabs/DashboardTab'))
-const MarketTab = lazy(() => import('./tabs/MarketTab'))
 const PortfolioTab = lazy(() => import('./tabs/PortfolioTab'))
+const ResearchTab = lazy(() => import('./tabs/ResearchTab'))
 
 const TABS = [
-  { id: 'overview', label: '投资总览', icon: LayoutDashboard },
+  { id: 'overview', label: '今日决策', icon: LayoutDashboard },
+  { id: 'portfolio', label: '我的资产', icon: BriefcaseBusiness },
+  { id: 'research', label: '研究中心', icon: Search },
   { id: 'agent', label: '投资 Agent', icon: Bot },
-  { id: 'funds', label: '基金中心', icon: Landmark },
-  { id: 'market', label: '股票与板块', icon: ChartNoAxesCombined },
-  { id: 'portfolio', label: '我的组合', icon: BriefcaseBusiness },
-  { id: 'tools', label: '研究工具', icon: FlaskConical },
 ]
 
 export default function App() {
   const [markets, setMarkets] = useState(['A股', '港股', '美股'])
   const [tab, setTab] = useState('overview')
+  const [researchDomain, setResearchDomain] = useState('funds')
   const [marketView, setMarketView] = useState('radar')
   const [portfolioView, setPortfolioView] = useState('holdings')
 
@@ -36,14 +33,15 @@ export default function App() {
 
   const requestRun = () => setRunKey((k) => k + 1)
   const goAnalyze = (m, s) => {
-    setMarket(m); setSymbol(s); setTab('market'); setMarketView('analyze'); setRunKey((k) => k + 1)
+    setMarket(m); setSymbol(s); setTab('research'); setResearchDomain('market'); setMarketView('analyze'); setRunKey((k) => k + 1)
   }
   const goPortfolio = (view = 'holdings') => {
     setPortfolioView(view)
     setTab('portfolio')
   }
-  const goFunds = () => setTab('funds')
-  const goMarket = () => { setTab('market'); setMarketView('radar') }
+  const goFunds = () => { setTab('research'); setResearchDomain('funds') }
+  const goMarket = () => { setTab('research'); setResearchDomain('market'); setMarketView('radar') }
+  const goAgent = () => setTab('agent')
 
   return (
     <>
@@ -82,14 +80,15 @@ export default function App() {
         </div>
 
         <Suspense fallback={<div className="page-loading"><span className="spinner" />正在加载工作区</div>}>
-          {tab === 'overview' && <DashboardTab goPortfolio={goPortfolio} goFunds={goFunds} goMarket={goMarket} />}
+          {tab === 'overview' && <DashboardTab goPortfolio={goPortfolio} goFunds={goFunds} goMarket={goMarket} goAgent={goAgent} />}
           {tab === 'agent' && <AgentTab />}
-          {tab === 'funds' && <FundTab />}
-          {tab === 'market' && <MarketTab activeView={marketView} setActiveView={setMarketView} markets={markets}
-            market={market} setMarket={setMarket} symbol={symbol} setSymbol={setSymbol}
-            months={months} setMonths={setMonths} runKey={runKey} requestRun={requestRun} goAnalyze={goAnalyze} />}
           {tab === 'portfolio' && <PortfolioTab goAnalyze={goAnalyze} activeView={portfolioView} onViewChange={setPortfolioView} />}
-          {tab === 'tools' && <BacktestTab markets={markets} />}
+          {tab === 'research' && <ResearchTab
+            domain={researchDomain} onDomainChange={setResearchDomain}
+            marketView={marketView} setMarketView={setMarketView} markets={markets}
+            market={market} setMarket={setMarket} symbol={symbol} setSymbol={setSymbol}
+            months={months} setMonths={setMonths} runKey={runKey} requestRun={requestRun} goAnalyze={goAnalyze}
+          />}
         </Suspense>
       </main>
     </>
