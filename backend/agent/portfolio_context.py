@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import Any
 
 import storage
+from portfolio_exposure import holdings_sha256
 
 
 def _number(value: Any) -> float | None:
@@ -89,6 +90,7 @@ def get_portfolio_context(payload: dict[str, Any]) -> dict[str, Any]:
             "holding_count": len(items),
             "amount_complete": amount_complete,
             "total_amount": round(total_amount, 2) if total_amount > 0 else None,
+            "holdings_sha256": holdings_sha256(items),
         },
         "target_holding": {
             "exists": target is not None,

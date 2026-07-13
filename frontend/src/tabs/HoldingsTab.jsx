@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { FileSpreadsheet, ImageUp, Layers3 } from 'lucide-react'
-import { deleteHolding, fetchHoldings, fetchHoldingsExposure, fetchHoldingsInsights, parseHoldingsText, previewHoldingsFile, saveHoldings, uploadHoldingScreenshot } from '../api/portfolio'
+import { createHoldingsExposureSnapshot, deleteHolding, fetchHoldings, fetchHoldingsInsights, parseHoldingsText, previewHoldingsFile, saveHoldings, uploadHoldingScreenshot } from '../api/portfolio'
 
 function num(v, digits = 2) {
   if (v == null || Number.isNaN(Number(v))) return '-'
@@ -10,6 +10,16 @@ function num(v, digits = 2) {
 function pct(v) {
   if (v == null || Number.isNaN(Number(v))) return '-'
   return `${Number(v) > 0 ? '+' : ''}${Number(v).toFixed(2)}%`
+}
+
+function plainPct(v) {
+  if (v == null || Number.isNaN(Number(v))) return '-'
+  return `${Number(v).toFixed(2)}%`
+}
+
+function pctRange(lower, upper) {
+  if (lower == null || upper == null) return '-'
+  return `${plainPct(lower)} - ${plainPct(upper)}`
 }
 
 function cls(v) {
@@ -180,7 +190,7 @@ export default function HoldingsTab() {
   async function loadExposure() {
     setExposureLoading(true); setError('')
     try {
-      setExposure(await fetchHoldingsExposure(6))
+      setExposure(await createHoldingsExposureSnapshot())
     } catch (e) {
       setError(e.message || '基金穿透真实数据获取失败')
     } finally {
@@ -213,7 +223,7 @@ export default function HoldingsTab() {
           </button>
           <button className="ghost" onClick={loadExposure} disabled={exposureLoading || items.length === 0} title="按基金定期报告查看披露重仓股和行业">
             <Layers3 size={16} aria-hidden="true" />
-            <span>{exposureLoading ? '穿透分析中' : '基金穿透'}</span>
+            <span>{exposureLoading ? '快照生成中' : '生成穿透快照'}</span>
           </button>
         </div>
         {filePreview && (
@@ -396,58 +406,62 @@ export default function HoldingsTab() {
       {exposure && (
         <div className="panel fade-in">
           <h3 className="section-title">
-            基金穿透暴露 <span className="hint">{exposure.source}</span>
+            组合穿透快照 <span className="hint">{exposure.snapshot?.id || '未持久化'} · {exposure.evaluated_on || '-'}</span>
           </h3>
+          <div className={`exposure-integrity ${exposure.integrity?.verified ? 'verified' : 'invalid'}`}>
+            <span>{exposure.integrity?.verified ? '完整性已验证' : '完整性未通过'}</span>
+            <code>{exposure.snapshot?.payload_sha256?.slice(0, 16) || '-'}…</code>
+            <span>{exposure.quality?.decision_eligible ? '可用于约束判断' : '仅供查看，不可用于放行金额'}</span>
+          </div>
           <div className="bt-cards quality-cards">
-            <div className="bt-card"><div className="k">基金金额覆盖</div><div className="v">{pct(exposure.summary?.fund_amount_coverage)}</div></div>
-            <div className="bt-card"><div className="k">股票披露占组合</div><div className="v">{pct(exposure.summary?.stock_disclosed_portfolio_ratio)}</div></div>
-            <div className="bt-card"><div className="k">行业披露占组合</div><div className="v">{pct(exposure.summary?.industry_disclosed_portfolio_ratio)}</div></div>
-            <div className="bt-card"><div className="k">已披露基金</div><div className="v">{`${exposure.summary?.loaded_fund_count ?? 0}/${exposure.summary?.selected_fund_count ?? 0}`}</div></div>
-            <div className="bt-card"><div className="k">未纳入/失败</div><div className="v">{(exposure.summary?.unselected_fund_count || 0) + (exposure.summary?.failed_count || 0)}</div></div>
+            <div className="bt-card"><div className="k">权益暴露区间</div><div className="v">{pctRange(exposure.summary?.equity?.lower_ratio, exposure.summary?.equity?.upper_ratio)}</div></div>
+            <div className="bt-card"><div className="k">行业集中区间</div><div className="v">{pctRange(exposure.summary?.industry?.max_lower_ratio, exposure.summary?.industry?.max_upper_ratio)}</div></div>
+            <div className="bt-card"><div className="k">未分类权益</div><div className="v">{plainPct(exposure.summary?.industry?.unknown_equity_ratio)}</div></div>
+            <div className="bt-card"><div className="k">市场待识别权益</div><div className="v">{plainPct(exposure.summary?.market?.unknown_equity_ratio)}</div></div>
+            <div className="bt-card"><div className="k">数据状态</div><div className="v">{{ complete: '完整', partial: '部分可用', unavailable: '不可用' }[exposure.status] || exposure.status}</div></div>
           </div>
 
-          {exposure.reasons?.length > 0 && (
+          {exposure.quality?.reasons?.length > 0 && (
             <div className="fund-bond-list" style={{ marginTop: 12 }}>
-              {exposure.reasons.map((reason, index) => <span className="tag neutral" key={`${reason}-${index}`}>{reason}</span>)}
+              {exposure.quality.reasons.map((reason, index) => <span className="tag neutral" key={`${reason}-${index}`}>{reason}</span>)}
             </div>
           )}
 
           <div className="fund-holding-grid" style={{ marginTop: 16 }}>
             <div>
-              <h4 className="fund-subhead">披露重仓股票</h4>
+              <h4 className="fund-subhead">行业暴露区间</h4>
               <div className="corr-wrap">
                 <table className="compact-table holdings-insight-table">
-                  <thead><tr><th>代码</th><th>名称</th><th>占总组合</th><th>占基金仓位</th><th>涉及基金</th></tr></thead>
+                  <thead><tr><th>行业</th><th>已披露下界</th><th>最坏上界</th><th>主要来源</th></tr></thead>
                   <tbody>
-                    {exposure.stocks?.slice(0, 12).map((row) => (
-                      <tr key={row.code}>
-                        <td style={{ fontWeight: 800 }}>{row.code}</td>
-                        <td>{row.name || '-'}</td>
-                        <td>{pct(row.portfolio_ratio)}</td>
-                        <td>{pct(row.fund_bucket_ratio)}</td>
-                        <td>{row.fund_count} 只</td>
+                    {exposure.industries?.slice(0, 12).map((row) => (
+                      <tr key={row.name}>
+                        <td style={{ fontWeight: 800 }}>{row.name}</td>
+                        <td>{plainPct(row.lower_ratio)}</td>
+                        <td>{plainPct(row.upper_ratio)}</td>
+                        <td>{row.contributors?.slice(0, 2).map((item) => item.code).join('、') || '-'}</td>
                       </tr>
                     ))}
-                    {!exposure.stocks?.length && <tr><td colSpan="5" className="hint">没有可用于股票穿透的真实披露。</td></tr>}
+                    {!exposure.industries?.length && <tr><td colSpan="4" className="hint">没有可用于行业穿透的真实披露。</td></tr>}
                   </tbody>
                 </table>
               </div>
             </div>
             <div>
-              <h4 className="fund-subhead">披露行业配置</h4>
+              <h4 className="fund-subhead">底层市场暴露</h4>
               <div className="corr-wrap">
                 <table className="compact-table holdings-insight-table">
-                  <thead><tr><th>行业</th><th>占总组合</th><th>占基金仓位</th><th>涉及基金</th></tr></thead>
+                  <thead><tr><th>市场</th><th>已识别下界</th><th>最坏上界</th><th>主要来源</th></tr></thead>
                   <tbody>
-                    {exposure.industries?.slice(0, 12).map((row) => (
-                      <tr key={row.name}>
-                        <td>{row.name}</td>
-                        <td>{pct(row.portfolio_ratio)}</td>
-                        <td>{pct(row.fund_bucket_ratio)}</td>
-                        <td>{row.fund_count} 只</td>
+                    {exposure.markets?.map((row) => (
+                      <tr key={row.market}>
+                        <td>{({ mainland: 'A股', hong_kong: '港股', united_states: '美股' }[row.market] || row.market)}</td>
+                        <td>{plainPct(row.lower_ratio)}</td>
+                        <td>{plainPct(row.upper_ratio)}</td>
+                        <td>{row.contributors?.slice(0, 2).map((item) => item.code).join('、') || '-'}</td>
                       </tr>
                     ))}
-                    {!exposure.industries?.length && <tr><td colSpan="4" className="hint">没有可用于行业穿透的真实披露。</td></tr>}
+                    {!exposure.markets?.length && <tr><td colSpan="4" className="hint">没有可识别的真实底层市场披露。</td></tr>}
                   </tbody>
                 </table>
               </div>
@@ -456,12 +470,16 @@ export default function HoldingsTab() {
 
           {exposure.funds?.length > 0 && (
             <div className="fund-bond-list" style={{ marginTop: 14 }}>
-              {exposure.funds.map((row) => <span className="tag neutral" key={row.code}>{row.code} {row.name} · 股票披露 {pct(row.stock_disclosure_ratio)} · {row.stock_period || '未返回报告期'}</span>)}
+              {exposure.funds.map((row) => (
+                <span className="tag neutral" key={row.code}>
+                  {row.code} {row.name} · 权益 {pctRange(row.equity_interval?.lower_ratio, row.equity_interval?.upper_ratio)} · {row.periods?.asset || row.periods?.stock || '未返回报告期'}
+                </span>
+              ))}
             </div>
           )}
-          {exposure.failed?.length > 0 && <div className="error" style={{ marginTop: 12 }}>{exposure.failed.slice(0, 4).map((row) => `${row.code}: ${row.error}`).join('；')}</div>}
+          {exposure.failed_sources?.length > 0 && <div className="error" style={{ marginTop: 12 }}>{exposure.failed_sources.slice(0, 4).map((row) => `${row.code}: ${row.error}`).join('；')}</div>}
           <p className="hint" style={{ marginTop: 12 }}>{exposure.policy}</p>
-          <p className="hint">{exposure.method?.timeliness}</p>
+          <p className="hint">{exposure.method?.industry}</p>
         </div>
       )}
 

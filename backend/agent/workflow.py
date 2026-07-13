@@ -9,6 +9,8 @@ from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from typing import Any
 
+import portfolio_exposure
+
 from .registry import ToolDefinition, ToolRegistry
 from .repository import AgentRepository, STEP_REUSABLE_STATUSES
 
@@ -149,6 +151,16 @@ class AgentWorkflowRunner:
                     "profile_version_id": payload.get("profile_version_id"),
                 },
             ))
+            steps.append(WorkflowStep(
+                key="portfolio_exposure",
+                tool_name="portfolio.exposure.snapshot",
+                tool_version="1.0.0",
+                required=True,
+                input_payload={
+                    "code": code,
+                    "profile_version_id": payload.get("profile_version_id"),
+                },
+            ))
         if payload.get("include_estimate", False):
             steps.append(WorkflowStep(
                 key="fund_estimate",
@@ -193,6 +205,8 @@ class AgentWorkflowRunner:
     def _as_of(payload: dict[str, Any], step_key: str) -> str | None:
         if payload.get("as_of"):
             return str(payload["as_of"])
+        if step_key == "portfolio_exposure":
+            return str(payload.get("evaluated_on") or "") or None
         if step_key == "fund_estimate":
             estimate = payload.get("estimate") or {}
             confirmed = payload.get("confirmed") or {}
@@ -242,6 +256,10 @@ class AgentWorkflowRunner:
             )
             if not isinstance(output, dict):
                 raise TypeError("工具必须返回结构化对象")
+            if step.key == "portfolio_exposure" and not (output.get("snapshot") or {}).get("id"):
+                if self.repository.is_cancel_requested(run_id):
+                    raise RunCancelledError("Agent Run 已请求取消")
+                output = portfolio_exposure.persist_exposure_snapshot(output)
             quality = self._quality_status(output)
             step_status = "succeeded" if quality == "complete" else "partial"
             evidence = self.repository.complete_step_with_evidence(
@@ -253,11 +271,11 @@ class AgentWorkflowRunner:
                     "user_confirmed"
                     if step.key == "portfolio_context"
                     else "calculation"
-                    if step.key in {"fund_analysis", "personalized_decision"}
+                    if step.key in {"fund_analysis", "personalized_decision", "portfolio_exposure"}
                     else "provider_normalized"
                 ),
-                subject_type="portfolio" if step.key == "portfolio_context" else "fund",
-                subject_id="default" if step.key == "portfolio_context" else code,
+                subject_type="portfolio" if step.key in {"portfolio_context", "portfolio_exposure"} else "fund",
+                subject_id="default" if step.key in {"portfolio_context", "portfolio_exposure"} else code,
                 provider=str(output.get("source") or definition.name),
                 source_url=str(output.get("source_url") or "") or None,
                 as_of=self._as_of(output, step.key),
@@ -438,6 +456,7 @@ class AgentWorkflowRunner:
                     (evidence.get("fund_analysis") or {}).get("id"),
                     (evidence.get("fund_market_profile") or {}).get("id"),
                     (evidence.get("portfolio_context") or {}).get("id"),
+                    (evidence.get("portfolio_exposure") or {}).get("id"),
                     decision_evidence.get("id"),
                 ) if item
             ]
@@ -465,6 +484,18 @@ class AgentWorkflowRunner:
                     "首批观察金额",
                     (decision_payload.get("budget") or {}).get("first_tranche_amount"),
                     "元",
+                ),
+                (
+                    "portfolio_equity_upper_ratio",
+                    "组合权益暴露最坏上界",
+                    ((decision_payload.get("portfolio_exposure") or {}).get("equity") or {}).get("current_upper_ratio"),
+                    "%",
+                ),
+                (
+                    "portfolio_industry_upper_ratio",
+                    "组合单行业暴露最坏上界",
+                    ((decision_payload.get("portfolio_exposure") or {}).get("industry") or {}).get("current_max_upper_ratio"),
+                    "%",
                 ),
             ):
                 if not decision_evidence.get("id"):
@@ -643,6 +674,17 @@ class AgentWorkflowRunner:
             )
             if output is not None:
                 outputs[step.key] = output
+                if step.key == "portfolio_exposure":
+                    snapshot_id = str((output.get("snapshot") or {}).get("id") or "")
+                    snapshot_hash = str((output.get("snapshot") or {}).get("payload_sha256") or "")
+                    integrity = output.get("integrity") or {}
+                    if (
+                        not snapshot_id
+                        or not integrity.get("verified")
+                        or str(integrity.get("payload_sha256") or "") != snapshot_hash
+                    ):
+                        raise RequiredToolError("组合穿透快照缺少可验证的持久化哈希")
+                    self.repository.bind_exposure_snapshot(run_id, snapshot_id)
             if evidence_item is not None:
                 evidence[step.key] = evidence_item
             if failure is not None:
@@ -654,6 +696,8 @@ class AgentWorkflowRunner:
         if (
             "portfolio_context" in outputs
             and "portfolio_context" in evidence
+            and "portfolio_exposure" in outputs
+            and "portfolio_exposure" in evidence
             and "fund_market_profile" in outputs
             and "fund_market_profile" in evidence
         ):
@@ -661,11 +705,12 @@ class AgentWorkflowRunner:
                 evidence["fund_analysis"]["id"],
                 evidence["fund_market_profile"]["id"],
                 evidence["portfolio_context"]["id"],
+                evidence["portfolio_exposure"]["id"],
             ]
             decision_step = WorkflowStep(
                 key="personalized_decision",
                 tool_name="fund.personalized_decision.evaluate",
-                tool_version="1.1.0",
+                tool_version="1.2.0",
                 required=True,
                 input_payload={
                     "code": code,
@@ -676,6 +721,7 @@ class AgentWorkflowRunner:
                     "analysis": outputs["fund_analysis"],
                     "market_profile": outputs["fund_market_profile"],
                     "context": outputs["portfolio_context"],
+                    "exposure": outputs["portfolio_exposure"],
                     "planned_amount": payload.get("planned_amount"),
                     "input_evidence_ids": source_evidence_ids,
                 },

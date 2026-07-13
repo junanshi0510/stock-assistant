@@ -121,6 +121,15 @@ def compare_run_results(current_run: dict[str, Any], parent_run: dict[str, Any])
         "current": current_profile_version,
         "changed": previous_profile_version != current_profile_version,
     })
+    previous_exposure_snapshot = parent_run.get("exposure_snapshot_id")
+    current_exposure_snapshot = current_run.get("exposure_snapshot_id")
+    dimensions.append({
+        "key": "portfolio_exposure_snapshot",
+        "label": "组合穿透快照",
+        "previous": previous_exposure_snapshot,
+        "current": current_exposure_snapshot,
+        "changed": previous_exposure_snapshot != current_exposure_snapshot,
+    })
 
     previous_as_of = parent_fund.get("as_of")
     current_as_of = current_fund.get("as_of")

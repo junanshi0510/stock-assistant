@@ -130,6 +130,7 @@ class AgentRepository:
                         completed_at      TEXT,
                         parent_run_id     TEXT,
                         profile_version_id TEXT,
+                        exposure_snapshot_id TEXT,
                         UNIQUE(user_id, idempotency_key)
                     );
 
@@ -262,6 +263,10 @@ class AgentRepository:
                 if "profile_version_id" not in run_columns:
                     connection.execute(
                         "ALTER TABLE agent_runs ADD COLUMN profile_version_id TEXT"
+                    )
+                if "exposure_snapshot_id" not in run_columns:
+                    connection.execute(
+                        "ALTER TABLE agent_runs ADD COLUMN exposure_snapshot_id TEXT"
                     )
             self._schema_ready = True
 
@@ -469,6 +474,39 @@ class AgentRepository:
         run["claims"] = [self._claim_from_row(item) for item in claim_rows]
         run["evidence"] = [dict(item) for item in evidence_rows]
         return run
+
+    def bind_exposure_snapshot(self, run_id: str, snapshot_id: str) -> dict[str, Any]:
+        """Bind exactly one immutable portfolio exposure snapshot to a Run."""
+        snapshot_id = str(snapshot_id or "").strip()
+        if not snapshot_id:
+            raise ValueError("exposure snapshot id is required")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT exposure_snapshot_id, status FROM agent_runs WHERE id=?",
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("Agent Run 不存在")
+            existing = str(row["exposure_snapshot_id"] or "")
+            if existing and existing != snapshot_id:
+                raise ValueError("Agent Run 已绑定不同的组合穿透快照")
+            if not existing:
+                connection.execute(
+                    "UPDATE agent_runs SET exposure_snapshot_id=?, updated_at=? WHERE id=?",
+                    (snapshot_id, _utc_now(), run_id),
+                )
+                self._append_audit(
+                    connection,
+                    run_id,
+                    "run.exposure_snapshot_bound",
+                    {"exposure_snapshot_id": snapshot_id},
+                )
+            updated = connection.execute(
+                "SELECT * FROM agent_runs WHERE id=?",
+                (run_id,),
+            ).fetchone()
+        return self._run_from_row(updated)
 
     def get_run_by_idempotency_key(
         self,
@@ -1573,6 +1611,19 @@ class AgentRepository:
                 "SELECT * FROM agent_evidence WHERE run_id=? ORDER BY created_at, id",
                 (run_id,),
             ).fetchall()
+            run_row = connection.execute(
+                "SELECT exposure_snapshot_id FROM agent_runs WHERE id=?",
+                (run_id,),
+            ).fetchone()
+            exposure_rows = connection.execute(
+                """
+                SELECT evidence.*
+                FROM agent_evidence AS evidence
+                JOIN agent_steps AS steps ON steps.id=evidence.step_id
+                WHERE evidence.run_id=? AND steps.step_key='portfolio_exposure'
+                """,
+                (run_id,),
+            ).fetchall()
         evidence_ids = {row["id"] for row in rows}
         event_ids = [item["details"].get("evidence_id") for item in evidence_events]
         if (
@@ -1601,6 +1652,39 @@ class AgentRepository:
                     "failing_evidence_id": evidence_id,
                     "audit_verified": audit["verified"],
                     "reason": "payload_hash_mismatch",
+                }
+        bound_snapshot_id = str((run_row or {})["exposure_snapshot_id"] or "") if run_row else ""
+        binding_events = [
+            item for item in events
+            if item["event_type"] == "run.exposure_snapshot_bound"
+        ]
+        if bound_snapshot_id or exposure_rows or binding_events:
+            if len(exposure_rows) != 1 or len(binding_events) != 1 or not bound_snapshot_id:
+                return {
+                    "verified": False,
+                    "evidence_count": len(rows),
+                    "failing_evidence_id": exposure_rows[0]["id"] if exposure_rows else None,
+                    "audit_verified": True,
+                    "reason": "exposure_snapshot_binding_mismatch",
+                }
+            exposure_evidence = self._evidence_from_row(exposure_rows[0], include_payload=True)
+            exposure_payload = exposure_evidence.get("payload") or {}
+            snapshot = exposure_payload.get("snapshot") or {}
+            snapshot_integrity = exposure_payload.get("integrity") or {}
+            event_snapshot_id = str(binding_events[0]["details"].get("exposure_snapshot_id") or "")
+            if (
+                str(snapshot.get("id") or "") != bound_snapshot_id
+                or event_snapshot_id != bound_snapshot_id
+                or not snapshot_integrity.get("verified")
+                or str(snapshot_integrity.get("payload_sha256") or "")
+                != str(snapshot.get("payload_sha256") or "")
+            ):
+                return {
+                    "verified": False,
+                    "evidence_count": len(rows),
+                    "failing_evidence_id": exposure_evidence["id"],
+                    "audit_verified": True,
+                    "reason": "exposure_snapshot_binding_mismatch",
                 }
         return {
             "verified": True,

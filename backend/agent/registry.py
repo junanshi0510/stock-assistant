@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 import funds as fund_service
+import portfolio_exposure
 from .portfolio_context import get_portfolio_context
 from strategies.personalized_fund_decision import evaluate_personalized_fund_decision
 
@@ -132,8 +133,19 @@ def build_default_registry() -> ToolRegistry:
         handler=get_portfolio_context,
     ))
     registry.register(ToolDefinition(
+        name="portfolio.exposure.snapshot",
+        version="1.0.0",
+        description="从用户确认持仓和真实基金定期披露生成不可变组合穿透区间快照。",
+        risk_level="R1",
+        timeout_seconds=120,
+        handler=lambda payload: portfolio_exposure.calculate_exposure_snapshot(
+            target_code=str(payload["code"]),
+            profile_version_id=payload.get("profile_version_id"),
+        ),
+    ))
+    registry.register(ToolDefinition(
         name="fund.personalized_decision.evaluate",
-        version="1.1.0",
+        version="1.2.0",
         description="把基金研究 Evidence 与用户组合 Evidence 代入版本化风险门禁和金额策略。",
         risk_level="R1",
         timeout_seconds=5,
@@ -142,6 +154,7 @@ def build_default_registry() -> ToolRegistry:
                 payload["analysis"],
                 payload["context"],
                 payload["market_profile"],
+                payload.get("exposure"),
                 planned_amount=payload.get("planned_amount"),
             ),
             "input_evidence_ids": payload.get("input_evidence_ids") or [],

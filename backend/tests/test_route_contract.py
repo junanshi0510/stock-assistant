@@ -31,6 +31,8 @@ EXPECTED_OPERATIONS = {
     "/api/holdings": {"GET", "POST"},
     "/api/holdings/insights": {"GET"},
     "/api/holdings/exposure": {"GET"},
+    "/api/holdings/exposure-snapshots": {"GET", "POST"},
+    "/api/holdings/exposure-snapshots/{snapshot_id}": {"GET"},
     "/api/investment-profile": {"GET", "PUT"},
     "/api/investment-profile/drafts": {"POST"},
     "/api/investment-profile/versions": {"GET"},

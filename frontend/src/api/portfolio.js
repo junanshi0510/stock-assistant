@@ -29,6 +29,20 @@ export function fetchHoldingsExposure(maxFunds = 6) {
   return getJson(`/api/holdings/exposure?max_funds=${encodeURIComponent(maxFunds)}`)
 }
 
+export function createHoldingsExposureSnapshot(targetCode = null) {
+  return getJson('/api/holdings/exposure-snapshots', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ target_code: targetCode || null }),
+  })
+}
+
+export function fetchHoldingsExposureSnapshots(limit = 20, targetCode = '') {
+  const query = new URLSearchParams({ limit: String(limit) })
+  if (targetCode) query.set('target_code', targetCode)
+  return getJson(`/api/holdings/exposure-snapshots?${query.toString()}`)
+}
+
 export function fetchInvestmentProfile() {
   return getJson('/api/investment-profile')
 }

@@ -233,13 +233,18 @@ def _portfolio_context(_payload):
             "horizon": "mid_long",
             "monthly_budget": 1000,
             "max_single_ratio": 35,
+            "max_equity_ratio": 90,
+            "max_industry_ratio": 50,
+            "max_drawdown_pct": 30,
             "allowed_fund_markets": ["mainland"],
             "accept_fx_risk": False,
+            "profile_version_id": "ips_test",
         },
         "portfolio": {
             "holding_count": 2,
             "amount_complete": True,
             "total_amount": 10000,
+            "holdings_sha256": "b" * 64,
         },
         "target_holding": {
             "exists": True,
@@ -252,11 +257,47 @@ def _portfolio_context(_payload):
     }
 
 
+def _portfolio_exposure(_payload):
+    return {
+        "schema_version": "portfolio_exposure_snapshot.v1",
+        "status": "complete",
+        "source": "真实基金披露测试快照",
+        "evaluated_on": "2026-07-13",
+        "profile_version_id": "ips_test",
+        "target_code": "001480",
+        "holdings_sha256": "b" * 64,
+        "summary": {
+            "equity": {
+                "lower_amount": 5000,
+                "upper_amount": 5000,
+                "lower_ratio": 50,
+                "upper_ratio": 50,
+            },
+            "industry": {
+                "unknown_equity_amount": 500,
+                "max_lower_ratio": 15,
+                "max_upper_ratio": 20,
+            },
+        },
+        "industries": [{"name": "信息技术", "lower_amount": 1000, "lower_ratio": 10}],
+        "target": {
+            "status": "available",
+            "equity_interval": {"lower_ratio": 80, "upper_ratio": 80, "exact": True},
+            "industry_unknown_ratio": 10,
+            "industries": [{"name": "信息技术", "lower_ratio": 25, "upper_ratio": 35}],
+        },
+        "quality": {"decision_eligible": True, "reasons": []},
+        "snapshot": {"id": "exposure_test", "payload_sha256": "c" * 64},
+        "integrity": {"verified": True, "payload_sha256": "c" * 64},
+    }
+
+
 def _personalized_decision(payload):
     result = evaluate_personalized_fund_decision(
         payload["analysis"],
         payload["context"],
         payload["market_profile"],
+        payload["exposure"],
         planned_amount=payload.get("planned_amount"),
     )
     result["input_evidence_ids"] = payload.get("input_evidence_ids") or []
@@ -267,6 +308,7 @@ def _registry(
     alternatives_handler=_alternatives,
     analysis_handler=_analysis,
     estimate_handler=_estimate,
+    exposure_handler=_portfolio_exposure,
     timeout_overrides=None,
 ):
     registry = ToolRegistry()
@@ -295,8 +337,16 @@ def _registry(
         handler=_portfolio_context,
     ))
     registry.register(ToolDefinition(
+        name="portfolio.exposure.snapshot",
+        version="1.0.0",
+        description="portfolio.exposure.snapshot",
+        risk_level="R1",
+        timeout_seconds=timeout_overrides.get("portfolio.exposure.snapshot", 5),
+        handler=exposure_handler,
+    ))
+    registry.register(ToolDefinition(
         name="fund.personalized_decision.evaluate",
-        version="1.1.0",
+        version="1.2.0",
         description="fund.personalized_decision.evaluate",
         risk_level="R1",
         timeout_seconds=5,
@@ -340,14 +390,15 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(steps[0].input_payload["months"], 60)
         self.assertEqual(steps[1].key, "fund_market_profile")
         self.assertEqual(steps[2].key, "portfolio_context")
+        self.assertEqual(steps[3].key, "portfolio_exposure")
 
     def test_completed_run_persists_claims_evidence_and_hash_chained_audit(self):
         run = self._run()
 
         self.assertEqual(run["status"], "completed")
-        self.assertEqual(len(run["steps"]), 7)
-        self.assertEqual(len(run["evidence"]), 7)
-        self.assertGreaterEqual(len(run["claims"]), 11)
+        self.assertEqual(len(run["steps"]), 8)
+        self.assertEqual(len(run["evidence"]), 8)
+        self.assertGreaterEqual(len(run["claims"]), 13)
         self.assertEqual(run["result"]["fund"]["code"], "001480")
         self.assertEqual(run["result"]["schema_version"], "fund_deep_research.v3")
         self.assertEqual(run["result"]["alternatives"][0]["code"], "000001")
@@ -369,8 +420,9 @@ class AgentRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(
             len(run["result"]["personalized_decision"]["evidence_ids"]),
-            4,
+            5,
         )
+        self.assertEqual(run["exposure_snapshot_id"], "exposure_test")
         estimate_step = next(item for item in run["steps"] if item["step_key"] == "fund_estimate")
         estimate_evidence = next(
             item for item in run["evidence"] if item["step_id"] == estimate_step["id"]
@@ -424,6 +476,20 @@ class AgentRuntimeTests(unittest.TestCase):
         failed_step = next(item for item in run["steps"] if item["step_key"] == "fund_alternatives")
         self.assertEqual(failed_step["status"], "failed")
 
+    def test_run_integrity_rejects_tampered_exposure_snapshot_binding(self):
+        run = self._run()
+        self.assertTrue(self.repository.verify_run_evidence_integrity(run["id"])["verified"])
+
+        with self.repository._connect() as connection:
+            connection.execute(
+                "UPDATE agent_runs SET exposure_snapshot_id='exposure_tampered' WHERE id=?",
+                (run["id"],),
+            )
+
+        result = self.repository.verify_run_evidence_integrity(run["id"])
+        self.assertFalse(result["verified"])
+        self.assertEqual(result["reason"], "exposure_snapshot_binding_mismatch")
+
     def test_required_analysis_failure_stops_run(self):
         def unavailable_analysis(_payload):
             raise RuntimeError("真实净值当前不可用")
@@ -461,11 +527,42 @@ class AgentRuntimeTests(unittest.TestCase):
         estimate_step = next(item for item in run["steps"] if item["step_key"] == "fund_estimate")
         self.assertEqual(estimate_step["status"], "failed")
         self.assertEqual(estimate_step["error_code"], "TOOL_TIMEOUT")
-        self.assertEqual(len(run["evidence"]), 4)
+        self.assertEqual(len(run["evidence"]), 5)
 
         release_handler.set()
         time.sleep(0.05)
-        self.assertEqual(len(self.repository.get_run(run["id"])["evidence"]), 4)
+        self.assertEqual(len(self.repository.get_run(run["id"])["evidence"]), 5)
+
+    def test_exposure_timeout_cannot_persist_a_late_orphan_snapshot(self):
+        handler_started = threading.Event()
+        release_handler = threading.Event()
+
+        def slow_exposure(payload):
+            handler_started.set()
+            release_handler.wait(timeout=2)
+            result = _portfolio_exposure(payload)
+            result.pop("snapshot", None)
+            result.pop("integrity", None)
+            return result
+
+        with patch("agent.workflow.portfolio_exposure.persist_exposure_snapshot") as persist:
+            run = self._run(
+                registry=_registry(
+                    exposure_handler=slow_exposure,
+                    timeout_overrides={"portfolio.exposure.snapshot": 0.03},
+                ),
+                include_estimate=False,
+                include_disclosure_changes=False,
+                include_alternatives=False,
+            )
+            self.assertTrue(handler_started.is_set())
+            self.assertEqual(run["status"], "failed")
+            self.assertEqual(run["error_code"], "REQUIRED_TOOL_FAILED")
+            persist.assert_not_called()
+
+            release_handler.set()
+            time.sleep(0.05)
+            persist.assert_not_called()
 
     def test_running_tool_can_be_cancelled_without_becoming_a_failure(self):
         def slow_analysis(payload):

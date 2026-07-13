@@ -21,6 +21,7 @@ const ACTION_TONE = {
   setup_required: 'unavailable',
   budget_required: 'unavailable',
   market_data_required: 'unavailable',
+  exposure_data_required: 'unavailable',
 }
 
 const MARKET_LABELS = {
@@ -37,6 +38,7 @@ export default function PersonalizedDecisionView({ decision, onOpenEvidence }) {
   const budget = decision.budget || {}
   const history = decision.historical_context || {}
   const market = decision.market_context || {}
+  const exposure = decision.portfolio_exposure || {}
   const tone = ACTION_TONE[action.action] || 'mixed'
 
   return (
@@ -79,6 +81,24 @@ export default function PersonalizedDecisionView({ decision, onOpenEvidence }) {
 
       <div className="agent-personal-market">
         <div>
+          <span>组合穿透快照</span>
+          <b>{exposure.integrity_verified ? '完整性已验证' : '不可用于决策'}</b>
+          <small>{exposure.snapshot_id || '未生成不可变快照'}</small>
+        </div>
+        <div>
+          <span>权益暴露 / IPS 上限</span>
+          <b>{pct(exposure.equity?.current_lower_ratio)} - {pct(exposure.equity?.current_upper_ratio)} / {pct(exposure.equity?.limit_ratio)}</b>
+          <small>未披露权益进入最坏上界</small>
+        </div>
+        <div>
+          <span>行业集中 / IPS 上限</span>
+          <b>{pct(exposure.industry?.current_max_lower_ratio)} - {pct(exposure.industry?.current_max_upper_ratio)} / {pct(exposure.industry?.limit_ratio)}</b>
+          <small>未知行业可能集中于任一行业</small>
+        </div>
+      </div>
+
+      <div className="agent-personal-market">
+        <div>
           <span>基金投资市场</span>
           <b>{market.label || '待确认'}{market.is_qdii ? ' · QDII' : ''}</b>
           <small>{market.confirmed_nav_lag || '以确认净值日期为准'}</small>
@@ -114,6 +134,7 @@ export default function PersonalizedDecisionView({ decision, onOpenEvidence }) {
             confirmed_holding_amounts: '完整持仓金额',
             planned_or_monthly_budget: '计划投入或月度预算',
             fund_market_identification: '基金投资市场证据',
+            portfolio_exposure_snapshot: '完整且绑定一致的组合穿透快照',
           }[item] || item)).join('、')}
         </div>
       )}

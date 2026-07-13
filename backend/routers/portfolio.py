@@ -14,6 +14,7 @@ import decision_center
 import holdings_import
 import holdings as holdings_mod
 import monitor
+import portfolio_exposure
 import portfolio_review
 import storage
 import transaction_import
@@ -101,6 +102,10 @@ class PortfolioSnapshotRequest(BaseModel):
     reason: str = Field(default="manual", max_length=80)
 
 
+class PortfolioExposureSnapshotRequest(BaseModel):
+    target_code: str | None = Field(default=None, pattern=r"^\d{6}$")
+
+
 class PortfolioTransactionImportRequest(BaseModel):
     items: list[PortfolioTransactionRequest] = Field(min_length=1, max_length=1500)
     file_sha256: str = Field(min_length=64, max_length=64)
@@ -157,6 +162,42 @@ def get_holdings_insights(max_funds: int = Query(6, ge=2, le=10)):
 @router.get("/api/holdings/exposure")
 def get_holdings_exposure(max_funds: int = Query(6, ge=1, le=10)):
     return holdings_mod.fund_lookthrough_exposure(max_funds=max_funds)
+
+
+@router.post("/api/holdings/exposure-snapshots")
+def create_holdings_exposure_snapshot(req: PortfolioExposureSnapshotRequest):
+    profile = storage.get_investment_profile()
+    profile_version_id = profile.get("profile_version_id") if profile.get("configured") else None
+    try:
+        return portfolio_exposure.refresh_exposure_snapshot(
+            target_code=req.target_code,
+            profile_version_id=profile_version_id,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=502, detail=f"真实组合穿透快照生成失败:{error}") from error
+
+
+@router.get("/api/holdings/exposure-snapshots")
+def get_holdings_exposure_snapshots(
+    target_code: str | None = Query(default=None, pattern=r"^\d{6}$"),
+    limit: int = Query(default=20, ge=1, le=100),
+):
+    items = storage.list_portfolio_exposure_snapshots(
+        target_code=target_code,
+        limit=limit,
+    )
+    return {"items": items, "count": len(items)}
+
+
+@router.get("/api/holdings/exposure-snapshots/{snapshot_id}")
+def get_holdings_exposure_snapshot(snapshot_id: str):
+    item = storage.get_portfolio_exposure_snapshot(snapshot_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="组合穿透快照不存在")
+    item["integrity"] = storage.verify_portfolio_exposure_snapshot(snapshot_id)
+    return item
 
 
 @router.get("/api/investment-profile")

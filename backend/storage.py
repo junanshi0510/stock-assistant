@@ -245,6 +245,44 @@ def _get_conn():
             )
             """
         )
+        _conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS portfolio_exposure_snapshots (
+                id                 TEXT PRIMARY KEY,
+                user_id            TEXT NOT NULL DEFAULT 'default',
+                schema_version     TEXT NOT NULL,
+                holdings_sha256    TEXT NOT NULL,
+                target_code        TEXT,
+                profile_version_id TEXT,
+                status             TEXT NOT NULL,
+                payload_json       TEXT NOT NULL,
+                payload_sha256     TEXT NOT NULL,
+                created_at         TEXT NOT NULL,
+                UNIQUE(user_id, payload_sha256)
+            )
+            """
+        )
+        _conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_portfolio_exposure_history
+            ON portfolio_exposure_snapshots(user_id, created_at DESC)
+            """
+        )
+        _conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_portfolio_exposure_target
+            ON portfolio_exposure_snapshots(user_id, target_code, created_at DESC)
+            """
+        )
+        _conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_portfolio_exposure_immutable
+            BEFORE UPDATE ON portfolio_exposure_snapshots
+            BEGIN
+                SELECT RAISE(ABORT, 'portfolio exposure snapshot is immutable');
+            END
+            """
+        )
         _ensure_column(_conn, "holdings", "yesterday_profit", "REAL")
         _ensure_column(_conn, "portfolio_transactions", "source", "TEXT")
         _ensure_column(
@@ -1318,3 +1356,153 @@ def list_portfolio_snapshots(
         except (TypeError, json.JSONDecodeError):
             item["holdings"] = []
     return items
+
+
+def _exposure_payload_sha256(payload: dict) -> tuple[str, str]:
+    payload_json = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return payload_json, hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+
+
+def save_portfolio_exposure_snapshot(payload: dict, user_id: str = "default") -> dict:
+    """Persist an immutable, content-addressed exposure observation."""
+    if not isinstance(payload, dict):
+        raise TypeError("portfolio exposure payload must be an object")
+    schema_version = str(payload.get("schema_version") or "")
+    holdings_hash = str(payload.get("holdings_sha256") or "")
+    if not schema_version or len(holdings_hash) != 64:
+        raise ValueError("portfolio exposure payload metadata is incomplete")
+    payload_json, digest = _exposure_payload_sha256(payload)
+    snapshot_id = f"exposure_{uuid.uuid4().hex}"
+    created_at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+    with _lock:
+        conn = _get_conn()
+        existing = conn.execute(
+            """
+            SELECT id, user_id, schema_version, holdings_sha256, target_code,
+                   profile_version_id, status, payload_sha256, created_at
+            FROM portfolio_exposure_snapshots
+            WHERE user_id=? AND payload_sha256=?
+            """,
+            (user_id, digest),
+        ).fetchone()
+        if existing:
+            item = dict(existing)
+            item["deduplicated"] = True
+            return item
+        conn.execute(
+            """
+            INSERT INTO portfolio_exposure_snapshots (
+                id, user_id, schema_version, holdings_sha256, target_code,
+                profile_version_id, status, payload_json, payload_sha256, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                snapshot_id,
+                user_id,
+                schema_version,
+                holdings_hash,
+                payload.get("target_code"),
+                payload.get("profile_version_id"),
+                str(payload.get("status") or "partial"),
+                payload_json,
+                digest,
+                created_at,
+            ),
+        )
+        conn.commit()
+        row = conn.execute(
+            """
+            SELECT id, user_id, schema_version, holdings_sha256, target_code,
+                   profile_version_id, status, payload_sha256, created_at
+            FROM portfolio_exposure_snapshots WHERE id=?
+            """,
+            (snapshot_id,),
+        ).fetchone()
+    item = dict(row)
+    item["deduplicated"] = False
+    return item
+
+
+def get_portfolio_exposure_snapshot(
+    snapshot_id: str,
+    user_id: str = "default",
+    *,
+    include_payload: bool = True,
+) -> dict | None:
+    fields = """
+        id, user_id, schema_version, holdings_sha256, target_code,
+        profile_version_id, status, payload_sha256, created_at
+    """
+    if include_payload:
+        fields += ", payload_json"
+    with _lock:
+        row = _get_conn().execute(
+            f"SELECT {fields} FROM portfolio_exposure_snapshots WHERE id=? AND user_id=?",
+            (snapshot_id, user_id),
+        ).fetchone()
+    if not row:
+        return None
+    item = dict(row)
+    if include_payload:
+        try:
+            item["payload"] = json.loads(item.pop("payload_json"))
+        except (TypeError, json.JSONDecodeError):
+            item["payload"] = None
+    return item
+
+
+def list_portfolio_exposure_snapshots(
+    user_id: str = "default",
+    *,
+    target_code: str | None = None,
+    limit: int = 20,
+) -> list[dict]:
+    limit = max(1, min(100, int(limit)))
+    where = "user_id=?"
+    params: list = [user_id]
+    if target_code:
+        where += " AND target_code=?"
+        params.append(str(target_code))
+    params.append(limit)
+    with _lock:
+        rows = _get_conn().execute(
+            f"""
+            SELECT id, user_id, schema_version, holdings_sha256, target_code,
+                   profile_version_id, status, payload_sha256, created_at
+            FROM portfolio_exposure_snapshots
+            WHERE {where}
+            ORDER BY created_at DESC, rowid DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def verify_portfolio_exposure_snapshot(snapshot_id: str, user_id: str = "default") -> dict:
+    item = get_portfolio_exposure_snapshot(snapshot_id, user_id=user_id, include_payload=True)
+    if not item or not isinstance(item.get("payload"), dict):
+        return {"verified": False, "snapshot_id": snapshot_id, "reason": "snapshot_not_found_or_invalid"}
+    _, digest = _exposure_payload_sha256(item["payload"])
+    reason = None
+    if digest != item.get("payload_sha256"):
+        reason = "payload_hash_mismatch"
+    elif item["payload"].get("holdings_sha256") != item.get("holdings_sha256"):
+        reason = "holdings_hash_mismatch"
+    elif item["payload"].get("schema_version") != item.get("schema_version"):
+        reason = "schema_version_mismatch"
+    elif item["payload"].get("target_code") != item.get("target_code"):
+        reason = "target_code_mismatch"
+    elif item["payload"].get("profile_version_id") != item.get("profile_version_id"):
+        reason = "profile_version_mismatch"
+    return {
+        "verified": reason is None,
+        "snapshot_id": snapshot_id,
+        "payload_sha256": digest,
+        "reason": reason,
+    }

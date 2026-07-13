@@ -21,6 +21,7 @@ from strategies.personalized_fund_decision import (  # noqa: E402
 
 def _analysis(decision="research", confidence="medium", risk_band="均衡偏波动", max_drawdown=-12.0):
     return {
+        "code": "001480",
         "metrics": {"annual_volatility": 18.0, "max_drawdown": max_drawdown},
         "timing": {"score": 62},
         "playbook": {"role": {"risk_band": risk_band}},
@@ -54,6 +55,8 @@ def _context(*, configured=True, total=10000, target_amount=1000, target_ratio=1
             "allowed_fund_markets": ["mainland"],
             "accept_fx_risk": False,
             "max_drawdown_pct": 30,
+            "max_equity_ratio": 90,
+            "max_industry_ratio": 50,
             "profile_version_id": "ips_test",
             "profile_payload_sha256": "a" * 64,
         },
@@ -61,6 +64,7 @@ def _context(*, configured=True, total=10000, target_amount=1000, target_ratio=1
             "holding_count": 3,
             "amount_complete": True,
             "total_amount": total,
+            "holdings_sha256": "b" * 64,
         },
         "target_holding": {
             "exists": target_amount > 0,
@@ -68,6 +72,39 @@ def _context(*, configured=True, total=10000, target_amount=1000, target_ratio=1
             "ratio": target_ratio,
             "profit_rate": -5.0,
         },
+    }
+
+
+def _exposure():
+    return {
+        "schema_version": "portfolio_exposure_snapshot.v1",
+        "status": "complete",
+        "profile_version_id": "ips_test",
+        "target_code": "001480",
+        "holdings_sha256": "b" * 64,
+        "summary": {
+            "equity": {
+                "lower_amount": 5000,
+                "upper_amount": 5000,
+                "lower_ratio": 50,
+                "upper_ratio": 50,
+            },
+            "industry": {
+                "unknown_equity_amount": 500,
+                "max_lower_ratio": 15,
+                "max_upper_ratio": 20,
+            },
+        },
+        "industries": [{"name": "信息技术", "lower_amount": 1000, "lower_ratio": 10}],
+        "target": {
+            "status": "available",
+            "equity_interval": {"lower_ratio": 80, "upper_ratio": 80, "exact": True},
+            "industry_unknown_ratio": 10,
+            "industries": [{"name": "信息技术", "lower_ratio": 25, "upper_ratio": 35}],
+        },
+        "quality": {"decision_eligible": True, "reasons": []},
+        "snapshot": {"id": "exposure_test", "payload_sha256": "c" * 64},
+        "integrity": {"verified": True},
     }
 
 
@@ -91,7 +128,7 @@ def _market(primary="mainland", *, resolution="identified", qdii=False):
 class PersonalizedFundDecisionTests(unittest.TestCase):
     def test_missing_profile_abstains_without_amount(self):
         result = evaluate_personalized_fund_decision(
-            _analysis(), _context(configured=False), _market(), planned_amount=2000
+            _analysis(), _context(configured=False), _market(), _exposure(), planned_amount=2000
         )
 
         self.assertEqual(result["status"], "abstained")
@@ -126,6 +163,7 @@ class PersonalizedFundDecisionTests(unittest.TestCase):
             _analysis(),
             _context(total=10000, target_amount=5000, target_ratio=50, max_ratio=35),
             _market(),
+            _exposure(),
             planned_amount=1000,
         )
 
@@ -135,7 +173,7 @@ class PersonalizedFundDecisionTests(unittest.TestCase):
 
     def test_positive_history_within_limits_returns_auditable_tranche(self):
         result = evaluate_personalized_fund_decision(
-            _analysis(), _context(), _market(), planned_amount=1000
+            _analysis(), _context(), _market(), _exposure(), planned_amount=1000
         )
 
         self.assertEqual(result["strategy_id"], STRATEGY_ID)
@@ -148,7 +186,7 @@ class PersonalizedFundDecisionTests(unittest.TestCase):
 
     def test_negative_historical_condition_blocks_averaging_down(self):
         result = evaluate_personalized_fund_decision(
-            _analysis(decision="avoid_for_now"), _context(), _market(), planned_amount=1000
+            _analysis(decision="avoid_for_now"), _context(), _market(), _exposure(), planned_amount=1000
         )
 
         self.assertEqual(result["decision"]["action"], "wait")
@@ -159,7 +197,7 @@ class PersonalizedFundDecisionTests(unittest.TestCase):
         context = _context()
         context["profile"]["risk"] = "stable"
         result = evaluate_personalized_fund_decision(
-            _analysis(risk_band="进攻型"), context, _market(), planned_amount=1000
+            _analysis(risk_band="进攻型"), context, _market(), _exposure(), planned_amount=1000
         )
 
         self.assertEqual(result["decision"]["action"], "do_not_add")
@@ -170,7 +208,7 @@ class PersonalizedFundDecisionTests(unittest.TestCase):
         context = _context()
         context["profile"]["horizon"] = "short"
         result = evaluate_personalized_fund_decision(
-            _analysis(), context, _market(), planned_amount=1000
+            _analysis(), context, _market(), _exposure(), planned_amount=1000
         )
 
         self.assertEqual(result["decision"]["action"], "do_not_add")
@@ -179,7 +217,7 @@ class PersonalizedFundDecisionTests(unittest.TestCase):
     def test_hong_kong_fund_requires_permission_and_fx_acknowledgement(self):
         context = _context()
         result = evaluate_personalized_fund_decision(
-            _analysis(), context, _market("hong_kong", qdii=True), planned_amount=1000
+            _analysis(), context, _market("hong_kong", qdii=True), _exposure(), planned_amount=1000
         )
 
         self.assertEqual(result["decision"]["action"], "do_not_add")
@@ -192,10 +230,10 @@ class PersonalizedFundDecisionTests(unittest.TestCase):
         context = _context()
         context["profile"]["max_drawdown_pct"] = 15
         result = evaluate_personalized_fund_decision(
-            _analysis(max_drawdown=-22), context, _market(), planned_amount=1000
+            _analysis(max_drawdown=-22), context, _market(), _exposure(), planned_amount=1000
         )
 
-        self.assertEqual(result["strategy_version"], "1.1.0")
+        self.assertEqual(result["strategy_version"], "1.2.0")
         self.assertEqual(result["decision"]["action"], "do_not_add")
         gate = next(item for item in result["gates"] if item["code"] == "drawdown_capacity")
         self.assertEqual(gate["status"], "block")
@@ -206,7 +244,7 @@ class PersonalizedFundDecisionTests(unittest.TestCase):
         context["profile"]["allowed_fund_markets"].append("hong_kong")
         context["profile"]["accept_fx_risk"] = True
         result = evaluate_personalized_fund_decision(
-            _analysis(), context, _market("hong_kong", qdii=True), planned_amount=1000
+            _analysis(), context, _market("hong_kong", qdii=True), _exposure(), planned_amount=1000
         )
 
         self.assertEqual(result["decision"]["action"], "consider_tranche")
@@ -221,6 +259,7 @@ class PersonalizedFundDecisionTests(unittest.TestCase):
             _analysis(),
             context,
             _market("unknown_cross_border", resolution="insufficient", qdii=True),
+            _exposure(),
             planned_amount=1000,
         )
 

@@ -408,6 +408,34 @@ tbody tr:hover { background: rgba(255,255,255,0.03); }
 .holdings-edit-table td {
   white-space: nowrap;
 }
+
+.exposure-integrity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 9px 11px;
+  border-left: 3px solid #956300;
+  background: #fff9eb;
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.exposure-integrity.verified {
+  border-left-color: #087d68;
+  background: #eef8f5;
+}
+
+.exposure-integrity.invalid {
+  border-left-color: #b33845;
+  background: #fff2f3;
+}
+
+.exposure-integrity code {
+  color: var(--ink);
+  font-size: 10px;
+}
 .holdings-edit-table input,
 .holdings-edit-table select {
   min-width: 96px;

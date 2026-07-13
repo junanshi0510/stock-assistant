@@ -1453,10 +1453,15 @@ def get_fund_portfolio(code: str, year: str | None = None) -> dict:
         return cached
 
     profile = {}
+    fact_sheet = {}
     try:
         profile = _fetch_profile(code)
     except Exception:
         profile = {}
+    try:
+        fact_sheet = _fund_fact_sheet(code)
+    except Exception:
+        fact_sheet = {}
 
     stock_df = pd.DataFrame()
     bond_df = pd.DataFrame()
@@ -1516,7 +1521,7 @@ def get_fund_portfolio(code: str, year: str | None = None) -> dict:
         })
 
     industries = []
-    for _, row in industry_latest.head(12).iterrows():
+    for _, row in industry_latest.head(64).iterrows():
         d = row.to_dict()
         industries.append({
             "name": str(_cell(d, "行业类别") or ""),
@@ -1543,6 +1548,12 @@ def get_fund_portfolio(code: str, year: str | None = None) -> dict:
         "stock_period": stock_period,
         "bond_period": bond_period,
         "industry_period": industry_period,
+        "asset_period": str((fact_sheet.get("asset_latest") or {}).get("date") or ""),
+        "asset_allocation": {
+            "stock_ratio": _round(_num((fact_sheet.get("asset_latest") or {}).get("stock_ratio"))),
+            "bond_ratio": _round(_num((fact_sheet.get("asset_latest") or {}).get("bond_ratio"))),
+            "cash_ratio": _round(_num((fact_sheet.get("asset_latest") or {}).get("cash_ratio"))),
+        },
         "stocks": stocks,
         "bonds": bonds,
         "industries": industries,
@@ -1558,6 +1569,7 @@ def get_fund_portfolio(code: str, year: str | None = None) -> dict:
         "method": {
             "note": "持仓来自基金定期报告披露，通常滞后于实时净值，不代表当前实时持仓。",
             "year_selection": "优先取指定年份或当前年份；无披露时向前寻找最近有真实披露的年份。",
+            "asset_allocation": "股票、债券和现金占比来自东方财富基金详情页资产配置披露。",
         },
     }
     _cache_put(cache_key, result)
