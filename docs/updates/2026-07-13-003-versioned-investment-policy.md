@@ -8,7 +8,7 @@
 - 适当性问卷：`investment_suitability.v1`
 - 同意条款：`investment_policy_consent.v1`
 - 个性化基金决策策略：`personalized_fund_decision@1.1.0`
-- 状态：代码、本地迁移、自动化测试和前端生产构建完成，等待生产部署验收
+- 状态：已部署生产并通过数据库、API、前端和云端隔离测试验收
 
 ## 为什么这项能力现在必须做
 
@@ -254,9 +254,40 @@
 
 ## 生产验收
 
-部署后将在本节记录生产提交、数据库迁移、云端全量测试、公网只读状态、前端构建和服务状态。
+部署信息：
 
-生产验收不会代替用户填写或激活 IPS。正向激活、并发冲突、版本固定和回撤门禁由云端隔离数据库测试验证；用户应在网页中根据真实情况完成第一份政策。
+- 生产地址：`http://8.148.67.79/`
+- 应用提交：`84c8584`
+- `stock-assistant-api`：`active`
+- Nginx：`active`
+- systemd 日志无启动错误，Agent Worker 与 Outcome Worker 正常启动。
+- 前端当前构建：HTTP 200，入口引用 `index-pTdZuwJl.js`。
+
+云端测试：
+
+- 后端 113 项全部通过。
+- 使用云服务器当前 Python、SQLite 和应用代码在隔离临时数据库验证草稿、激活、并发、触发器、审计篡改、Agent 固定版本和回撤门禁。
+- 前端生产构建通过。
+
+生产数据库只读迁移审计：
+
+- `investment_profile_versions` 表：存在。
+- `investment_profile_audit_events` 表：存在。
+- IPS 不可变与状态触发器：3 个。
+- `agent_runs.profile_version_id` 列：存在。
+- 当前真实 IPS 版本：0。
+- 当前真实 IPS 审计事件：0。
+- SQLite `PRAGMA integrity_check`：`ok`。
+
+公网只读验收：
+
+- `GET /api/investment-profile`：HTTP 200，`configured=false`。
+- `GET /api/investment-profile/versions`：HTTP 200，版本数 0。
+- `GET /api/investment-profile/audit`：HTTP 200，联合完整性通过、事件数 0。
+- 历史 Run `run_3a5efe78f23c421bb41e9db557fc62b6`：原状态保持 `completed`，已无损出现 `profile_version_id` 字段。
+- 云服务器回环 IPS 与审计接口约 2 毫秒；公网顺序请求的额外等待来自本地代理链路，不是服务端锁等待。
+
+生产验收没有调用草稿或激活写接口，也没有代替用户填写 IPS。用户应在网页中根据真实情况完成第一份政策；正向激活、并发冲突、版本固定和回撤门禁已经由同版本云端隔离数据库测试证明。
 
 ## 已知限制与下一步
 
