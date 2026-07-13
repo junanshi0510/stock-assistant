@@ -197,10 +197,12 @@ class InvestmentSynthesisTests(unittest.TestCase):
         self.assertEqual(result["status"], "available")
         self.assertEqual(len(gateway.calls), 2)
         self.assertEqual(len(result["invocation_attempts"]), 2)
+        self.assertIn("ev_analysis", gateway.calls[0]["system_prompt"])
         self.assertIn(
             "model_repeated_unverified_exact_financial_number",
             gateway.calls[1]["system_prompt"],
         )
+        self.assertIn("含精确金融数字的字符串数量：1", gateway.calls[1]["system_prompt"])
 
     def test_unknown_evidence_reference_is_blocked(self):
         gateway = _Gateway(_model_output("ev_unknown"), private_context_enabled=False)

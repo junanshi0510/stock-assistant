@@ -16,7 +16,7 @@ from .llm_gateway import LLMGateway, ModelInvocationError, ModelUnavailableError
 
 
 PROMPT_TEMPLATE_ID = "fund_decision_synthesis"
-PROMPT_TEMPLATE_VERSION = "1.2.0"
+PROMPT_TEMPLATE_VERSION = "1.3.0"
 OUTPUT_SCHEMA_VERSION = "fund_ai_synthesis.v1"
 
 DecisionAction = Literal[
@@ -398,6 +398,23 @@ def _quality_errors(
     return errors
 
 
+def _quality_diagnostics(
+    synthesis: FundDecisionSynthesis,
+    allowed_evidence_ids: set[str],
+) -> dict[str, Any]:
+    referenced = _referenced_evidence_ids(synthesis)
+    strings = list(_walk_strings(synthesis.model_dump()))
+    return {
+        "unknown_evidence_ids": sorted(referenced - allowed_evidence_ids),
+        "exact_financial_string_count": sum(
+            1 for value in strings if _PROHIBITED_EXACT_FINANCIALS.search(value)
+        ),
+        "prohibited_promise_string_count": sum(
+            1 for value in strings if _PROHIBITED_PROMISES.search(value)
+        ),
+    }
+
+
 _SYSTEM_PROMPT = """你是金融投资助手中的证据合成模型。你的任务不是预测必涨必跌，而是基于已提供的真实、结构化 Evidence，为一只基金形成 3-12 个月的可复核研判。
 
 必须遵守：
@@ -504,15 +521,27 @@ class InvestmentSynthesisService:
         invocation = None
         synthesis = None
         repair_codes: list[str] = []
+        repair_diagnostics: dict[str, Any] = {}
+        runtime_contract = (
+            "\n\n本次运行时硬约束："
+            f"allowed_action 的唯一合法值是 {_canonical(context.get('allowed_action'))}；"
+            f"Evidence ID 完整白名单是 {_canonical(sorted(allowed_evidence_ids))}。"
+            "所有 evidence_ids 只能逐字复制白名单中的值，禁止缩写、改写或创建新 ID。"
+            "所有自然语言字符串必须通过正则扫描：禁止出现类似 12.3%、100元、3万元、2亿美元的精确金融数字；"
+            "需要讨论数值时只写定性方向并引用 Evidence ID。"
+        )
         for attempt_index in range(2):
-            system_prompt = _SYSTEM_PROMPT
+            system_prompt = _SYSTEM_PROMPT + runtime_contract
             if repair_codes:
+                unknown_ids = repair_diagnostics.get("unknown_evidence_ids") or []
                 system_prompt += (
                     "\n\n这是唯一一次纠错重试。上一次输出已丢弃，不要引用或复述它。"
                     f"确定性门禁错误代码：{','.join(repair_codes)}。"
+                    f"上一次使用的白名单外 ID：{_canonical(unknown_ids)}；"
+                    f"含精确金融数字的字符串数量：{int(repair_diagnostics.get('exact_financial_string_count') or 0)}。"
                     "请从原始 Evidence 重新生成：action 与 current_action 必须等于 allowed_action；"
                     "只引用 evidence_catalog 中的 ID；所有字符串不得包含百分比、金额、净值、货币数字或盈利承诺；"
-                    "完整满足 JSON Schema 的全部 required 字段。"
+                    "输出前逐个检查 evidence_ids 和每个字符串，完整满足 JSON Schema 的全部 required 字段。"
                 )
             try:
                 invocation = self.gateway.invoke_structured(
@@ -572,6 +601,7 @@ class InvestmentSynthesisService:
             quality_errors = _quality_errors(candidate, context, allowed_evidence_ids)
             if quality_errors:
                 repair_codes = quality_errors
+                repair_diagnostics = _quality_diagnostics(candidate, allowed_evidence_ids)
                 if attempt_index == 0:
                     continue
                 return {
@@ -580,7 +610,11 @@ class InvestmentSynthesisService:
                     "reason_code": "model_quality_gate_failed",
                     "reason": "模型输出未通过证据、动作或安全质量门禁。",
                     "provider": provider_status,
-                    "quality": {"passed": False, "errors": quality_errors},
+                    "quality": {
+                        "passed": False,
+                        "errors": quality_errors,
+                        "diagnostics": repair_diagnostics,
+                    },
                     "invocation": invocation_summary,
                     "invocation_attempts": invocation_attempts,
                     "prompt": {
