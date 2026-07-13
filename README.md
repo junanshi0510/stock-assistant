@@ -2,11 +2,20 @@
 
 一个面向个人投资者的真实数据决策工作台，覆盖公募基金、A 股、港股、美股和用户真实持仓。
 
-当前版本使用 **React + Vite** 构建前端，使用 **FastAPI + Python** 完成数据获取、基金与股票研究、组合账本、确定性计算和证据约束的大模型合成。项目正在按照工业级投资 Agent PRD 逐步升级；当前已经具备可恢复 Run、真实工具、Evidence、风险门禁和可选 LLM 研判，但仍不具备自动交易能力，也不把模型文本当作确定性计算结果。
+当前版本使用 **React + Vite** 构建前端，使用 **FastAPI + Python** 完成数据获取、基金与股票研究、组合账本、确定性计算和证据约束的大模型合成。项目正在按照工业级投资 Agent PRD 逐步升级；当前已经具备服务端登录、管理员/用户 RBAC、个人数据隔离、可恢复 Run、真实工具、Evidence、风险门禁和可选 LLM 研判，但仍不具备自动交易能力，也不把模型文本当作确定性计算结果。
 
 > 风险提示：系统输出用于研究和风险复盘，不代表未来涨跌，不构成投资建议，也不承诺收益。数据源不可用、数据过期或用户持仓不完整时，系统必须明确显示缺口，不使用模拟数据补齐。
 
 ## 最近更新
+
+### 2026-07-13：用户登录、管理员权限与个人数据隔离
+
+- 新增服务端账户、角色、会话和权限系统。密码使用 Argon2id 保存；浏览器只接收随机会话 Cookie，Cookie 设置 `HttpOnly` 和 `SameSite=Lax`，数据库只保存 Token 哈希。
+- 所有 `/api` 业务接口在生产环境统一经过登录、首次改密和 CSRF 门禁。匿名、过期、停用及角色变更后的会话会被服务端拒绝，前端不会把 Token 写入 `localStorage`。
+- 管理员控制台支持创建账户、分配管理员/用户角色、启停账户、重置临时密码、查看全局用户/会话/Agent 统计和校验认证审计链；禁止管理员停用自己，也禁止系统失去最后一个启用管理员。
+- 自选、提醒、持仓、投资政策、交易流水、组合快照、持有逻辑、行动报告、穿透快照和 Agent Batch/Run 全部绑定服务端会话中的 `subject_id`。普通用户访问他人 Run 返回 404；管理员可审计和处置跨用户 Run，但无法读取密码、会话 Token 或第三方 API Key。
+- 旧版单用户数据一次性归属初始管理员；迁移有版本标记，不会在重启后把已经删除的旧自选或提醒重新写回。认证事件使用追加式 SHA-256 哈希链，数据库触发器禁止修改或删除。
+- 新增离线 `bootstrap-admin`、`recover-admin` 和 `verify-audit` 运维命令；生产 systemd 模板改为独立低权限 Linux 用户和独立状态目录。
 
 ### 2026-07-13：五阶段决策闭环与四工作区重构
 
@@ -76,7 +85,7 @@
 - 输出动作包括：先补资料、等待条件改善、持有复核、不新增投入、降低集中度、仅保留研究候选和可考虑小额分批；不会因为当前亏损自动建议补仓。
 - 金额使用确定性公式：先计算投入后仓位不超过用户上限的最大新增空间，再取计划投入额或月度预算与该空间的较小值；满足全部门禁后才拆分首批观察金额。
 - Agent 工作台增加“应用真实持仓与约束”和计划投入金额，并展示当前仓位、个人上限、历史样本、全部门禁、缺失资料及决策 Evidence。
-- 当前线上持仓仍使用单用户迁移账本。对外开放多用户前必须完成登录、授权和数据隔离；本功能不自动下单，也不承诺收益。
+- 本功能最初按单用户迁移账本落地；当前版本已由后续认证模块把持仓、政策和 Agent 上下文绑定到登录用户。本功能不自动下单，也不承诺收益。
 
 ### 2026-07-13：实时价位与基金估值历史到达
 
@@ -126,7 +135,7 @@
 ### 2026-07-12：Agent 运行历史
 
 - 新增 `GET /api/v1/agent/runs`，支持轻量摘要、状态/基金代码筛选和游标分页。
-- 历史查询固定按服务端 `tenant_id + user_id` 范围读取，为后续登录和租户隔离保留协议边界。
+- 历史查询固定按服务端 `tenant_id + user_id` 范围读取；当前登录会话已经驱动该隔离边界。
 - Agent 工作台新增最近研究任务面板，可回看完整 Run，并按需加载更早任务。
 - 历史列表不返回 Evidence 原始载荷；只有打开具体 Run 和 Evidence 时才读取详细数据。
 - 增加隔离、筛选、分页与接口契约测试，并完成桌面端和手机端验证。
@@ -139,6 +148,7 @@
 | 我的资产 | 管理真实持仓与逐项纪律、版本化投资政策、交易账本、FIFO/XIRR 复盘和观察清单 |
 | 研究中心 | 在一个入口内组织基金筛选与比较、股票与板块研究、多股分析、批量筛选和历史策略验证 |
 | 投资 Agent | 创建可恢复的单基金 Run 或 2-6 只基金 Batch，识别内地/港股/美股/全球基金，编排真实市场/持仓/新闻工具、跨基金披露持仓重合、确定性风险门禁和可选 LLM 证据合成，保存 Step、Evidence、Claim、模型调用摘要和追加式审计链 |
+| 系统管理 | 管理员创建和启停账户、分配角色、重置临时密码、查看系统统计并验证不可变认证审计链；普通用户不可见也不可调用 |
 
 ### 基金研究
 
@@ -168,7 +178,7 @@
 - 每条数值 Claim 绑定 Evidence，Evidence 保存来源、有效时间、质量状态和 SHA-256 摘要。
 - 真实来源失败时 Run 进入 `partial` 或 `failed`，不会生成替代数据。
 
-当前阶段没有开放式自主规划、交易工具或自动下单。LLM 仅是受约束的最终合成节点，不拥有工具权限。R1 私人持仓工具仍处于单用户迁移阶段，真实登录、多用户授权和数据隔离尚未完成；SQLite 和单进程 Worker 也不等同于最终的 PostgreSQL + Temporal 生产架构。
+当前阶段没有开放式自主规划、交易工具或自动下单。LLM 仅是受约束的最终合成节点，不拥有工具权限。登录、RBAC 和 SQLite 用户级隔离已经完成，但当前仍是单实例 SQLite 与单进程 Worker；它不等同于最终的 PostgreSQL 行级安全、集中式身份服务和 Temporal 分布式工作流。私人组合发送给外部模型仍默认关闭。
 
 ### 组合与交易复盘
 
@@ -243,6 +253,8 @@ npm run dev
 
 开发环境中，Vite 会把 `/api` 请求代理到后端 `8000` 端口。FastAPI 接口文档位于 [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)。
 
+本地开发默认保持 `AUTH_REQUIRED=false`，以兼容已有的一键启动流程；这只适用于本机开发。生产 systemd 模板固定启用认证，并且在审计 Pepper 或初始管理员缺失时返回 `503`，不会匿名放行。初始化生产管理员的完整步骤见 [DEPLOY.md](DEPLOY.md)。
+
 ## 配置
 
 后端优先从环境变量读取第三方服务配置：
@@ -256,7 +268,16 @@ npm run dev
 | `ALIBABA_CLOUD_ACCESS_KEY_SECRET` | 阿里云 OCR |
 | `ALIYUN_OCR_ENDPOINT` | 阿里云 OCR Endpoint |
 | `ALLOWED_ORIGINS` | FastAPI CORS 允许来源 |
-| `AGENT_DB_PATH` | Agent 迁移期 SQLite 文件路径；默认复用 `backend/stock_assistant.db` |
+| `STOCK_ASSISTANT_DB_PATH` | 认证、个人组合和 Agent 共用的 SQLite 文件；生产推荐 `/var/lib/stock-assistant/stock_assistant.db` |
+| `AGENT_DB_PATH` | 兼容的 Agent 数据库路径；未设置统一路径时默认复用 `backend/stock_assistant.db` |
+| `AUTH_REQUIRED` | 是否强制所有业务 API 登录；生产必须为 `true` |
+| `AUTH_AUDIT_PEPPER` | 登录标识哈希的服务端随机 Pepper，至少 32 个字符，不得提交到 Git |
+| `AUTH_COOKIE_SECURE` | HTTPS 部署设为 `true`；纯 HTTP 调试暂设为 `false` |
+| `AUTH_TRUST_PROXY` | 由可信 Nginx 反代时设为 `true`，只读取 Nginx 写入的 `X-Real-IP` |
+| `AUTH_SESSION_HOURS` | 会话绝对有效期，默认 12 小时 |
+| `AUTH_IDLE_MINUTES` | 会话空闲超时，默认 120 分钟 |
+| `AUTH_LOGIN_LIMIT` | 登录窗口内失败次数上限，默认 5 |
+| `AUTH_LOGIN_WINDOW_MINUTES` | 登录限流窗口，默认 15 分钟 |
 | `AGENT_MAX_PENDING_RUNS` | Agent 排队和运行任务总上限；默认 `20` |
 | `AGENT_MAX_BATCH_SIZE` | 单个基金研究批次上限；默认 `6`，代码硬上限 `8` |
 | `AGENT_WORKER_ENABLED` | 是否启动内置持久化 Worker；默认开启 |
@@ -295,6 +316,8 @@ LLM_PRIVATE_CONTEXT_ENABLED=false
 ```text
 backend/
   main.py                  FastAPI 启动与路由装配
+  auth.py                  Argon2id、服务端会话、CSRF、RBAC 与认证审计链
+  manage_auth.py           初始管理员、离线恢复与审计校验命令
   agent/
     batches.py             批次状态、逐只决策矩阵与披露持仓重合下界
     comparison.py          基于持久化结果和 Evidence 门禁的父子 Run 对比
@@ -312,6 +335,7 @@ backend/
     fund_market_profile.py        基金跨市场画像与 QDII 风险口径 1.0.0
     personalized_fund_decision.py 持仓感知的个人风险门禁与金额策略 1.0.0
   routers/
+    auth.py                登录、改密和管理员账户管理 API
     agent.py               Agent Batch/Run、重跑对比、Evidence 和 Audit API
     market.py              股票、板块、行情和市场日报接口
     funds.py               基金发现、研究、比较和替代品接口
@@ -348,6 +372,7 @@ DEPLOY.md                   云服务器部署说明
 
 ```powershell
 Set-Location C:\Project\backend
+..\venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 ..\venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
@@ -366,7 +391,7 @@ npm run build
 
 项目已经完成工业级 Agent 的产品和架构设计，实施范围包括：
 
-- 登录、多租户、PostgreSQL 和行级数据隔离。
+- 已完成服务端登录、RBAC 和当前 SQLite 用户隔离；下一阶段迁移 PostgreSQL 行级安全与集中式身份治理。
 - 可恢复的 Agent Run 状态机和异步工作流。
 - 统一工具协议、Provider Gateway 和真实数据治理。
 - Evidence 证据账本、Claim 引用和追加式审计链。
@@ -377,7 +402,7 @@ npm run build
 
 **[金融投资助手工业级 Agent 升级方案设计书（PRD）](docs/industrial-agent-prd.md)**
 
-第一条“基金深度研究”垂直链路已经落地持久化 Run、工具协议、Evidence、Claim 和审计链。当前实现与目标架构之间仍有明确差距：尚未提供真实登录、多用户隔离、PostgreSQL、Temporal 分布式工作流、动态规划与模型治理，也不提供自动交易。README 和 UI 中不得把规划中的能力描述为已经上线。
+第一条“基金深度研究”垂直链路已经落地持久化 Run、工具协议、Evidence、Claim、审计链、真实登录和用户级数据隔离。当前实现与目标架构之间仍有明确差距：尚未迁移 PostgreSQL、集中式身份服务、MFA、Temporal 分布式工作流、动态规划与完整模型治理，也不提供自动交易。README 和 UI 中不得把规划中的能力描述为已经上线。
 
 ## 相关文档
 

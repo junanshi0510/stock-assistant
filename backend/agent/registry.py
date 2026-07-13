@@ -185,6 +185,7 @@ def build_default_registry(
         handler=lambda payload: portfolio_exposure.calculate_exposure_snapshot(
             target_code=str(payload["code"]),
             profile_version_id=payload.get("profile_version_id"),
+            user_id=str(payload.get("user_id") or "default"),
         ),
     ))
     registry.register(ToolDefinition(

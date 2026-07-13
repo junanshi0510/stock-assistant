@@ -577,8 +577,8 @@ def _is_fund_holding(item: dict) -> bool:
     return item.get("asset_type") == "fund" and bool(re.fullmatch(r"\d{6}", str(item.get("code") or "")))
 
 
-def holdings_insights(max_funds: int = 6) -> dict:
-    items = storage.list_holdings()
+def holdings_insights(max_funds: int = 6, *, user_id: str = "default") -> dict:
+    items = storage.list_holdings(user_id=user_id)
     total_amount = sum(_holding_amount(item) for item in items)
     total_profit = sum(_holding_profit(item) for item in items)
     total_yesterday = sum(float(item.get("yesterday_profit") or 0) for item in items)
@@ -731,9 +731,9 @@ def holdings_insights(max_funds: int = 6) -> dict:
     }
 
 
-def fund_lookthrough_exposure(max_funds: int = 6) -> dict:
+def fund_lookthrough_exposure(max_funds: int = 6, *, user_id: str = "default") -> dict:
     """Return disclosed fund look-through exposure without inferring missing positions."""
-    items = storage.list_holdings()
+    items = storage.list_holdings(user_id=user_id)
     try:
         import funds as funds_mod
         return funds_mod.aggregate_fund_exposure(items, max_funds=max_funds)
@@ -754,15 +754,19 @@ def fund_lookthrough_exposure(max_funds: int = 6) -> dict:
         }
 
 
-def list_holdings() -> dict:
-    items = storage.list_holdings()
+def list_holdings(*, user_id: str = "default") -> dict:
+    items = storage.list_holdings(user_id=user_id)
     return {"items": items, "summary": holdings_summary(items)}
 
 
-def save_holdings(items: list[dict]) -> dict:
-    saved = [storage.upsert_holding(item) for item in items]
-    all_items = storage.list_holdings()
-    snapshot = storage.create_portfolio_snapshot(all_items, reason="holding_saved")
+def save_holdings(items: list[dict], *, user_id: str = "default") -> dict:
+    saved = [storage.upsert_holding(item, user_id=user_id) for item in items]
+    all_items = storage.list_holdings(user_id=user_id)
+    snapshot = storage.create_portfolio_snapshot(
+        all_items,
+        reason="holding_saved",
+        user_id=user_id,
+    )
     return {
         "saved": saved,
         "items": all_items,
@@ -771,10 +775,14 @@ def save_holdings(items: list[dict]) -> dict:
     }
 
 
-def delete_holding(holding_id: int) -> bool:
-    deleted = storage.delete_holding(holding_id)
+def delete_holding(holding_id: int, *, user_id: str = "default") -> bool:
+    deleted = storage.delete_holding(holding_id, user_id=user_id)
     if deleted:
-        storage.create_portfolio_snapshot(storage.list_holdings(), reason="holding_deleted")
+        storage.create_portfolio_snapshot(
+            storage.list_holdings(user_id=user_id),
+            reason="holding_deleted",
+            user_id=user_id,
+        )
     return deleted
 
 

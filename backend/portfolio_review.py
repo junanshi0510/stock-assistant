@@ -205,10 +205,10 @@ def _prepare_transaction(item: dict) -> dict:
     return candidate
 
 
-def _validate_transaction_sequence(candidates: list[dict]) -> None:
+def _validate_transaction_sequence(candidates: list[dict], *, user_id: str = "default") -> None:
     if not candidates:
         raise ValueError("没有可保存的交易流水")
-    existing = storage.list_portfolio_transactions()
+    existing = storage.list_portfolio_transactions(user_id=user_id)
     candidate_rows = [{**item, "id": 1_000_000_000 + index} for index, item in enumerate(candidates)]
     _, issues = _calculate_fifo([*existing, *candidate_rows])
     candidate_keys = {_asset_key(item) for item in candidates}
@@ -222,21 +222,28 @@ def _validate_transaction_sequence(candidates: list[dict]) -> None:
         )
 
 
-def create_transaction(item: dict) -> dict:
+def create_transaction(item: dict, *, user_id: str = "default") -> dict:
     """Persist one user-entered transaction after checking its FIFO sequence."""
     candidate = _prepare_transaction(item)
-    _validate_transaction_sequence([candidate])
-    return storage.add_portfolio_transaction(candidate)
+    _validate_transaction_sequence([candidate], user_id=user_id)
+    return storage.add_portfolio_transaction(candidate, user_id=user_id)
 
 
-def create_transactions_from_csv(items: list[dict], file_sha256: str, filename: str = "") -> dict:
+def create_transactions_from_csv(
+    items: list[dict],
+    file_sha256: str,
+    filename: str = "",
+    *,
+    user_id: str = "default",
+) -> dict:
     """Save a user-confirmed statement preview atomically after FIFO validation."""
     candidates = [_prepare_transaction(item) for item in items]
-    _validate_transaction_sequence(candidates)
+    _validate_transaction_sequence(candidates, user_id=user_id)
     saved = storage.add_portfolio_transactions(
         candidates,
         file_sha256=file_sha256,
         filename=filename,
+        user_id=user_id,
     )
     return {
         "saved": saved,
@@ -246,8 +253,8 @@ def create_transactions_from_csv(items: list[dict], file_sha256: str, filename: 
     }
 
 
-def list_transactions() -> dict:
-    rows = storage.list_portfolio_transactions()
+def list_transactions(*, user_id: str = "default") -> dict:
+    rows = storage.list_portfolio_transactions(user_id=user_id)
     source_labels = {
         "manual": "手动录入",
         "csv_import": "账单导入",
@@ -264,21 +271,21 @@ def list_transactions() -> dict:
     }
 
 
-def delete_transaction(transaction_id: int) -> bool:
-    return storage.delete_portfolio_transaction(transaction_id)
+def delete_transaction(transaction_id: int, *, user_id: str = "default") -> bool:
+    return storage.delete_portfolio_transaction(transaction_id, user_id=user_id)
 
 
-def _holding_map() -> dict[tuple[str, str], dict]:
+def _holding_map(*, user_id: str = "default") -> dict[tuple[str, str], dict]:
     result = {}
-    for row in storage.list_holdings():
+    for row in storage.list_holdings(user_id=user_id):
         result[_asset_key(row)] = row
     return result
 
 
-def ledger_overview() -> dict:
-    rows = storage.list_portfolio_transactions()
+def ledger_overview(*, user_id: str = "default") -> dict:
+    rows = storage.list_portfolio_transactions(user_id=user_id)
     positions, integrity_issues = _calculate_fifo(rows)
-    holdings = _holding_map()
+    holdings = _holding_map(user_id=user_id)
     reconciled = []
     for position in positions:
         holding = holdings.get(_asset_key(position))
@@ -377,12 +384,16 @@ def _xirr(cashflows: list[tuple[date, float]]) -> tuple[float | None, str | None
     return (left + right) / 2, None
 
 
-def cashflow_performance(as_of: date | None = None) -> dict:
+def cashflow_performance(
+    as_of: date | None = None,
+    *,
+    user_id: str = "default",
+) -> dict:
     """Return MWR only when the recorded cash flows cover every valued holding."""
     as_of = as_of or date.today()
-    rows = storage.list_portfolio_transactions()
+    rows = storage.list_portfolio_transactions(user_id=user_id)
     positions, integrity_issues = _calculate_fifo(rows)
-    holdings = _holding_map()
+    holdings = _holding_map(user_id=user_id)
     transaction_keys = {_asset_key(row) for row in rows}
     valued_holdings = [row for row in holdings.values() if (_number(row.get("amount")) or 0) > 0]
     missing_value_holdings = [row for row in holdings.values() if row not in valued_holdings]
@@ -488,9 +499,9 @@ def _weighted_holding_days(matches: list[dict]) -> float | None:
     ) / total_shares, 1)
 
 
-def trade_behavior_review() -> dict:
+def trade_behavior_review(*, user_id: str = "default") -> dict:
     """Review confirmed transaction behavior without turning incomplete records into signals."""
-    rows = _sort_transactions(storage.list_portfolio_transactions())
+    rows = _sort_transactions(storage.list_portfolio_transactions(user_id=user_id))
     _, integrity_issues, realized_lots = _calculate_fifo(rows, include_realized_lots=True)
 
     asset_states: dict[tuple[str, str], dict] = {}
@@ -700,15 +711,15 @@ def trade_behavior_review() -> dict:
     }
 
 
-def create_snapshot(reason: str = "manual") -> dict:
-    items = storage.list_holdings()
+def create_snapshot(reason: str = "manual", *, user_id: str = "default") -> dict:
+    items = storage.list_holdings(user_id=user_id)
     if not items:
         raise ValueError("没有已确认持仓，无法记录组合快照")
-    return storage.create_portfolio_snapshot(items, reason=reason)
+    return storage.create_portfolio_snapshot(items, reason=reason, user_id=user_id)
 
 
-def list_snapshots(limit: int = 24) -> dict:
-    items = storage.list_portfolio_snapshots(limit=limit)
+def list_snapshots(limit: int = 24, *, user_id: str = "default") -> dict:
+    items = storage.list_portfolio_snapshots(limit=limit, user_id=user_id)
     latest = items[0] if items else None
     previous = items[1] if len(items) > 1 else None
     change = None
@@ -746,9 +757,13 @@ def _snapshot_asset_keys(snapshot: dict) -> set[tuple[str, str]]:
     return keys
 
 
-def snapshot_attribution() -> dict:
+def snapshot_attribution(*, user_id: str = "default") -> dict:
     """Attribute a snapshot interval only when user records cover its cash flows."""
-    snapshots = storage.list_portfolio_snapshots(limit=24, include_holdings=True)
+    snapshots = storage.list_portfolio_snapshots(
+        limit=24,
+        include_holdings=True,
+        user_id=user_id,
+    )
     base_summary = {
         "start_at": None,
         "end_at": None,
@@ -839,7 +854,7 @@ def snapshot_attribution() -> dict:
         "end_amount": _round(end_amount),
     }
     snapshot_assets = _snapshot_asset_keys(previous) | _snapshot_asset_keys(latest)
-    rows = _sort_transactions(storage.list_portfolio_transactions())
+    rows = _sort_transactions(storage.list_portfolio_transactions(user_id=user_id))
     positions, integrity_issues = _calculate_fifo(rows)
     del positions
     transaction_keys = {_asset_key(row) for row in rows}
@@ -956,11 +971,11 @@ def snapshot_attribution() -> dict:
     }
 
 
-def rebalance_review() -> dict:
+def rebalance_review(*, user_id: str = "default") -> dict:
     """Calculate only constraint breaches and contribution room; never emit buy/sell orders."""
-    profile = storage.get_investment_profile()
-    holdings = storage.list_holdings()
-    ledger = ledger_overview()
+    profile = storage.get_investment_profile(user_id=user_id)
+    holdings = storage.list_holdings(user_id=user_id)
+    ledger = ledger_overview(user_id=user_id)
     valid_holdings = [row for row in holdings if (_number(row.get("amount")) or 0) > 0]
     missing_amounts = [row for row in holdings if (_number(row.get("amount")) or 0) <= 0]
     total_amount = sum(_number(row.get("amount")) or 0 for row in valid_holdings)

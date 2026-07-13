@@ -4,10 +4,17 @@ After=network.target
 
 [Service]
 Type=simple
+User=stockassistant
+Group=stockassistant
+UMask=0077
 WorkingDirectory=/opt/stock-assistant/backend
+StateDirectory=stock-assistant
 Environment="PYTHONUNBUFFERED=1"
 Environment="ALLOWED_ORIGINS=https://your-domain.com"
 EnvironmentFile=-/etc/stock-assistant/stock-assistant.env
+Environment="STOCK_ASSISTANT_DB_PATH=/var/lib/stock-assistant/stock_assistant.db"
+Environment="AUTH_REQUIRED=true"
+Environment="AUTH_TRUST_PROXY=true"
 # 2-core / 4 GB host: keep real-data Agent batches at two concurrent Run lanes.
 Environment="AGENT_WORKER_CONCURRENCY=2"
 Environment="AGENT_MAX_BATCH_SIZE=6"
@@ -28,6 +35,15 @@ Environment="AGENT_MAX_PENDING_RUNS=20"
 ExecStart=/opt/stock-assistant/venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8000
 Restart=always
 RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths=/var/lib/stock-assistant
 
 [Install]
 WantedBy=multi-user.target

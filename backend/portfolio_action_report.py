@@ -143,6 +143,7 @@ def _strategy_step(
 def build_action_report(
     *,
     max_funds: int = MAX_FUNDS,
+    user_id: str = "default",
     holdings_provider: Callable[[], list[dict[str, Any]]] | None = None,
     profile_provider: Callable[[], dict[str, Any]] | None = None,
     insights_provider: Callable[[int], dict[str, Any]] | None = None,
@@ -153,13 +154,19 @@ def build_action_report(
 ) -> dict[str, Any]:
     """Build a deterministic report from confirmed holdings and real providers."""
     max_funds = max(2, min(MAX_FUNDS, int(max_funds)))
-    holdings_provider = holdings_provider or storage.list_holdings
-    profile_provider = profile_provider or storage.get_investment_profile
-    insights_provider = insights_provider or holdings_mod.holdings_insights
-    ledger_provider = ledger_provider or portfolio_review.ledger_overview
-    performance_provider = performance_provider or portfolio_review.cashflow_performance
-    rebalance_provider = rebalance_provider or portfolio_review.rebalance_review
-    theses_provider = theses_provider or holding_thesis.latest_theses
+    holdings_provider = holdings_provider or (lambda: storage.list_holdings(user_id=user_id))
+    profile_provider = profile_provider or (lambda: storage.get_investment_profile(user_id=user_id))
+    insights_provider = insights_provider or (
+        lambda limit: holdings_mod.holdings_insights(limit, user_id=user_id)
+    )
+    ledger_provider = ledger_provider or (lambda: portfolio_review.ledger_overview(user_id=user_id))
+    performance_provider = performance_provider or (
+        lambda: portfolio_review.cashflow_performance(user_id=user_id)
+    )
+    rebalance_provider = rebalance_provider or (
+        lambda: portfolio_review.rebalance_review(user_id=user_id)
+    )
+    theses_provider = theses_provider or (lambda: holding_thesis.latest_theses(user_id=user_id))
 
     items = holdings_provider()
     profile = profile_provider()
@@ -711,7 +718,7 @@ def persist_action_report(payload: dict[str, Any], *, user_id: str = "default") 
 
 
 def refresh_action_report(*, max_funds: int = MAX_FUNDS, user_id: str = "default") -> dict[str, Any]:
-    payload = build_action_report(max_funds=max_funds)
+    payload = build_action_report(max_funds=max_funds, user_id=user_id)
     return persist_action_report(payload, user_id=user_id)
 
 

@@ -16,7 +16,7 @@
 
 ```bash
 sudo apt update
-sudo apt install -y python3 python3-venv python3-pip nodejs npm nginx git
+sudo apt install -y python3 python3-venv python3-pip nodejs npm nginx git sqlite3 openssl
 ```
 
 如果系统 Node.js 版本低于 18，建议用 NodeSource 或 nvm 安装 Node.js 20+。
@@ -74,6 +74,48 @@ sudo cp -r dist/* /var/www/stock-assistant/
 
 ## 5. 配置后端常驻服务
 
+生产服务使用独立低权限用户，并把唯一数据库放在 `/var/lib/stock-assistant`，避免 API 进程以 root 身份运行或修改部署代码：
+
+```bash
+sudo useradd --system --home-dir /var/lib/stock-assistant --shell /usr/sbin/nologin stockassistant 2>/dev/null || true
+sudo install -d -o stockassistant -g stockassistant -m 700 /var/lib/stock-assistant
+```
+
+旧版本如果已经在 `backend/stock_assistant.db` 保存数据，先停止旧服务，再用 SQLite 在线备份协议复制完整数据库；不要只复制主文件而漏掉 WAL：
+
+```bash
+sudo systemctl stop stock-assistant-api 2>/dev/null || true
+if [ -f /opt/stock-assistant/backend/stock_assistant.db ] && [ ! -f /var/lib/stock-assistant/stock_assistant.db ]; then
+  sudo sqlite3 /opt/stock-assistant/backend/stock_assistant.db ".backup '/var/lib/stock-assistant/stock_assistant.db'"
+fi
+sudo chown stockassistant:stockassistant /var/lib/stock-assistant/stock_assistant.db 2>/dev/null || true
+sudo chmod 600 /var/lib/stock-assistant/stock_assistant.db 2>/dev/null || true
+```
+
+创建只由 root 读取的服务端配置文件：
+
+```bash
+sudo install -d -m 750 /etc/stock-assistant
+if [ ! -f /etc/stock-assistant/stock-assistant.env ]; then
+  sudo cp /opt/stock-assistant/deploy/stock-assistant.env.example /etc/stock-assistant/stock-assistant.env
+fi
+sudo chmod 600 /etc/stock-assistant/stock-assistant.env
+openssl rand -hex 32
+sudo nano /etc/stock-assistant/stock-assistant.env
+```
+
+把上一条命令生成的随机值写入 `AUTH_AUDIT_PEPPER`，不要提交到 Git。纯 HTTP IP 访问阶段设置 `AUTH_COOKIE_SECURE=false`；完成 HTTPS 后必须改为 `true`。已有 DeepSeek、OCR 等 Key 继续保留在同一文件中。
+
+初始化唯一的首个管理员。命令会在终端安全地输入两次密码，不会把密码写进 Shell 历史；旧版 `default` 持仓和 `anonymous` Agent Run 会一次性归属该管理员：
+
+```bash
+sudo -u stockassistant env STOCK_ASSISTANT_DB_PATH=/var/lib/stock-assistant/stock_assistant.db \
+  /opt/stock-assistant/venv/bin/python /opt/stock-assistant/backend/manage_auth.py \
+  bootstrap-admin --username admin --display-name "系统管理员"
+```
+
+初始密码或管理员重置密码至少 12 个字符，且不能包含用户名。首次登录必须修改临时密码，修改后所有会话都会退出。
+
 复制模板：
 
 ```bash
@@ -104,6 +146,24 @@ Environment="ALLOWED_ORIGINS=https://fund.example.com"
 sudo systemctl daemon-reload
 sudo systemctl enable --now stock-assistant-api
 sudo systemctl status stock-assistant-api
+```
+
+认证验收：第一个接口应显示认证已初始化但当前未登录，第二个接口必须返回 `401`：
+
+```bash
+curl -i http://127.0.0.1:8000/api/auth/session
+curl -i http://127.0.0.1:8000/api/markets
+```
+
+管理员遗失密码或账户被误停用时，只能通过服务器 SSH 执行离线恢复。恢复操作会启用该管理员、吊销全部旧会话、要求首次改密并写入审计链：
+
+```bash
+sudo -u stockassistant env STOCK_ASSISTANT_DB_PATH=/var/lib/stock-assistant/stock_assistant.db \
+  /opt/stock-assistant/venv/bin/python /opt/stock-assistant/backend/manage_auth.py \
+  recover-admin --username admin
+
+sudo -u stockassistant env STOCK_ASSISTANT_DB_PATH=/var/lib/stock-assistant/stock_assistant.db \
+  /opt/stock-assistant/venv/bin/python /opt/stock-assistant/backend/manage_auth.py verify-audit
 ```
 
 查看日志：
@@ -165,6 +225,13 @@ sudo certbot --nginx -d 你的域名
 https://你的域名
 ```
 
+确认 HTTPS 正常后，把 `/etc/stock-assistant/stock-assistant.env` 中的 `AUTH_COOKIE_SECURE` 改为 `true`，然后重启后端。否则浏览器不会在 HTTPS 安全策略下获得生产会话 Cookie：
+
+```bash
+sudo nano /etc/stock-assistant/stock-assistant.env
+sudo systemctl restart stock-assistant-api
+```
+
 ## 8. 更新发布
 
 每次代码更新后：
@@ -190,6 +257,8 @@ sudo systemctl reload nginx
 
 - 前端必须通过 Nginx 托管 `frontend/dist`，不要用 `npm run dev` 对外提供服务。
 - 后端只监听 `127.0.0.1:8000`，不要直接暴露公网端口 8000。
+- 生产 systemd 服务必须保持 `AUTH_REQUIRED=true`，并使用 `stockassistant` 低权限用户；缺少审计 Pepper 或初始管理员时系统会拒绝业务 API，不要通过关闭认证绕过初始化。
+- 不要把会话 Cookie、临时密码、`AUTH_AUDIT_PEPPER`、OCR Key 或模型 Key 写入仓库、日志和前端环境变量。
 - 真实数据源依赖服务器网络环境；如果服务器访问东方财富、天天基金、Tushare、海外源不稳定，需要在服务器网络或代理规则里处理。
 - 如果美股基本面/新闻要稳定使用，需要在 `backend/config.py` 配置 Alpha Vantage/Polygon 等真实数据源 Key。
 - 如果前端和后端拆成两个域名，需要设置后端环境变量 `ALLOWED_ORIGINS=https://前端域名`。
@@ -259,7 +328,7 @@ sudo systemctl status stock-assistant-api
 
 - 上传截图前尽量打码姓名、手机号、账号和银行卡。
 - 第一版只保存用户确认后的持仓结果，不长期保存原图。
-- 后续接入登录系统后，应把持仓表从默认用户迁移到真实 `user_id`。
+- 持仓保存时由服务端登录会话绑定真实 `user_id`；不得接受客户端自行指定用户归属。
 
 ## 12. 配置批量基金 Agent 容量
 
@@ -293,7 +362,8 @@ curl -s http://127.0.0.1:8000/api/v1/agent/batches?limit=1
 
 ```bash
 sudo install -d -m 750 /etc/stock-assistant
-sudo install -m 600 /dev/null /etc/stock-assistant/stock-assistant.env
+sudo touch /etc/stock-assistant/stock-assistant.env
+sudo chmod 600 /etc/stock-assistant/stock-assistant.env
 sudo nano /etc/stock-assistant/stock-assistant.env
 ```
 
@@ -324,8 +394,8 @@ sudo systemctl restart stock-assistant-api
 curl -s http://127.0.0.1:8000/api/v1/agent/model/status
 ```
 
-只有返回 `"configured": true` 才代表模型已接通。当前没有登录和多租户隔离，必须保持
-`LLM_PRIVATE_CONTEXT_ENABLED=false`；此时个人持仓只在本机确定性门禁中使用，不会发送给模型。
+只有返回 `"configured": true` 才代表模型已接通。登录和用户级数据隔离并不等于用户已经同意把私人组合发送给外部模型，因此生产环境仍应保持
+`LLM_PRIVATE_CONTEXT_ENABLED=false`；此时个人持仓只在本机确定性门禁中使用，不会发送给模型。后续只有在补齐逐用户明示同意、处理地域和撤回机制后才能开启。
 
 再执行一次受控基金研究任务，并在 Run 详情中确认 `model.status=available`、模型 ID、
 响应 ID、Token 用量和 Evidence 引用均已保存，才算完成真实调用验收。禁止用模拟响应代替。

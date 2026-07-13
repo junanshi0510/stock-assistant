@@ -16,6 +16,15 @@ from routers import agent as agent_router  # noqa: E402
 
 
 EXPECTED_OPERATIONS = {
+    "/api/auth/session": {"GET"},
+    "/api/auth/login": {"POST"},
+    "/api/auth/logout": {"POST"},
+    "/api/auth/change-password": {"POST"},
+    "/api/admin/overview": {"GET"},
+    "/api/admin/users": {"GET", "POST"},
+    "/api/admin/users/{user_id}": {"PATCH"},
+    "/api/admin/users/{user_id}/reset-password": {"POST"},
+    "/api/admin/auth-audit": {"GET"},
     "/api/markets": {"GET"},
     "/api/presets": {"GET"},
     "/api/search_us": {"GET"},

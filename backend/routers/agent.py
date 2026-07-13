@@ -10,10 +10,11 @@ import os
 import re
 from typing import Literal
 
-from fastapi import APIRouter, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
 
 import storage
+from auth import AuthPrincipal, principal_from_request
 from agent.batches import summarize_batch
 from agent.comparison import compare_run_results
 from agent.outcomes import DecisionOutcomeService, OutcomeEvaluationError
@@ -113,16 +114,40 @@ class OutcomeScheduleRequest(BaseModel):
     run_immediately: bool = False
 
 
-def _get_run_or_404(run_id: str) -> dict:
+def _agent_user_id(principal: object) -> str:
+    if isinstance(principal, AuthPrincipal) and not principal.auth_disabled:
+        return principal.subject_id
+    return "anonymous"
+
+
+def _portfolio_user_id(principal: object) -> str:
+    if isinstance(principal, AuthPrincipal) and not principal.auth_disabled:
+        return principal.subject_id
+    return "default"
+
+
+def _actor_id(principal: object) -> str:
+    if isinstance(principal, AuthPrincipal) and not principal.auth_disabled:
+        return principal.user_id
+    return "anonymous"
+
+
+def _can_access(owner_user_id: str, principal: object) -> bool:
+    if not isinstance(principal, AuthPrincipal):
+        return owner_user_id == "anonymous"
+    return principal.is_admin or owner_user_id == _agent_user_id(principal)
+
+
+def _get_run_or_404(run_id: str, principal: object) -> dict:
     run = repository.get_run(run_id)
-    if run is None:
+    if run is None or not _can_access(str(run.get("user_id") or ""), principal):
         raise HTTPException(status_code=404, detail="Agent Run 不存在")
     return run
 
 
-def _get_batch_or_404(batch_id: str) -> dict:
+def _get_batch_or_404(batch_id: str, principal: object) -> dict:
     batch = repository.get_batch(batch_id)
-    if batch is None:
+    if batch is None or not _can_access(str(batch.get("user_id") or ""), principal):
         raise HTTPException(status_code=404, detail="Agent Batch 不存在")
     return batch
 
@@ -301,11 +326,13 @@ def get_agent_strategy_shadow_outcomes(
 def create_agent_run(
     request: CreateAgentRunRequest,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    principal: AuthPrincipal = Depends(principal_from_request),
 ):
+    user_id = _agent_user_id(principal)
     if idempotency_key and len(idempotency_key) > 128:
         raise HTTPException(status_code=400, detail="Idempotency-Key 不能超过 128 个字符")
     if idempotency_key:
-        existing = repository.get_run_by_idempotency_key("anonymous", idempotency_key)
+        existing = repository.get_run_by_idempotency_key(user_id, idempotency_key)
         if existing is not None:
             return {"created": False, "run": existing}
     max_pending = max(1, int(os.getenv("AGENT_MAX_PENDING_RUNS", "20")))
@@ -315,7 +342,7 @@ def create_agent_run(
             detail="Agent 任务队列已满，请等待现有真实数据任务完成后再试",
         )
     input_payload = request.model_dump()
-    profile = storage.get_investment_profile()
+    profile = storage.get_investment_profile(user_id=_portfolio_user_id(principal))
     profile_version_id = (
         str(profile.get("profile_version_id"))
         if request.include_portfolio_context and profile.get("configured") and profile.get("profile_version_id")
@@ -327,7 +354,7 @@ def create_agent_run(
         request.intent,
         input_payload,
         tenant_id="public",
-        user_id="anonymous",
+        user_id=user_id,
         idempotency_key=idempotency_key,
         profile_version_id=profile_version_id,
     )
@@ -339,11 +366,13 @@ def create_agent_run(
 def create_agent_batch(
     request: CreateAgentBatchRequest,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    principal: AuthPrincipal = Depends(principal_from_request),
 ):
+    user_id = _agent_user_id(principal)
     if idempotency_key and len(idempotency_key) > 128:
         raise HTTPException(status_code=400, detail="Idempotency-Key 不能超过 128 个字符")
     if idempotency_key:
-        existing = repository.get_batch_by_idempotency_key("anonymous", idempotency_key)
+        existing = repository.get_batch_by_idempotency_key(user_id, idempotency_key)
         if existing is not None:
             return {"created": False, "batch": summarize_batch(existing)}
 
@@ -355,7 +384,7 @@ def create_agent_batch(
         )
     max_pending = max(1, int(os.getenv("AGENT_MAX_PENDING_RUNS", "20")))
     input_payload = request.model_dump()
-    profile = storage.get_investment_profile()
+    profile = storage.get_investment_profile(user_id=_portfolio_user_id(principal))
     profile_version_id = (
         str(profile.get("profile_version_id"))
         if request.include_portfolio_context and profile.get("configured") and profile.get("profile_version_id")
@@ -368,7 +397,7 @@ def create_agent_batch(
             request.intent,
             input_payload,
             tenant_id="public",
-            user_id="anonymous",
+            user_id=user_id,
             idempotency_key=idempotency_key,
             profile_version_id=profile_version_id,
             max_active_runs=max_pending,
@@ -386,12 +415,15 @@ def create_agent_batch(
 
 
 @router.get("/batches")
-def list_agent_batches(limit: int = Query(default=6, ge=1, le=20)):
+def list_agent_batches(
+    limit: int = Query(default=6, ge=1, le=20),
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
     items = [
         summarize_batch(batch)
         for batch in repository.list_batches(
             tenant_id="public",
-            user_id="anonymous",
+            user_id=_agent_user_id(principal),
             limit=limit,
         )
     ]
@@ -399,19 +431,25 @@ def list_agent_batches(limit: int = Query(default=6, ge=1, le=20)):
 
 
 @router.get("/batches/{batch_id}")
-def get_agent_batch(batch_id: str):
-    return summarize_batch(_get_batch_or_404(batch_id))
+def get_agent_batch(
+    batch_id: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    return summarize_batch(_get_batch_or_404(batch_id, principal))
 
 
 @router.post("/batches/{batch_id}/cancel")
-def cancel_agent_batch(batch_id: str):
-    batch = _get_batch_or_404(batch_id)
+def cancel_agent_batch(
+    batch_id: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    batch = _get_batch_or_404(batch_id, principal)
     requested = 0
     for item in batch.get("items") or []:
         run = item.get("run") or {}
         if run.get("status") in RUN_TERMINAL_STATUSES:
             continue
-        repository.request_cancel(str(run["id"]), actor_id="anonymous")
+        repository.request_cancel(str(run["id"]), actor_id=_actor_id(principal))
         requested += 1
     refreshed = repository.get_batch(batch_id)
     return {
@@ -428,11 +466,12 @@ def list_agent_runs(
         "queued", "running", "completed", "partial", "failed", "cancelled", "abstained"
     ] | None = Query(default=None, alias="status"),
     code: str | None = Query(default=None, pattern=r"^\d{6}$"),
+    principal: AuthPrincipal = Depends(principal_from_request),
 ):
     before = _decode_cursor(cursor) if cursor else None
     runs, has_more = repository.list_runs(
         tenant_id="public",
-        user_id="anonymous",
+        user_id=_agent_user_id(principal),
         limit=limit,
         before=before,
         status=run_status,
@@ -447,13 +486,19 @@ def list_agent_runs(
 
 
 @router.get("/runs/{run_id}")
-def get_agent_run(run_id: str):
-    return _get_run_or_404(run_id)
+def get_agent_run(
+    run_id: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    return _get_run_or_404(run_id, principal)
 
 
 @router.get("/runs/{run_id}/strategy-shadow-outcome")
-def get_agent_run_strategy_shadow_outcome(run_id: str):
-    run = _get_run_or_404(run_id)
+def get_agent_run_strategy_shadow_outcome(
+    run_id: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    run = _get_run_or_404(run_id, principal)
     eligibility = strategy_shadow_service.eligibility(run)
     enrollment = repository.get_strategy_shadow_enrollment(run_id)
     verification = (
@@ -508,8 +553,11 @@ def get_agent_run_strategy_shadow_outcome(run_id: str):
 
 
 @router.get("/runs/{run_id}/evaluations")
-def list_agent_run_evaluations(run_id: str):
-    _get_run_or_404(run_id)
+def list_agent_run_evaluations(
+    run_id: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    _get_run_or_404(run_id, principal)
     items = repository.list_evidence_by_type(run_id, "outcome_observation")
     return {
         "items": [
@@ -528,8 +576,11 @@ def list_agent_run_evaluations(run_id: str):
 
 
 @router.get("/runs/{run_id}/outcome-schedule")
-def get_agent_run_outcome_schedule(run_id: str):
-    run = _get_run_or_404(run_id)
+def get_agent_run_outcome_schedule(
+    run_id: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    run = _get_run_or_404(run_id, principal)
     service = _outcome_service()
     return {
         "eligibility": service.eligibility(run),
@@ -542,8 +593,12 @@ def get_agent_run_outcome_schedule(run_id: str):
 
 
 @router.put("/runs/{run_id}/outcome-schedule")
-def configure_agent_run_outcome_schedule(run_id: str, request: OutcomeScheduleRequest):
-    run = _get_run_or_404(run_id)
+def configure_agent_run_outcome_schedule(
+    run_id: str,
+    request: OutcomeScheduleRequest,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    run = _get_run_or_404(run_id, principal)
     service = _outcome_service()
     eligibility = service.eligibility(run)
     existing = repository.get_outcome_schedule(run_id)
@@ -563,7 +618,7 @@ def configure_agent_run_outcome_schedule(run_id: str, request: OutcomeScheduleRe
         enabled=request.enabled,
         interval_hours=request.interval_hours,
         run_immediately=request.run_immediately,
-        actor_id="anonymous",
+        actor_id=_actor_id(principal),
     )
     if request.enabled:
         start_worker()
@@ -575,20 +630,27 @@ def configure_agent_run_outcome_schedule(run_id: str, request: OutcomeScheduleRe
 
 
 @router.post("/runs/{run_id}/evaluate")
-def evaluate_agent_run(run_id: str):
+def evaluate_agent_run(
+    run_id: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    _get_run_or_404(run_id, principal)
     try:
         return _outcome_service().evaluate_run(
             run_id,
             actor_type="user",
-            actor_id="anonymous",
+            actor_id=_actor_id(principal),
         )
     except OutcomeEvaluationError as error:
         raise HTTPException(status_code=error.http_status, detail=str(error)) from error
 
 
 @router.get("/runs/{run_id}/comparison")
-def get_agent_run_comparison(run_id: str):
-    current = _get_run_or_404(run_id)
+def get_agent_run_comparison(
+    run_id: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    current = _get_run_or_404(run_id, principal)
     parent_run_id = current.get("parent_run_id")
     if not parent_run_id:
         raise HTTPException(status_code=409, detail="只有重跑任务才能与来源 Run 对比")
@@ -626,8 +688,9 @@ def get_agent_run_comparison(run_id: str):
 def rerun_agent_run(
     run_id: str,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    principal: AuthPrincipal = Depends(principal_from_request),
 ):
-    source = _get_run_or_404(run_id)
+    source = _get_run_or_404(run_id, principal)
     if source["status"] not in RUN_TERMINAL_STATUSES:
         raise HTTPException(status_code=409, detail="运行中的 Agent Run 不能重复启动")
     if idempotency_key and len(idempotency_key) > 128:
@@ -637,7 +700,7 @@ def rerun_agent_run(
         if existing is not None:
             return {"created": False, "run": existing}
     input_payload = dict(source.get("input") or {})
-    profile = storage.get_investment_profile()
+    profile = storage.get_investment_profile(user_id=source["user_id"])
     profile_version_id = (
         str(profile.get("profile_version_id"))
         if input_payload.get("include_portfolio_context", True)
@@ -663,14 +726,21 @@ def rerun_agent_run(
 
 
 @router.post("/runs/{run_id}/cancel")
-def cancel_agent_run(run_id: str):
-    _get_run_or_404(run_id)
-    return repository.request_cancel(run_id, actor_id="anonymous")
+def cancel_agent_run(
+    run_id: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    _get_run_or_404(run_id, principal)
+    return repository.request_cancel(run_id, actor_id=_actor_id(principal))
 
 
 @router.get("/runs/{run_id}/evidence/{evidence_id}")
-def get_agent_evidence(run_id: str, evidence_id: str):
-    _get_run_or_404(run_id)
+def get_agent_evidence(
+    run_id: str,
+    evidence_id: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    _get_run_or_404(run_id, principal)
     evidence = repository.get_evidence(run_id, evidence_id, include_payload=True)
     if evidence is None:
         raise HTTPException(status_code=404, detail="该 Agent Run 中不存在此 Evidence")
@@ -681,8 +751,9 @@ def get_agent_evidence(run_id: str, evidence_id: str):
 def get_agent_audit(
     run_id: str,
     limit: int = Query(default=100, ge=1, le=500),
+    principal: AuthPrincipal = Depends(principal_from_request),
 ):
-    _get_run_or_404(run_id)
+    _get_run_or_404(run_id, principal)
     items = repository.list_audit_events(run_id)
     verification = repository.verify_audit_chain(run_id)
     return {

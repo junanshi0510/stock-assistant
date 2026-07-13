@@ -130,6 +130,7 @@ class AgentWorkflowRunner:
     def _fund_steps(self, payload: dict[str, Any]) -> list[WorkflowStep]:
         code = str(payload["code"])
         months = int(payload.get("months") or 60)
+        user_id = str(payload.get("_user_id") or "default")
         steps = [WorkflowStep(
             key="fund_analysis",
             tool_name="fund.analysis.get",
@@ -164,6 +165,7 @@ class AgentWorkflowRunner:
                 input_payload={
                     "code": code,
                     "profile_version_id": payload.get("profile_version_id"),
+                    "user_id": user_id,
                 },
             ))
             steps.append(WorkflowStep(
@@ -174,6 +176,7 @@ class AgentWorkflowRunner:
                 input_payload={
                     "code": code,
                     "profile_version_id": payload.get("profile_version_id"),
+                    "user_id": user_id,
                 },
             ))
         if payload.get("include_estimate", False):
@@ -287,7 +290,10 @@ class AgentWorkflowRunner:
             if step.key == "portfolio_exposure" and not (output.get("snapshot") or {}).get("id"):
                 if self.repository.is_cancel_requested(run_id):
                     raise RunCancelledError("Agent Run 已请求取消")
-                output = portfolio_exposure.persist_exposure_snapshot(output)
+                output = portfolio_exposure.persist_exposure_snapshot(
+                    output,
+                    user_id=str(step.input_payload.get("user_id") or "default"),
+                )
             quality = self._quality_status(output)
             step_status = "succeeded" if quality == "complete" else "partial"
             evidence = self.repository.complete_step_with_evidence(
@@ -307,7 +313,11 @@ class AgentWorkflowRunner:
                     else "provider_normalized"
                 ),
                 subject_type="portfolio" if step.key in {"portfolio_context", "portfolio_exposure"} else "fund",
-                subject_id="default" if step.key in {"portfolio_context", "portfolio_exposure"} else code,
+                subject_id=(
+                    str(step.input_payload.get("user_id") or "default")
+                    if step.key in {"portfolio_context", "portfolio_exposure"}
+                    else code
+                ),
                 provider=str(output.get("source") or definition.name),
                 source_url=str(output.get("source_url") or "") or None,
                 as_of=self._as_of(output, step.key),
@@ -754,6 +764,7 @@ class AgentWorkflowRunner:
     def _execute_fund_research(self, run: dict[str, Any]) -> dict[str, Any]:
         run_id = str(run["id"])
         payload = dict(run.get("input") or {})
+        payload["_user_id"] = str(run.get("user_id") or "default")
         code = str(payload["code"])
         outputs: dict[str, dict[str, Any]] = {}
         evidence: dict[str, dict[str, Any]] = {}

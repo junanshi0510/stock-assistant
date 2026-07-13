@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from typing import Literal
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 
 import analysis
@@ -20,6 +20,7 @@ import portfolio_action_report
 import portfolio_review
 import storage
 import transaction_import
+from auth import AuthPrincipal, principal_from_request
 from investment_policy import (
     CONSENT_TEXT_SHA256,
     CONSENT_VERSION,
@@ -28,6 +29,14 @@ from investment_policy import (
 
 
 router = APIRouter(tags=["我的组合"])
+
+
+def _subject_id(principal: object) -> str:
+    return principal.subject_id if isinstance(principal, AuthPrincipal) else "default"
+
+
+def _actor_id(principal: object) -> str:
+    return principal.user_id if isinstance(principal, AuthPrincipal) else "default"
 
 
 class HoldingRequest(BaseModel):
@@ -140,9 +149,9 @@ class PortfolioTransactionImportRequest(BaseModel):
 
 
 @router.get("/api/watchlist")
-def get_watchlist():
+def get_watchlist(principal: AuthPrincipal = Depends(principal_from_request)):
     """Return all saved symbols with independently calculated current scores."""
-    items = storage.list_watchlist()
+    items = storage.list_watchlist(user_id=_subject_id(principal))
 
     def enrich(item):
         result = dict(item)
@@ -160,45 +169,73 @@ def get_watchlist():
 
 
 @router.post("/api/watchlist")
-def add_watchlist(req: WatchRequest):
+def add_watchlist(
+    req: WatchRequest,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
     if req.market not in data_fetch.MARKETS:
         raise HTTPException(status_code=400, detail=f"不支持的市场:{req.market}")
     if not req.symbol.strip():
         raise HTTPException(status_code=400, detail="股票代码为空")
-    return storage.add_watch(req.market, req.symbol, req.name)
+    return storage.add_watch(req.market, req.symbol, req.name, user_id=_subject_id(principal))
 
 
 @router.delete("/api/watchlist")
-def delete_watchlist(market: str = Query(...), symbol: str = Query(..., min_length=1)):
-    return {"removed": storage.remove_watch(market, symbol)}
+def delete_watchlist(
+    market: str = Query(...),
+    symbol: str = Query(..., min_length=1),
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    return {"removed": storage.remove_watch(market, symbol, user_id=_subject_id(principal))}
 
 
 @router.get("/api/holdings")
-def get_holdings():
-    return holdings_mod.list_holdings()
+def get_holdings(principal: AuthPrincipal = Depends(principal_from_request)):
+    return holdings_mod.list_holdings(user_id=_subject_id(principal))
 
 
 @router.get("/api/holdings/insights")
-def get_holdings_insights(max_funds: int = Query(6, ge=2, le=10)):
+def get_holdings_insights(
+    max_funds: int = Query(6, ge=2, le=10),
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
     try:
-        return holdings_mod.holdings_insights(max_funds=max_funds)
+        return holdings_mod.holdings_insights(
+            max_funds=max_funds,
+            user_id=_subject_id(principal),
+        )
     except Exception as error:
         raise HTTPException(status_code=502, detail=f"真实持仓组合体检失败:{error}")
 
 
 @router.get("/api/holdings/exposure")
-def get_holdings_exposure(max_funds: int = Query(6, ge=1, le=10)):
-    return holdings_mod.fund_lookthrough_exposure(max_funds=max_funds)
+def get_holdings_exposure(
+    max_funds: int = Query(6, ge=1, le=10),
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    return holdings_mod.fund_lookthrough_exposure(
+        max_funds=max_funds,
+        user_id=_subject_id(principal),
+    )
 
 
 @router.post("/api/holdings/exposure-snapshots")
-def create_holdings_exposure_snapshot(req: PortfolioExposureSnapshotRequest):
-    profile = storage.get_investment_profile()
+def create_holdings_exposure_snapshot(
+    req: PortfolioExposureSnapshotRequest,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    user_id = _subject_id(principal)
+    profile = storage.get_investment_profile(user_id=user_id)
     profile_version_id = profile.get("profile_version_id") if profile.get("configured") else None
     try:
+        kwargs = {
+            "target_code": req.target_code,
+            "profile_version_id": profile_version_id,
+        }
+        if isinstance(principal, AuthPrincipal) and not principal.auth_disabled:
+            kwargs["user_id"] = user_id
         return portfolio_exposure.refresh_exposure_snapshot(
-            target_code=req.target_code,
-            profile_version_id=profile_version_id,
+            **kwargs,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
@@ -210,32 +247,46 @@ def create_holdings_exposure_snapshot(req: PortfolioExposureSnapshotRequest):
 def get_holdings_exposure_snapshots(
     target_code: str | None = Query(default=None, pattern=r"^\d{6}$"),
     limit: int = Query(default=20, ge=1, le=100),
+    principal: AuthPrincipal = Depends(principal_from_request),
 ):
     items = storage.list_portfolio_exposure_snapshots(
         target_code=target_code,
         limit=limit,
+        user_id=_subject_id(principal),
     )
     return {"items": items, "count": len(items)}
 
 
 @router.get("/api/holdings/exposure-snapshots/{snapshot_id}")
-def get_holdings_exposure_snapshot(snapshot_id: str):
-    item = storage.get_portfolio_exposure_snapshot(snapshot_id)
+def get_holdings_exposure_snapshot(
+    snapshot_id: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    user_id = _subject_id(principal)
+    item = storage.get_portfolio_exposure_snapshot(snapshot_id, user_id=user_id)
     if item is None:
         raise HTTPException(status_code=404, detail="组合穿透快照不存在")
-    item["integrity"] = storage.verify_portfolio_exposure_snapshot(snapshot_id)
+    item["integrity"] = storage.verify_portfolio_exposure_snapshot(snapshot_id, user_id=user_id)
     return item
 
 
 @router.get("/api/investment-profile")
-def get_investment_profile():
-    return storage.get_investment_profile()
+def get_investment_profile(principal: AuthPrincipal = Depends(principal_from_request)):
+    return storage.get_investment_profile(user_id=_subject_id(principal))
 
 
 @router.put("/api/investment-profile")
-def update_investment_profile(req: InvestmentProfileRequest):
+def update_investment_profile(
+    req: InvestmentProfileRequest,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
     validation = validate_investment_policy(req.model_dump())
-    draft = storage.create_investment_profile_draft(req.model_dump(), validation)
+    draft = storage.create_investment_profile_draft(
+        req.model_dump(),
+        validation,
+        user_id=_subject_id(principal),
+        actor_id=_actor_id(principal),
+    )
     return {
         "draft": draft,
         "validation": validation,
@@ -245,9 +296,17 @@ def update_investment_profile(req: InvestmentProfileRequest):
 
 
 @router.post("/api/investment-profile/drafts")
-def create_investment_profile_draft(req: InvestmentProfileRequest):
+def create_investment_profile_draft(
+    req: InvestmentProfileRequest,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
     validation = validate_investment_policy(req.model_dump())
-    draft = storage.create_investment_profile_draft(req.model_dump(), validation)
+    draft = storage.create_investment_profile_draft(
+        req.model_dump(),
+        validation,
+        user_id=_subject_id(principal),
+        actor_id=_actor_id(principal),
+    )
     return {
         "draft": draft,
         "validation": validation,
@@ -256,7 +315,10 @@ def create_investment_profile_draft(req: InvestmentProfileRequest):
 
 
 @router.get("/api/investment-profile/versions")
-def get_investment_profile_versions(limit: int = Query(default=20, ge=1, le=100)):
+def get_investment_profile_versions(
+    limit: int = Query(default=20, ge=1, le=100),
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
     items = [
         {
             "id": item["id"],
@@ -272,18 +334,26 @@ def get_investment_profile_versions(limit: int = Query(default=20, ge=1, le=100)
             "review_due_at": item.get("review_due_at"),
             "superseded_at": item.get("superseded_at"),
         }
-        for item in storage.list_investment_profile_versions(limit=limit)
+        for item in storage.list_investment_profile_versions(
+            user_id=_subject_id(principal),
+            limit=limit,
+        )
     ]
     return {"items": items, "count": len(items)}
 
 
 @router.post("/api/investment-profile/versions/{version_id}/activate")
-def activate_investment_profile_version(version_id: str, req: InvestmentProfileActivationRequest):
+def activate_investment_profile_version(
+    version_id: str,
+    req: InvestmentProfileActivationRequest,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
     if not req.acknowledged:
         raise HTTPException(status_code=409, detail="必须明确确认投资政策条款后才能激活")
     if req.consent_version != CONSENT_VERSION or req.consent_text_sha256 != CONSENT_TEXT_SHA256:
         raise HTTPException(status_code=409, detail="确认条款版本或哈希不匹配")
-    version = storage.get_investment_profile_version(version_id)
+    user_id = _subject_id(principal)
+    version = storage.get_investment_profile_version(version_id, user_id=user_id)
     if version is None:
         raise HTTPException(status_code=404, detail="投资政策版本不存在")
     try:
@@ -294,6 +364,8 @@ def activate_investment_profile_version(version_id: str, req: InvestmentProfileA
             consent_version=req.consent_version,
             consent_text_sha256=req.consent_text_sha256,
             review_cycle_months=int(version.get("review_cycle_months") or 0),
+            user_id=user_id,
+            actor_id=_actor_id(principal),
         )
     except storage.InvestmentProfileConflictError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
@@ -301,38 +373,45 @@ def activate_investment_profile_version(version_id: str, req: InvestmentProfileA
     return {
         "activated": activated_flag,
         "version": activated,
-        "profile": storage.get_investment_profile(),
-        "audit": storage.verify_investment_profile_integrity(),
+        "profile": storage.get_investment_profile(user_id=user_id),
+        "audit": storage.verify_investment_profile_integrity(user_id=user_id),
     }
 
 
 @router.get("/api/investment-profile/audit")
-def get_investment_profile_audit():
-    items = storage.list_investment_profile_audit()
+def get_investment_profile_audit(principal: AuthPrincipal = Depends(principal_from_request)):
+    user_id = _subject_id(principal)
+    items = storage.list_investment_profile_audit(user_id=user_id)
     return {
         "items": items,
         "count": len(items),
-        "verification": storage.verify_investment_profile_integrity(),
+        "verification": storage.verify_investment_profile_integrity(user_id=user_id),
     }
 
 
 @router.get("/api/decision-center")
-def get_decision_center():
+def get_decision_center(principal: AuthPrincipal = Depends(principal_from_request)):
     try:
-        return decision_center.build_decision_center()
+        return decision_center.build_decision_center(user_id=_subject_id(principal))
     except Exception as error:
         raise HTTPException(status_code=502, detail=f"真实投资决策中心生成失败:{error}")
 
 
 @router.get("/api/portfolio/transactions")
-def get_portfolio_transactions():
-    return portfolio_review.list_transactions()
+def get_portfolio_transactions(principal: AuthPrincipal = Depends(principal_from_request)):
+    return portfolio_review.list_transactions(user_id=_subject_id(principal))
 
 
 @router.post("/api/portfolio/transactions")
-def create_portfolio_transaction(req: PortfolioTransactionRequest):
+def create_portfolio_transaction(
+    req: PortfolioTransactionRequest,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
     try:
-        return portfolio_review.create_transaction(req.model_dump(mode="json"))
+        return portfolio_review.create_transaction(
+            req.model_dump(mode="json"),
+            user_id=_subject_id(principal),
+        )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
     except Exception as error:
@@ -367,12 +446,16 @@ async def preview_portfolio_transaction_csv(
 
 
 @router.post("/api/portfolio/transactions/import-csv")
-def import_portfolio_transaction_csv(req: PortfolioTransactionImportRequest):
+def import_portfolio_transaction_csv(
+    req: PortfolioTransactionImportRequest,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
     try:
         return portfolio_review.create_transactions_from_csv(
             [item.model_dump(mode="json") for item in req.items],
             file_sha256=req.file_sha256,
             filename=req.filename,
+            user_id=_subject_id(principal),
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
@@ -381,59 +464,71 @@ def import_portfolio_transaction_csv(req: PortfolioTransactionImportRequest):
 
 
 @router.delete("/api/portfolio/transactions/{transaction_id}")
-def delete_portfolio_transaction(transaction_id: int):
-    return {"ok": portfolio_review.delete_transaction(transaction_id)}
+def delete_portfolio_transaction(
+    transaction_id: int,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    return {"ok": portfolio_review.delete_transaction(
+        transaction_id,
+        user_id=_subject_id(principal),
+    )}
 
 
 @router.get("/api/portfolio/ledger")
-def get_portfolio_ledger():
+def get_portfolio_ledger(principal: AuthPrincipal = Depends(principal_from_request)):
     try:
-        return portfolio_review.ledger_overview()
+        return portfolio_review.ledger_overview(user_id=_subject_id(principal))
     except Exception as error:
         raise HTTPException(status_code=502, detail=f"交易成本复盘失败:{error}")
 
 
 @router.get("/api/portfolio/performance")
-def get_portfolio_performance():
+def get_portfolio_performance(principal: AuthPrincipal = Depends(principal_from_request)):
     try:
-        return portfolio_review.cashflow_performance()
+        return portfolio_review.cashflow_performance(user_id=_subject_id(principal))
     except Exception as error:
         raise HTTPException(status_code=502, detail=f"现金流收益复盘失败:{error}")
 
 
 @router.get("/api/portfolio/behavior")
-def get_portfolio_behavior():
+def get_portfolio_behavior(principal: AuthPrincipal = Depends(principal_from_request)):
     try:
-        return portfolio_review.trade_behavior_review()
+        return portfolio_review.trade_behavior_review(user_id=_subject_id(principal))
     except Exception as error:
         raise HTTPException(status_code=502, detail=f"交易行为复盘失败:{error}")
 
 
 @router.get("/api/portfolio/attribution")
-def get_portfolio_attribution():
+def get_portfolio_attribution(principal: AuthPrincipal = Depends(principal_from_request)):
     try:
-        return portfolio_review.snapshot_attribution()
+        return portfolio_review.snapshot_attribution(user_id=_subject_id(principal))
     except Exception as error:
         raise HTTPException(status_code=502, detail=f"区间持仓归因失败:{error}")
 
 
 @router.get("/api/portfolio/rebalance")
-def get_portfolio_rebalance():
+def get_portfolio_rebalance(principal: AuthPrincipal = Depends(principal_from_request)):
     try:
-        return portfolio_review.rebalance_review()
+        return portfolio_review.rebalance_review(user_id=_subject_id(principal))
     except Exception as error:
         raise HTTPException(status_code=502, detail=f"组合再平衡复盘失败:{error}")
 
 
 @router.get("/api/portfolio/theses")
-def get_holding_theses():
-    return holding_thesis.list_with_coverage()
+def get_holding_theses(principal: AuthPrincipal = Depends(principal_from_request)):
+    return holding_thesis.list_with_coverage(user_id=_subject_id(principal))
 
 
 @router.post("/api/portfolio/theses")
-def create_holding_thesis(req: HoldingThesisRequest):
+def create_holding_thesis(
+    req: HoldingThesisRequest,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
     try:
-        return holding_thesis.save_thesis(req.model_dump(mode="json"))
+        return holding_thesis.save_thesis(
+            req.model_dump(mode="json"),
+            user_id=_subject_id(principal),
+        )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
@@ -444,8 +539,10 @@ def get_holding_thesis_history(
     code: str,
     market: str = Query(default="", max_length=40),
     limit: int = Query(default=20, ge=1, le=100),
+    principal: AuthPrincipal = Depends(principal_from_request),
 ):
-    latest = storage.get_latest_holding_thesis(asset_type, market, code)
+    user_id = _subject_id(principal)
+    latest = storage.get_latest_holding_thesis(asset_type, market, code, user_id=user_id)
     if latest is None:
         raise HTTPException(status_code=404, detail="该持仓尚未建立持有逻辑")
     return {
@@ -455,21 +552,39 @@ def get_holding_thesis_history(
             market,
             code,
             limit=limit,
+            user_id=user_id,
         ),
-        "verification": storage.verify_holding_thesis_chain(asset_type, market, code),
+        "verification": storage.verify_holding_thesis_chain(
+            asset_type,
+            market,
+            code,
+            user_id=user_id,
+        ),
     }
 
 
 @router.get("/api/portfolio/action-reports")
-def get_portfolio_action_reports(limit: int = Query(default=20, ge=1, le=100)):
-    items = storage.list_portfolio_action_reports(limit=limit)
+def get_portfolio_action_reports(
+    limit: int = Query(default=20, ge=1, le=100),
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    items = storage.list_portfolio_action_reports(
+        limit=limit,
+        user_id=_subject_id(principal),
+    )
     return {"items": items, "count": len(items)}
 
 
 @router.post("/api/portfolio/action-reports")
-def create_portfolio_action_report(req: PortfolioActionReportRequest):
+def create_portfolio_action_report(
+    req: PortfolioActionReportRequest,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
     try:
-        return portfolio_action_report.refresh_action_report(max_funds=req.max_funds)
+        return portfolio_action_report.refresh_action_report(
+            max_funds=req.max_funds,
+            user_id=_subject_id(principal),
+        )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except Exception as error:
@@ -477,30 +592,50 @@ def create_portfolio_action_report(req: PortfolioActionReportRequest):
 
 
 @router.get("/api/portfolio/action-reports/latest")
-def get_latest_portfolio_action_report():
-    result = portfolio_action_report.load_latest_action_report()
+def get_latest_portfolio_action_report(
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    result = portfolio_action_report.load_latest_action_report(user_id=_subject_id(principal))
     if result is None:
         return {"status": "not_generated", "report": None, "binding": {"current": False, "reasons": ["report_not_generated"]}}
     return result
 
 
 @router.get("/api/portfolio/action-reports/{report_id}")
-def get_portfolio_action_report(report_id: str):
-    result = portfolio_action_report.load_action_report(report_id)
+def get_portfolio_action_report(
+    report_id: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    result = portfolio_action_report.load_action_report(
+        report_id,
+        user_id=_subject_id(principal),
+    )
     if result is None:
         raise HTTPException(status_code=404, detail="持仓行动报告不存在")
     return result
 
 
 @router.get("/api/portfolio/snapshots")
-def get_portfolio_snapshots(limit: int = Query(24, ge=1, le=120)):
-    return portfolio_review.list_snapshots(limit=limit)
+def get_portfolio_snapshots(
+    limit: int = Query(24, ge=1, le=120),
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    return portfolio_review.list_snapshots(
+        limit=limit,
+        user_id=_subject_id(principal),
+    )
 
 
 @router.post("/api/portfolio/snapshots")
-def create_portfolio_snapshot(req: PortfolioSnapshotRequest):
+def create_portfolio_snapshot(
+    req: PortfolioSnapshotRequest,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
     try:
-        return portfolio_review.create_snapshot(reason=req.reason)
+        return portfolio_review.create_snapshot(
+            reason=req.reason,
+            user_id=_subject_id(principal),
+        )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
     except Exception as error:
@@ -508,9 +643,15 @@ def create_portfolio_snapshot(req: PortfolioSnapshotRequest):
 
 
 @router.post("/api/holdings")
-def save_holdings(req: HoldingBulkRequest):
+def save_holdings(
+    req: HoldingBulkRequest,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
     try:
-        return holdings_mod.save_holdings([item.model_dump() for item in req.items])
+        return holdings_mod.save_holdings(
+            [item.model_dump() for item in req.items],
+            user_id=_subject_id(principal),
+        )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
     except Exception as error:
@@ -518,8 +659,14 @@ def save_holdings(req: HoldingBulkRequest):
 
 
 @router.delete("/api/holdings/{holding_id}")
-def delete_holding(holding_id: int):
-    return {"ok": holdings_mod.delete_holding(holding_id)}
+def delete_holding(
+    holding_id: int,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    return {"ok": holdings_mod.delete_holding(
+        holding_id,
+        user_id=_subject_id(principal),
+    )}
 
 
 @router.post("/api/holdings/parse-text")
@@ -572,17 +719,20 @@ async def upload_holding_screenshot(file: UploadFile = File(...)):
 
 
 @router.get("/api/alerts")
-def get_alerts(limit: int = Query(50, ge=1, le=200)):
-    return {"alerts": storage.list_alerts(limit)}
+def get_alerts(
+    limit: int = Query(50, ge=1, le=200),
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    return {"alerts": storage.list_alerts(limit, user_id=_subject_id(principal))}
 
 
 @router.delete("/api/alerts")
-def clear_alerts():
-    storage.clear_alerts()
+def clear_alerts(principal: AuthPrincipal = Depends(principal_from_request)):
+    storage.clear_alerts(user_id=_subject_id(principal))
     return {"cleared": True}
 
 
 @router.post("/api/alerts/scan")
-def trigger_scan():
-    monitor.trigger_scan_now()
+def trigger_scan(principal: AuthPrincipal = Depends(principal_from_request)):
+    monitor.trigger_scan_now(user_id=_subject_id(principal))
     return {"scanned": True}

@@ -1,13 +1,18 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
-import { Bot, BriefcaseBusiness, Info, LayoutDashboard, Search, TrendingUp } from 'lucide-react'
+import { Bot, BriefcaseBusiness, Info, LayoutDashboard, Search, Shield, TrendingUp } from 'lucide-react'
+import { fetchAuthSession, logoutAccount } from './api/auth'
 import { fetchMarkets } from './api/market'
+import AccountMenu from './components/AccountMenu'
+import ChangePasswordScreen from './components/ChangePasswordScreen'
+import LoginScreen from './components/LoginScreen'
 
+const AdminTab = lazy(() => import('./tabs/AdminTab'))
 const AgentTab = lazy(() => import('./tabs/AgentTab'))
 const DashboardTab = lazy(() => import('./tabs/DashboardTab'))
 const PortfolioTab = lazy(() => import('./tabs/PortfolioTab'))
 const ResearchTab = lazy(() => import('./tabs/ResearchTab'))
 
-const TABS = [
+const BASE_TABS = [
   { id: 'overview', label: '今日决策', icon: LayoutDashboard },
   { id: 'portfolio', label: '我的资产', icon: BriefcaseBusiness },
   { id: 'research', label: '研究中心', icon: Search },
@@ -15,6 +20,10 @@ const TABS = [
 ]
 
 export default function App() {
+  const [authLoading, setAuthLoading] = useState(true)
+  const [user, setUser] = useState(null)
+  const [authReadiness, setAuthReadiness] = useState(null)
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false)
   const [markets, setMarkets] = useState(['A股', '港股', '美股'])
   const [tab, setTab] = useState('overview')
   const [researchDomain, setResearchDomain] = useState('funds')
@@ -28,8 +37,27 @@ export default function App() {
   const [runKey, setRunKey] = useState(0)
 
   useEffect(() => {
-    fetchMarkets().then((d) => d.markets && setMarkets(d.markets)).catch(() => {})
+    let active = true
+    fetchAuthSession()
+      .then((result) => {
+        if (!active) return
+        setUser(result.authenticated ? result.user : null)
+        setAuthReadiness(result.readiness || null)
+      })
+      .catch(() => { if (active) setUser(null) })
+      .finally(() => { if (active) setAuthLoading(false) })
+    const unauthorized = () => { setUser(null); setTab('overview') }
+    globalThis.addEventListener('stock-assistant:unauthorized', unauthorized)
+    return () => {
+      active = false
+      globalThis.removeEventListener('stock-assistant:unauthorized', unauthorized)
+    }
   }, [])
+
+  useEffect(() => {
+    if (!user) return
+    fetchMarkets().then((d) => d.markets && setMarkets(d.markets)).catch(() => {})
+  }, [user])
 
   const requestRun = () => setRunKey((k) => k + 1)
   const goAnalyze = (m, s) => {
@@ -43,6 +71,28 @@ export default function App() {
   const goMarket = () => { setTab('research'); setResearchDomain('market'); setMarketView('radar') }
   const goAgent = () => setTab('agent')
 
+  async function logout() {
+    try { await logoutAccount() } catch { /* session may already be invalid */ }
+    setUser(null)
+    setTab('overview')
+  }
+
+  if (authLoading) {
+    return <main className="auth-shell"><div className="auth-loading"><span className="spinner" />正在验证会话</div></main>
+  }
+  if (!user) return <LoginScreen readiness={authReadiness} onAuthenticated={setUser} />
+  if (user.must_change_password || changePasswordOpen) {
+    return <ChangePasswordScreen
+      forced={Boolean(user.must_change_password)}
+      onCancel={() => setChangePasswordOpen(false)}
+      onChanged={() => { setChangePasswordOpen(false); setUser(null) }}
+    />
+  }
+
+  const tabs = user.role === 'admin'
+    ? [...BASE_TABS, { id: 'admin', label: '系统管理', icon: Shield }]
+    : BASE_TABS
+
   return (
     <>
       <header className="header">
@@ -55,7 +105,7 @@ export default function App() {
             </div>
           </div>
           <nav className="tabs" aria-label="主导航">
-            {TABS.map((t) => {
+            {tabs.map((t) => {
               const Icon = t.icon
               return (
                 <button key={t.id} className={`tab ${tab === t.id ? 'active' : ''}`}
@@ -70,6 +120,12 @@ export default function App() {
             <span className="header-status-dot" aria-hidden="true" />
             <span>真实数据</span>
           </div>
+          <AccountMenu
+            user={user}
+            onAdmin={() => setTab('admin')}
+            onChangePassword={() => setChangePasswordOpen(true)}
+            onLogout={logout}
+          />
         </div>
       </header>
 
@@ -82,6 +138,7 @@ export default function App() {
         <Suspense fallback={<div className="page-loading"><span className="spinner" />正在加载工作区</div>}>
           {tab === 'overview' && <DashboardTab goPortfolio={goPortfolio} goFunds={goFunds} goMarket={goMarket} goAgent={goAgent} />}
           {tab === 'agent' && <AgentTab />}
+          {tab === 'admin' && user.role === 'admin' && <AdminTab currentUser={user} />}
           {tab === 'portfolio' && <PortfolioTab goAnalyze={goAnalyze} activeView={portfolioView} onViewChange={setPortfolioView} />}
           {tab === 'research' && <ResearchTab
             domain={researchDomain} onDomainChange={setResearchDomain}

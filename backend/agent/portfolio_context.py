@@ -18,16 +18,20 @@ def _number(value: Any) -> float | None:
 
 def get_portfolio_context(payload: dict[str, Any]) -> dict[str, Any]:
     code = str(payload.get("code") or "").strip()
-    items = storage.list_holdings()
+    user_id = str(payload.get("user_id") or "default")
+    items = storage.list_holdings(user_id=user_id)
     requested_profile_version_id = str(payload.get("profile_version_id") or "").strip() or None
     if requested_profile_version_id:
-        profile = storage.get_investment_profile_version(requested_profile_version_id)
+        profile = storage.get_investment_profile_version(
+            requested_profile_version_id,
+            user_id=user_id,
+        )
         profile_version_available = profile is not None
         if profile is None:
-            profile = storage.get_investment_profile()
+            profile = storage.get_investment_profile(user_id=user_id)
             profile = {**profile, "configured": False}
     else:
-        profile = storage.get_investment_profile()
+        profile = storage.get_investment_profile(user_id=user_id)
         profile_version_available = True
     profile_configured = bool(profile.get("configured"))
     amounts = [_number(item.get("amount")) for item in items]

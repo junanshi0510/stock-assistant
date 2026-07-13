@@ -44,18 +44,21 @@ def _classify(score: float) -> str:
         return "neutral"
 
 
-def _scan_once():
+def _scan_once(user_id: str | None = None):
     """扫描一次自选股,检测打分变化。"""
     try:
-        items = storage.list_watchlist()
+        items = storage.list_all_watchlist()
+        if user_id is not None:
+            items = [item for item in items if item.get("user_id") == user_id]
         if not items:
             logger.info("自选股为空,跳过本次扫描。")
             return
 
         logger.info(f"开始扫描 {len(items)} 只自选股...")
         for it in items:
+            user_id = str(it.get("user_id") or "default")
             market, symbol = it["market"], it["symbol"]
-            key = f"{market}:{symbol}"
+            key = f"{user_id}:{market}:{symbol}"
 
             try:
                 df = data_fetch.get_history_months(market, symbol, 12, fetch_months=12)
@@ -87,7 +90,7 @@ def _scan_once():
             else:  # neutral
                 msg = f"回到中性区(打分 {score},前次 {prev['score']})"
 
-            storage.add_alert(market, symbol, zone, score, msg)
+            storage.add_alert(market, symbol, zone, score, msg, user_id=user_id)
             logger.info(f"  ⚠️ {key} 档位变化: {prev_zone} → {zone}, {msg}")
 
         logger.info("本次扫描完成。")
@@ -117,6 +120,6 @@ def start_monitor(interval_seconds: int = 3600):
     logger.info("监控线程已启动(后台 daemon)。")
 
 
-def trigger_scan_now():
+def trigger_scan_now(user_id: str | None = None):
     """手动触发一次扫描(同步,阻塞到扫描完成)。用于测试或用户手动刷新。"""
-    _scan_once()
+    _scan_once(user_id=user_id)

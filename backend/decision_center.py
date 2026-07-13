@@ -80,7 +80,7 @@ def _workflow_stage(
     }
 
 
-def _decision_workflow(profile: dict, portfolio: dict) -> dict:
+def _decision_workflow(profile: dict, portfolio: dict, *, user_id: str = "default") -> dict:
     """Describe one ordered path from confirmed facts to an actionable report."""
     summary = portfolio.get("summary") or {}
     allocation = portfolio.get("allocation") or []
@@ -99,7 +99,7 @@ def _decision_workflow(profile: dict, portfolio: dict) -> dict:
     thesis_data = None
     thesis_error = None
     try:
-        thesis_data = holding_thesis.list_with_coverage()
+        thesis_data = holding_thesis.list_with_coverage(user_id=user_id)
     except Exception as error:
         thesis_error = str(error)[:240]
     thesis_coverage = (thesis_data or {}).get("coverage") or {}
@@ -125,7 +125,7 @@ def _decision_workflow(profile: dict, portfolio: dict) -> dict:
     report = None
     report_error = None
     try:
-        report = portfolio_action_report.load_latest_action_report()
+        report = portfolio_action_report.load_latest_action_report(user_id=user_id)
     except Exception as error:
         report_error = str(error)[:240]
     report_current = bool(
@@ -245,9 +245,9 @@ def _decision_workflow(profile: dict, portfolio: dict) -> dict:
     }
 
 
-def _portfolio_snapshot() -> dict:
+def _portfolio_snapshot(*, user_id: str = "default") -> dict:
     try:
-        data = holdings_mod.holdings_insights(max_funds=6)
+        data = holdings_mod.holdings_insights(max_funds=6, user_id=user_id)
         ledger = {}
         rebalance = {}
         performance = {}
@@ -255,15 +255,15 @@ def _portfolio_snapshot() -> dict:
         rebalance_error = None
         performance_error = None
         try:
-            ledger = portfolio_review.ledger_overview()
+            ledger = portfolio_review.ledger_overview(user_id=user_id)
         except Exception as error:
             ledger_error = str(error)[:240]
         try:
-            rebalance = portfolio_review.rebalance_review()
+            rebalance = portfolio_review.rebalance_review(user_id=user_id)
         except Exception as error:
             rebalance_error = str(error)[:240]
         try:
-            performance = portfolio_review.cashflow_performance()
+            performance = portfolio_review.cashflow_performance(user_id=user_id)
         except Exception as error:
             performance_error = str(error)[:240]
         fund_dates = [row.get("as_of") for row in data.get("fund_trends") or [] if row.get("as_of")]
@@ -692,11 +692,11 @@ def _market_actions(market: dict) -> list[dict]:
     return actions
 
 
-def build_decision_center() -> dict:
+def build_decision_center(*, user_id: str = "default") -> dict:
     """Build a daily review queue without inventing prices, holdings, or signals."""
-    profile = storage.get_investment_profile()
+    profile = storage.get_investment_profile(user_id=user_id)
     pool = ThreadPoolExecutor(max_workers=2)
-    portfolio_future = pool.submit(_portfolio_snapshot)
+    portfolio_future = pool.submit(_portfolio_snapshot, user_id=user_id)
     market_future = pool.submit(_market_snapshot, profile["risk"])
     deadline = monotonic() + _SOURCE_DEADLINE_SECONDS
     try:
@@ -714,7 +714,7 @@ def build_decision_center() -> dict:
         # the HTTP response or replace unavailable data with a synthetic result.
         pool.shutdown(wait=False, cancel_futures=True)
 
-    workflow = _decision_workflow(profile, portfolio)
+    workflow = _decision_workflow(profile, portfolio, user_id=user_id)
     actions = _portfolio_actions(profile, portfolio) + _market_actions(market)
     if not actions and portfolio.get("status") == "available" and market.get("status") == "available":
         actions.append(_action(

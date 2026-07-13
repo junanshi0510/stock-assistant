@@ -32,11 +32,15 @@ from investment_policy import (
     payload_sha256,
 )
 
-_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stock_assistant.db")
+_DB_PATH = (
+    os.getenv("STOCK_ASSISTANT_DB_PATH")
+    or os.getenv("AGENT_DB_PATH")
+    or os.path.join(os.path.dirname(os.path.abspath(__file__)), "stock_assistant.db")
+)
 
 # sqlite 默认不允许跨线程共用连接;FastAPI 是多线程的,这里加锁串行化访问,
 # 简单可靠(自选股读写量很小,锁完全够用)。
-_lock = threading.Lock()
+_lock = threading.RLock()
 _conn = None
 
 
@@ -73,6 +77,74 @@ def _get_conn():
             )
             """
         )
+        _conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS storage_schema_migrations (
+                migration_id TEXT PRIMARY KEY,
+                applied_at   TEXT NOT NULL
+            )
+            """
+        )
+        _conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_watchlist (
+                id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id  TEXT NOT NULL,
+                market   TEXT NOT NULL,
+                symbol   TEXT NOT NULL,
+                name     TEXT,
+                added_at TEXT NOT NULL,
+                UNIQUE(user_id, market, symbol)
+            )
+            """
+        )
+        _conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_user_watchlist_recent
+            ON user_watchlist(user_id, added_at DESC)
+            """
+        )
+        _conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_alerts (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id      TEXT NOT NULL,
+                market       TEXT NOT NULL,
+                symbol       TEXT NOT NULL,
+                event_type   TEXT NOT NULL,
+                score        REAL NOT NULL,
+                message      TEXT NOT NULL,
+                triggered_at TEXT NOT NULL
+            )
+            """
+        )
+        _conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_user_alerts_recent
+            ON user_alerts(user_id, triggered_at DESC)
+            """
+        )
+        scoped_migration = "scoped-watchlist-alerts.v1"
+        if not _conn.execute(
+            "SELECT 1 FROM storage_schema_migrations WHERE migration_id=?",
+            (scoped_migration,),
+        ).fetchone():
+            _conn.execute(
+                """
+                INSERT OR IGNORE INTO user_watchlist(user_id, market, symbol, name, added_at)
+                SELECT 'default', market, symbol, name, added_at FROM watchlist
+                """
+            )
+            _conn.execute(
+                """
+                INSERT INTO user_alerts(user_id, market, symbol, event_type, score, message, triggered_at)
+                SELECT 'default', market, symbol, event_type, score, message, triggered_at FROM alerts
+                """
+            )
+            _conn.execute(
+                "INSERT INTO storage_schema_migrations(migration_id, applied_at) VALUES (?, ?)",
+                (scoped_migration, datetime.datetime.now(datetime.timezone.utc).isoformat()),
+            )
         _conn.execute(
             """
             CREATE TABLE IF NOT EXISTS holdings (
@@ -387,16 +459,32 @@ def _ensure_column(conn, table: str, column: str, column_type: str):
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
 
 
-def list_watchlist() -> list[dict]:
+def list_watchlist(user_id: str = "default") -> list[dict]:
     """返回全部自选股,最近收藏的排在前面。"""
     with _lock:
         rows = _get_conn().execute(
-            "SELECT market, symbol, name, added_at FROM watchlist ORDER BY added_at DESC"
+            """
+            SELECT market, symbol, name, added_at
+            FROM user_watchlist WHERE user_id=? ORDER BY added_at DESC
+            """,
+            (user_id,),
         ).fetchall()
     return [dict(r) for r in rows]
 
 
-def add_watch(market: str, symbol: str, name: str = "") -> dict:
+def list_all_watchlist() -> list[dict]:
+    """Return all scoped rows for the background monitor only."""
+    with _lock:
+        rows = _get_conn().execute(
+            """
+            SELECT user_id, market, symbol, name, added_at
+            FROM user_watchlist ORDER BY user_id, added_at DESC
+            """
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def add_watch(market: str, symbol: str, name: str = "", user_id: str = "default") -> dict:
     """收藏一只股票。已存在则更新名称(不报错,幂等)。"""
     symbol = symbol.strip()
     name = (name or "").strip()
@@ -405,67 +493,80 @@ def add_watch(market: str, symbol: str, name: str = "") -> dict:
         conn = _get_conn()
         conn.execute(
             """
-            INSERT INTO watchlist (market, symbol, name, added_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(market, symbol) DO UPDATE SET name=excluded.name
+            INSERT INTO user_watchlist (user_id, market, symbol, name, added_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, market, symbol) DO UPDATE SET name=excluded.name
             """,
-            (market, symbol, name, now),
+            (user_id, market, symbol, name, now),
         )
         conn.commit()
     return {"market": market, "symbol": symbol, "name": name, "added_at": now}
 
 
-def remove_watch(market: str, symbol: str) -> bool:
+def remove_watch(market: str, symbol: str, user_id: str = "default") -> bool:
     """取消收藏。返回是否确实删掉了一条。"""
     with _lock:
         conn = _get_conn()
         cur = conn.execute(
-            "DELETE FROM watchlist WHERE market=? AND symbol=?", (market, symbol.strip())
+            "DELETE FROM user_watchlist WHERE user_id=? AND market=? AND symbol=?",
+            (user_id, market, symbol.strip()),
         )
         conn.commit()
         return cur.rowcount > 0
 
 
-def is_watched(market: str, symbol: str) -> bool:
+def is_watched(market: str, symbol: str, user_id: str = "default") -> bool:
     with _lock:
         row = _get_conn().execute(
-            "SELECT 1 FROM watchlist WHERE market=? AND symbol=?", (market, symbol.strip())
+            "SELECT 1 FROM user_watchlist WHERE user_id=? AND market=? AND symbol=?",
+            (user_id, market, symbol.strip()),
         ).fetchone()
     return row is not None
 
 
 # ==================== 提醒(打分变化监控)====================
 
-def add_alert(market: str, symbol: str, event_type: str, score: float, message: str):
+def add_alert(
+    market: str,
+    symbol: str,
+    event_type: str,
+    score: float,
+    message: str,
+    user_id: str = "default",
+):
     """记录一条提醒。event_type: 'bullish'/'bearish'/'neutral'。"""
     now = datetime.datetime.now().isoformat(timespec="seconds")
     with _lock:
         conn = _get_conn()
         conn.execute(
             """
-            INSERT INTO alerts (market, symbol, event_type, score, message, triggered_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO user_alerts (
+                user_id, market, symbol, event_type, score, message, triggered_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (market, symbol.strip(), event_type, score, message, now),
+            (user_id, market, symbol.strip(), event_type, score, message, now),
         )
         conn.commit()
 
 
-def list_alerts(limit: int = 50) -> list[dict]:
+def list_alerts(limit: int = 50, user_id: str = "default") -> list[dict]:
     """返回最近的提醒,最新的在前。"""
     with _lock:
         rows = _get_conn().execute(
-            "SELECT market, symbol, event_type, score, message, triggered_at FROM alerts ORDER BY triggered_at DESC LIMIT ?",
-            (limit,),
+            """
+            SELECT market, symbol, event_type, score, message, triggered_at
+            FROM user_alerts WHERE user_id=? ORDER BY triggered_at DESC LIMIT ?
+            """,
+            (user_id, limit),
         ).fetchall()
     return [dict(r) for r in rows]
 
 
-def clear_alerts():
+def clear_alerts(user_id: str = "default"):
     """清空全部提醒。"""
     with _lock:
         conn = _get_conn()
-        conn.execute("DELETE FROM alerts")
+        conn.execute("DELETE FROM user_alerts WHERE user_id=?", (user_id,))
         conn.commit()
 
 
