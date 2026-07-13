@@ -401,11 +401,129 @@ npm run build
 
 ## 15. 生产部署验证
 
-部署后补充以下证据：
+### 15.1 发布与备份
 
-- GitHub 提交与云端 HEAD。
-- 云端完整测试结果。
-- API 和 Nginx 服务状态。
-- 数据表、索引、不可变触发器和 Agent 新列。
-- 公网快照列表、空持仓行为和前端资源。
-- 生产日志异常检查。
+- 首次功能提交：`886700f feat: enforce versioned portfolio lookthrough limits`。
+- ETF 联接真实报告穿透修复：`5627db2 fix: verify ETF feeder lookthrough from reports`。
+- 云端应用 HEAD：`5627db2`。
+- 云端 Git 工作区：干净。
+- 部署前使用 SQLite 在线备份 API 生成：`/opt/stock-assistant-backups/stock_assistant-20260713-121354.db`。
+- 备份大小：1,777,664 bytes。
+- `stock-assistant-api`：`active`。
+- `nginx`：`active`。
+
+### 15.2 云端测试与构建
+
+```text
+Ran 127 tests in 6.828s
+OK
+```
+
+云端 Vite 构建：
+
+```text
+✓ 1840 modules transformed
+✓ built in 4.60s
+```
+
+公网验证：
+
+- 首页：HTTP 200。
+- 主资源：`assets/index-D39DA_dU.js`。
+- 组合工作区资源：`assets/PortfolioTab-OARmUSsS.js`，HTTP 200。
+- 当前 CSS：`assets/index-zgNhuH4k.css`。
+
+### 15.3 数据库迁移
+
+生产只读校验：
+
+```text
+portfolio_exposure_snapshots table = 1
+portfolio exposure indexes = 2
+trg_portfolio_exposure_immutable = 1
+agent_runs.exposure_snapshot_id = 1
+```
+
+迁移时生产库有 3 项用户确认基金持仓、14 个历史 Agent Run、0 个激活 IPS 版本。
+
+### 15.4 第一次真实快照暴露的问题
+
+第一次调用生产快照时：
+
+```text
+status = partial
+holding_count = 3
+loaded_fund_count = 2
+failed_source_count = 1
+integrity_verified = true
+```
+
+失败基金为 `013403`。它是 ETF 联接 QDII，旧股票持仓接口不会返回联接基金自身的股票和行业。这次失败没有被兜底数据隐藏，形成不可变快照 `exposure_fb68359aee2d474795a83a7db3d10387`。
+
+生产排查取得以下真实证据：
+
+- 基金详情页“查看相关 ETF”代码：`513180`。
+- 2026 年第 1 季度报告 `2.1.1` 目标基金主代码：`513180`。
+- 报告 `5.9` 目标 ETF 占基金资产净值：`94.60%`。
+- 报告期：`2026-03-31`。
+- 目标 ETF 资产配置期：`2026-03-31`。
+- 目标 ETF 股票披露期：`2026 年 1 季度`。
+- 目标 ETF 行业披露期：`2026-03-31`。
+- 目标 ETF 股票占比：`96.80%`。
+- 逐层缩放后联接基金权益占比：`91.5728%`。
+
+修复没有硬编码基金代码；关系、报告代码和占比均来自当次真实页面与定期报告。
+
+### 15.5 第二次真实快照
+
+部署联接基金修复后，生产快照 `exposure_9bf732b1acdd44d1baeed85846687455`：
+
+```text
+status = complete
+decision_eligible = true
+holding_count = 3
+fund_count = 3
+loaded_fund_count = 3
+linked_fund_count = 1
+failed_source_count = 0
+stale_fund_count = 0
+conflict_fund_count = 0
+reason_count = 0
+integrity_verified = true
+```
+
+旧 `partial` 快照没有被覆盖。生产当前存在 3 个快照（包括后续 Agent 目标快照），状态依次为 `complete`、`complete`、`partial`，全部重新计算哈希验证通过。
+
+### 15.6 生产 Agent Run
+
+使用真实持仓基金 `013403` 发起不带计划金额、关闭可选工具的生产研究 Run：
+
+```text
+run_id = run_3ca3bb8fc24c4344b9ae76897038a692
+status = completed
+step_count = 5
+evidence_count = 5
+exposure_snapshot_id = exposure_fc000e2c07574c299be779103386a4f5
+profile_version_id = null
+decision_action = setup_required
+allowed_amount = null
+```
+
+结果符合门禁：生产没有激活 IPS，因此 Agent 即使取得完整真实穿透，也没有生成投入金额。
+
+完整性验证：
+
+```text
+snapshot integrity = verified
+Agent audit chain = verified, 19 events
+Run evidence integrity = verified, 5 evidence
+exposure binding mismatch = none
+```
+
+### 15.7 日志
+
+- 两次服务重启均正常完成关闭和启动。
+- Agent Worker、Outcome Worker 和监控线程均正常启动。
+- 新快照接口、详情接口和生产 Agent Run 均返回 HTTP 200。
+- 没有本轮代码异常、Traceback 或服务启动失败。
+- 公网仍出现常规自动扫描请求并返回 404，进一步说明域名、HTTPS、认证、限流和 WAF 是后续生产化的高优先级安全前置项。
