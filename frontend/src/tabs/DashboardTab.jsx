@@ -60,6 +60,22 @@ export default function DashboardTab({ goPortfolio, goFunds, goMarket, goAgent }
     else if (target === 'agent') goAgent()
   }
 
+  function taskUpdated(result) {
+    const task = result?.task
+    if (!task) return
+    setDecision((current) => current ? {
+      ...current,
+      task_inbox: {
+        ...(current.task_inbox || {}),
+        status: 'available',
+        summary: result.summary || current.task_inbox?.summary || {},
+      },
+      actions: (current.actions || []).map((action) => (
+        action.id === task.action_key ? { ...action, task } : action
+      )),
+    } : current)
+  }
+
   return (
     <>
       <section className="command-hero" aria-label="今日投资决策">
@@ -76,7 +92,14 @@ export default function DashboardTab({ goPortfolio, goFunds, goMarket, goAgent }
 
       <DecisionWorkflow workflow={workflow} onNavigate={navigate} />
 
-      <DecisionCenter data={decision} loading={loading} error={error} onRefresh={refresh} onNavigate={navigate} />
+      <DecisionCenter
+        data={decision}
+        loading={loading}
+        error={error}
+        onRefresh={refresh}
+        onNavigate={navigate}
+        onTaskUpdated={taskUpdated}
+      />
 
       <div className="overview-grid overview-snapshots">
         <section className="overview-band">

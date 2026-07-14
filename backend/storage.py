@@ -433,6 +433,82 @@ def _get_conn():
             END
             """
         )
+        _conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS decision_tasks (
+                id                TEXT PRIMARY KEY,
+                user_id           TEXT NOT NULL,
+                action_key        TEXT NOT NULL,
+                fingerprint       TEXT NOT NULL,
+                revision          INTEGER NOT NULL DEFAULT 1,
+                status            TEXT NOT NULL
+                                  CHECK(status IN ('open', 'snoozed', 'acknowledged', 'resolved')),
+                priority          TEXT NOT NULL
+                                  CHECK(priority IN ('high', 'medium', 'normal')),
+                category          TEXT NOT NULL,
+                title             TEXT NOT NULL,
+                detail            TEXT NOT NULL,
+                evidence_json     TEXT NOT NULL,
+                target            TEXT NOT NULL,
+                action_label      TEXT NOT NULL,
+                source            TEXT NOT NULL,
+                first_seen_at     TEXT NOT NULL,
+                last_seen_at      TEXT NOT NULL,
+                acknowledged_at   TEXT,
+                snoozed_until     TEXT,
+                resolved_at       TEXT,
+                UNIQUE(user_id, action_key)
+            )
+            """
+        )
+        _conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_decision_tasks_inbox
+            ON decision_tasks(user_id, status, priority, last_seen_at DESC)
+            """
+        )
+        _conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS decision_task_events (
+                id             TEXT PRIMARY KEY,
+                task_id        TEXT NOT NULL,
+                user_id        TEXT NOT NULL,
+                sequence_no    INTEGER NOT NULL,
+                event_type     TEXT NOT NULL,
+                actor_id       TEXT NOT NULL,
+                details_json   TEXT NOT NULL,
+                previous_hash  TEXT,
+                event_hash     TEXT NOT NULL,
+                created_at     TEXT NOT NULL,
+                UNIQUE(task_id, sequence_no),
+                FOREIGN KEY(task_id) REFERENCES decision_tasks(id)
+            )
+            """
+        )
+        _conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_decision_task_events_history
+            ON decision_task_events(user_id, task_id, sequence_no)
+            """
+        )
+        _conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_decision_task_events_no_update
+            BEFORE UPDATE ON decision_task_events
+            BEGIN
+                SELECT RAISE(ABORT, 'decision task events are immutable');
+            END
+            """
+        )
+        _conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_decision_task_events_no_delete
+            BEFORE DELETE ON decision_task_events
+            BEGIN
+                SELECT RAISE(ABORT, 'decision task events are immutable');
+            END
+            """
+        )
         _ensure_column(_conn, "holdings", "yesterday_profit", "REAL")
         _ensure_column(_conn, "portfolio_transactions", "source", "TEXT")
         _ensure_column(_conn, "portfolio_action_reports", "theses_sha256", "TEXT")
@@ -2025,4 +2101,559 @@ def verify_portfolio_action_report(report_id: str, user_id: str = "default") -> 
         "report_id": report_id,
         "payload_sha256": digest,
         "reason": reason,
+    }
+
+
+# ==================== 投资任务收件箱 ====================
+
+_DECISION_TASK_STATUSES = {"open", "snoozed", "acknowledged", "resolved"}
+_DECISION_TASK_PRIORITIES = {"high", "medium", "normal"}
+_DECISION_TASK_SNOOZE_LIMITS = {"high": 24, "medium": 72, "normal": 168}
+
+
+class DecisionTaskConflictError(RuntimeError):
+    pass
+
+
+class DecisionTaskValidationError(ValueError):
+    pass
+
+
+def _decision_task_now() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds")
+
+
+def _decision_task_payload(action: dict) -> dict:
+    action_key = str(action.get("id") or "").strip()
+    priority = str(action.get("priority") or "normal").strip()
+    if not action_key:
+        raise DecisionTaskValidationError("投资任务缺少稳定 action id")
+    if priority not in _DECISION_TASK_PRIORITIES:
+        raise DecisionTaskValidationError(f"投资任务优先级无效:{priority}")
+    evidence = action.get("evidence") or []
+    if not isinstance(evidence, list):
+        raise DecisionTaskValidationError("投资任务 Evidence 必须是数组")
+    return {
+        "action_key": action_key,
+        "priority": priority,
+        "category": str(action.get("category") or "待复盘").strip()[:80],
+        "title": str(action.get("title") or action_key).strip()[:240],
+        "detail": str(action.get("detail") or "").strip()[:2000],
+        "evidence": [str(item).strip()[:500] for item in evidence if str(item).strip()][:20],
+        "target": str(action.get("target") or "portfolio").strip()[:80],
+        "action_label": str(action.get("action_label") or "查看详情").strip()[:80],
+        "source": str(action.get("source") or "未标注来源").strip()[:500],
+    }
+
+
+def _decision_task_fingerprint(payload: dict) -> str:
+    # 数值证据会随行情刷新，但同一个风险条件不应每天重新打开。只有任务语义、
+    # 优先级或去向变化时才产生新 revision；条件消失/重现由同步状态机处理。
+    identity = {
+        "action_key": payload["action_key"],
+        "priority": payload["priority"],
+        "category": payload["category"],
+        "title": payload["title"],
+        "target": payload["target"],
+        "source": payload["source"],
+    }
+    return hashlib.sha256(canonical_json(identity).encode("utf-8")).hexdigest()
+
+
+def _decision_task_from_row(row) -> dict | None:
+    if row is None:
+        return None
+    item = dict(row)
+    item["evidence"] = _decode_json(item.pop("evidence_json", None), [])
+    return item
+
+
+def _append_decision_task_event(
+    conn,
+    *,
+    task_id: str,
+    user_id: str,
+    event_type: str,
+    actor_id: str,
+    details: dict,
+    created_at: str,
+) -> dict:
+    previous = conn.execute(
+        """
+        SELECT sequence_no, event_hash
+        FROM decision_task_events
+        WHERE task_id=? AND user_id=?
+        ORDER BY sequence_no DESC
+        LIMIT 1
+        """,
+        (task_id, user_id),
+    ).fetchone()
+    sequence_no = int(previous["sequence_no"] if previous else 0) + 1
+    previous_hash = previous["event_hash"] if previous else None
+    event_id = f"decision_task_event_{uuid.uuid4().hex}"
+    canonical = {
+        "id": event_id,
+        "task_id": task_id,
+        "user_id": user_id,
+        "sequence_no": sequence_no,
+        "event_type": event_type,
+        "actor_id": actor_id,
+        "details": details,
+        "previous_hash": previous_hash,
+        "created_at": created_at,
+    }
+    event_hash = hashlib.sha256(canonical_json(canonical).encode("utf-8")).hexdigest()
+    conn.execute(
+        """
+        INSERT INTO decision_task_events (
+            id, task_id, user_id, sequence_no, event_type, actor_id,
+            details_json, previous_hash, event_hash, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            event_id,
+            task_id,
+            user_id,
+            sequence_no,
+            event_type,
+            actor_id,
+            canonical_json(details),
+            previous_hash,
+            event_hash,
+            created_at,
+        ),
+    )
+    return {**canonical, "event_hash": event_hash}
+
+
+def _decision_task_summary(conn, user_id: str) -> dict:
+    rows = conn.execute(
+        """
+        SELECT status, COUNT(*) AS value
+        FROM decision_tasks
+        WHERE user_id=?
+        GROUP BY status
+        """,
+        (user_id,),
+    ).fetchall()
+    counts = {status: 0 for status in _DECISION_TASK_STATUSES}
+    counts.update({str(row["status"]): int(row["value"]) for row in rows})
+    return {
+        "open_count": counts["open"],
+        "snoozed_count": counts["snoozed"],
+        "acknowledged_count": counts["acknowledged"],
+        "resolved_count": counts["resolved"],
+        "active_count": counts["open"] + counts["snoozed"] + counts["acknowledged"],
+    }
+
+
+def _open_elapsed_snoozes(conn, user_id: str, now: str, actor_id: str) -> None:
+    rows = conn.execute(
+        """
+        SELECT * FROM decision_tasks
+        WHERE user_id=? AND status='snoozed' AND snoozed_until IS NOT NULL AND snoozed_until<=?
+        """,
+        (user_id, now),
+    ).fetchall()
+    for row in rows:
+        revision = int(row["revision"]) + 1
+        conn.execute(
+            """
+            UPDATE decision_tasks
+            SET status='open', revision=?, snoozed_until=NULL
+            WHERE id=? AND user_id=?
+            """,
+            (revision, row["id"], user_id),
+        )
+        _append_decision_task_event(
+            conn,
+            task_id=row["id"],
+            user_id=user_id,
+            event_type="task.snooze_elapsed",
+            actor_id=actor_id,
+            details={"from_status": "snoozed", "to_status": "open", "revision": revision},
+            created_at=now,
+        )
+
+
+def sync_decision_tasks(
+    actions: list[dict],
+    user_id: str = "default",
+    *,
+    actor_id: str = "decision-engine",
+    observed_at: str | None = None,
+) -> dict:
+    """Synchronize deterministic decision conditions into a durable user inbox."""
+    now = observed_at or _decision_task_now()
+    normalized = []
+    seen_keys = set()
+    for action in actions:
+        if str(action.get("id") or "") == "no-high-priority-item":
+            continue
+        payload = _decision_task_payload(action)
+        if payload["action_key"] in seen_keys:
+            raise DecisionTaskValidationError(f"投资任务 action id 重复:{payload['action_key']}")
+        payload["fingerprint"] = _decision_task_fingerprint(payload)
+        seen_keys.add(payload["action_key"])
+        normalized.append(payload)
+
+    with _lock:
+        conn = _get_conn()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            _open_elapsed_snoozes(conn, user_id, now, actor_id)
+            rows = conn.execute(
+                "SELECT * FROM decision_tasks WHERE user_id=?",
+                (user_id,),
+            ).fetchall()
+            existing = {str(row["action_key"]): row for row in rows}
+
+            for payload in normalized:
+                row = existing.get(payload["action_key"])
+                if row is None:
+                    task_id = f"decision_task_{uuid.uuid4().hex}"
+                    conn.execute(
+                        """
+                        INSERT INTO decision_tasks (
+                            id, user_id, action_key, fingerprint, revision, status, priority,
+                            category, title, detail, evidence_json, target, action_label, source,
+                            first_seen_at, last_seen_at
+                        ) VALUES (?, ?, ?, ?, 1, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            task_id,
+                            user_id,
+                            payload["action_key"],
+                            payload["fingerprint"],
+                            payload["priority"],
+                            payload["category"],
+                            payload["title"],
+                            payload["detail"],
+                            canonical_json(payload["evidence"]),
+                            payload["target"],
+                            payload["action_label"],
+                            payload["source"],
+                            now,
+                            now,
+                        ),
+                    )
+                    _append_decision_task_event(
+                        conn,
+                        task_id=task_id,
+                        user_id=user_id,
+                        event_type="task.created",
+                        actor_id=actor_id,
+                        details={
+                            "action_key": payload["action_key"],
+                            "fingerprint": payload["fingerprint"],
+                            "priority": payload["priority"],
+                            "revision": 1,
+                        },
+                        created_at=now,
+                    )
+                    continue
+
+                fingerprint_changed = row["fingerprint"] != payload["fingerprint"]
+                reopened = row["status"] == "resolved"
+                revision = int(row["revision"]) + (1 if fingerprint_changed or reopened else 0)
+                status = "open" if fingerprint_changed or reopened else row["status"]
+                conn.execute(
+                    """
+                    UPDATE decision_tasks
+                    SET fingerprint=?, revision=?, status=?, priority=?, category=?, title=?,
+                        detail=?, evidence_json=?, target=?, action_label=?, source=?, last_seen_at=?,
+                        acknowledged_at=?, snoozed_until=?, resolved_at=?
+                    WHERE id=? AND user_id=?
+                    """,
+                    (
+                        payload["fingerprint"],
+                        revision,
+                        status,
+                        payload["priority"],
+                        payload["category"],
+                        payload["title"],
+                        payload["detail"],
+                        canonical_json(payload["evidence"]),
+                        payload["target"],
+                        payload["action_label"],
+                        payload["source"],
+                        now,
+                        None if fingerprint_changed or reopened else row["acknowledged_at"],
+                        None if fingerprint_changed or reopened else row["snoozed_until"],
+                        None if reopened else row["resolved_at"],
+                        row["id"],
+                        user_id,
+                    ),
+                )
+                if fingerprint_changed or reopened:
+                    _append_decision_task_event(
+                        conn,
+                        task_id=row["id"],
+                        user_id=user_id,
+                        event_type="task.reopened" if reopened else "task.changed",
+                        actor_id=actor_id,
+                        details={
+                            "from_status": row["status"],
+                            "to_status": "open",
+                            "fingerprint_changed": fingerprint_changed,
+                            "previous_fingerprint": row["fingerprint"],
+                            "fingerprint": payload["fingerprint"],
+                            "priority": payload["priority"],
+                            "revision": revision,
+                        },
+                        created_at=now,
+                    )
+
+            for action_key, row in existing.items():
+                if action_key in seen_keys or row["status"] == "resolved":
+                    continue
+                revision = int(row["revision"]) + 1
+                conn.execute(
+                    """
+                    UPDATE decision_tasks
+                    SET status='resolved', revision=?, snoozed_until=NULL, resolved_at=?
+                    WHERE id=? AND user_id=?
+                    """,
+                    (revision, now, row["id"], user_id),
+                )
+                _append_decision_task_event(
+                    conn,
+                    task_id=row["id"],
+                    user_id=user_id,
+                    event_type="task.auto_resolved",
+                    actor_id=actor_id,
+                    details={
+                        "from_status": row["status"],
+                        "to_status": "resolved",
+                        "reason": "trigger_condition_absent",
+                        "revision": revision,
+                    },
+                    created_at=now,
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+        rows = conn.execute(
+            "SELECT * FROM decision_tasks WHERE user_id=? AND action_key IN ({})".format(
+                ",".join("?" for _ in seen_keys) or "''"
+            ),
+            (user_id, *seen_keys),
+        ).fetchall()
+        by_key = {str(row["action_key"]): _decision_task_from_row(row) for row in rows}
+        items = [by_key[item["action_key"]] for item in normalized if item["action_key"] in by_key]
+        summary = _decision_task_summary(conn, user_id)
+    return {
+        "status": "available",
+        "generated_at": now,
+        "items": items,
+        "summary": summary,
+    }
+
+
+def list_decision_tasks(
+    user_id: str = "default",
+    *,
+    status: str | None = None,
+    include_resolved: bool = False,
+    limit: int = 50,
+) -> dict:
+    if status is not None and status not in _DECISION_TASK_STATUSES:
+        raise DecisionTaskValidationError(f"投资任务状态无效:{status}")
+    limit = max(1, min(200, int(limit)))
+    now = _decision_task_now()
+    clauses = ["user_id=?"]
+    params: list = [user_id]
+    if status:
+        clauses.append("status=?")
+        params.append(status)
+    elif not include_resolved:
+        clauses.append("status!='resolved'")
+    params.append(limit)
+    with _lock:
+        conn = _get_conn()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            _open_elapsed_snoozes(conn, user_id, now, "decision-task-scheduler")
+            rows = conn.execute(
+                f"""
+                SELECT * FROM decision_tasks
+                WHERE {' AND '.join(clauses)}
+                ORDER BY
+                    CASE status WHEN 'open' THEN 0 WHEN 'snoozed' THEN 1
+                                WHEN 'acknowledged' THEN 2 ELSE 3 END,
+                    CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
+                    last_seen_at DESC, id DESC
+                LIMIT ?
+                """,
+                tuple(params),
+            ).fetchall()
+            summary = _decision_task_summary(conn, user_id)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    return {
+        "items": [_decision_task_from_row(row) for row in rows],
+        "count": len(rows),
+        "summary": summary,
+        "generated_at": now,
+    }
+
+
+def update_decision_task(
+    task_id: str,
+    next_status: str,
+    expected_revision: int,
+    user_id: str = "default",
+    *,
+    actor_id: str = "user",
+    snooze_hours: int | None = None,
+) -> dict | None:
+    if next_status not in {"open", "snoozed", "acknowledged"}:
+        raise DecisionTaskValidationError("用户只能重新打开、确认已知晓或稍后处理任务")
+    now_dt = datetime.datetime.now(datetime.timezone.utc)
+    now = now_dt.isoformat(timespec="milliseconds")
+    with _lock:
+        conn = _get_conn()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            _open_elapsed_snoozes(conn, user_id, now, "decision-task-scheduler")
+            row = conn.execute(
+                "SELECT * FROM decision_tasks WHERE id=? AND user_id=?",
+                (task_id, user_id),
+            ).fetchone()
+            if row is None:
+                conn.rollback()
+                return None
+            if int(row["revision"]) != int(expected_revision):
+                raise DecisionTaskConflictError("投资任务已被刷新，请重新加载后再操作")
+            if row["status"] == "resolved":
+                raise DecisionTaskConflictError("该触发条件已经由真实数据自动解决，不能手工重新打开")
+
+            snoozed_until = row["snoozed_until"]
+            acknowledged_at = row["acknowledged_at"]
+            if next_status == "snoozed":
+                hours = int(snooze_hours or 0)
+                maximum = _DECISION_TASK_SNOOZE_LIMITS[str(row["priority"])]
+                if hours < 1 or hours > maximum:
+                    raise DecisionTaskValidationError(
+                        f"{row['priority']} 优先级任务最多可稍后 {maximum} 小时"
+                    )
+                snoozed_until = (now_dt + datetime.timedelta(hours=hours)).isoformat(timespec="milliseconds")
+            elif next_status == "acknowledged":
+                snoozed_until = None
+                acknowledged_at = acknowledged_at or now
+            else:
+                snoozed_until = None
+                acknowledged_at = None
+
+            unchanged = (
+                row["status"] == next_status
+                and row["snoozed_until"] == snoozed_until
+                and row["acknowledged_at"] == acknowledged_at
+            )
+            if not unchanged:
+                revision = int(row["revision"]) + 1
+                conn.execute(
+                    """
+                    UPDATE decision_tasks
+                    SET status=?, revision=?, acknowledged_at=?, snoozed_until=?
+                    WHERE id=? AND user_id=?
+                    """,
+                    (next_status, revision, acknowledged_at, snoozed_until, task_id, user_id),
+                )
+                _append_decision_task_event(
+                    conn,
+                    task_id=task_id,
+                    user_id=user_id,
+                    event_type={
+                        "open": "task.user_reopened",
+                        "snoozed": "task.snoozed",
+                        "acknowledged": "task.acknowledged",
+                    }[next_status],
+                    actor_id=actor_id,
+                    details={
+                        "from_status": row["status"],
+                        "to_status": next_status,
+                        "snoozed_until": snoozed_until,
+                        "revision": revision,
+                    },
+                    created_at=now,
+                )
+            result = conn.execute(
+                "SELECT * FROM decision_tasks WHERE id=? AND user_id=?",
+                (task_id, user_id),
+            ).fetchone()
+            summary = _decision_task_summary(conn, user_id)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    return {"task": _decision_task_from_row(result), "summary": summary}
+
+
+def list_decision_task_events(task_id: str, user_id: str = "default") -> list[dict]:
+    with _lock:
+        rows = _get_conn().execute(
+            """
+            SELECT * FROM decision_task_events
+            WHERE task_id=? AND user_id=?
+            ORDER BY sequence_no
+            """,
+            (task_id, user_id),
+        ).fetchall()
+    items = []
+    for row in rows:
+        item = dict(row)
+        item["details"] = _decode_json(item.pop("details_json", None), {})
+        items.append(item)
+    return items
+
+
+def verify_decision_task_audit(task_id: str, user_id: str = "default") -> dict:
+    with _lock:
+        task_exists = _get_conn().execute(
+            "SELECT 1 FROM decision_tasks WHERE id=? AND user_id=?",
+            (task_id, user_id),
+        ).fetchone()
+    if not task_exists:
+        return {"verified": False, "task_id": task_id, "reason": "task_not_found"}
+    items = list_decision_task_events(task_id, user_id=user_id)
+    previous_hash = None
+    for expected_sequence, item in enumerate(items, start=1):
+        canonical = {
+            "id": item["id"],
+            "task_id": item["task_id"],
+            "user_id": item["user_id"],
+            "sequence_no": item["sequence_no"],
+            "event_type": item["event_type"],
+            "actor_id": item["actor_id"],
+            "details": item["details"],
+            "previous_hash": item["previous_hash"],
+            "created_at": item["created_at"],
+        }
+        calculated = hashlib.sha256(canonical_json(canonical).encode("utf-8")).hexdigest()
+        if (
+            int(item["sequence_no"]) != expected_sequence
+            or item["previous_hash"] != previous_hash
+            or item["event_hash"] != calculated
+        ):
+            return {
+                "verified": False,
+                "task_id": task_id,
+                "event_count": len(items),
+                "failing_sequence": item["sequence_no"],
+                "chain_head": previous_hash,
+                "reason": "audit_chain_invalid",
+            }
+        previous_hash = item["event_hash"]
+    return {
+        "verified": bool(items),
+        "task_id": task_id,
+        "event_count": len(items),
+        "failing_sequence": None,
+        "chain_head": previous_hash,
+        "reason": None if items else "audit_events_missing",
     }

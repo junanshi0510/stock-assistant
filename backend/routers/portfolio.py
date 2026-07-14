@@ -6,7 +6,7 @@ from datetime import date
 from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 import analysis
 import data_fetch
@@ -119,6 +119,14 @@ class PortfolioExposureSnapshotRequest(BaseModel):
 
 class PortfolioActionReportRequest(BaseModel):
     max_funds: int = Field(default=8, ge=2, le=8)
+
+
+class DecisionTaskUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["open", "snoozed", "acknowledged"]
+    expected_revision: int = Field(ge=1)
+    snooze_hours: int | None = Field(default=None, ge=1, le=168)
 
 
 class HoldingThesisRequest(BaseModel):
@@ -395,6 +403,115 @@ def get_decision_center(principal: AuthPrincipal = Depends(principal_from_reques
         return decision_center.build_decision_center(user_id=_subject_id(principal))
     except Exception as error:
         raise HTTPException(status_code=502, detail=f"真实投资决策中心生成失败:{error}")
+
+
+def _decision_task_public(item: dict) -> dict:
+    return {
+        key: item.get(key)
+        for key in (
+            "id",
+            "action_key",
+            "revision",
+            "status",
+            "priority",
+            "category",
+            "title",
+            "detail",
+            "evidence",
+            "target",
+            "action_label",
+            "source",
+            "first_seen_at",
+            "last_seen_at",
+            "acknowledged_at",
+            "snoozed_until",
+            "resolved_at",
+        )
+    }
+
+
+@router.get("/api/decision-tasks")
+def get_decision_tasks(
+    task_status: Literal["open", "snoozed", "acknowledged", "resolved"] | None = Query(
+        default=None,
+        alias="status",
+    ),
+    include_resolved: bool = Query(default=False),
+    limit: int = Query(default=50, ge=1, le=200),
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    result = storage.list_decision_tasks(
+        user_id=_subject_id(principal),
+        status=task_status,
+        include_resolved=include_resolved,
+        limit=limit,
+    )
+    return {
+        **result,
+        "items": [_decision_task_public(item) for item in result["items"]],
+    }
+
+
+@router.patch("/api/decision-tasks/{task_id}")
+def update_decision_task(
+    task_id: str,
+    req: DecisionTaskUpdateRequest,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    if req.status != "snoozed" and req.snooze_hours is not None:
+        raise HTTPException(status_code=400, detail="只有稍后处理任务可以设置 snooze_hours")
+    try:
+        result = storage.update_decision_task(
+            task_id,
+            req.status,
+            req.expected_revision,
+            user_id=_subject_id(principal),
+            actor_id=_actor_id(principal),
+            snooze_hours=req.snooze_hours,
+        )
+    except storage.DecisionTaskConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except storage.DecisionTaskValidationError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    if result is None:
+        raise HTTPException(status_code=404, detail="投资任务不存在")
+    return {
+        "task": _decision_task_public(result["task"]),
+        "summary": result["summary"],
+        "audit": storage.verify_decision_task_audit(task_id, user_id=_subject_id(principal)),
+    }
+
+
+@router.get("/api/decision-tasks/{task_id}/audit")
+def get_decision_task_audit(
+    task_id: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    user_id = _subject_id(principal)
+    verification = storage.verify_decision_task_audit(task_id, user_id=user_id)
+    if verification.get("reason") == "task_not_found":
+        raise HTTPException(status_code=404, detail="投资任务不存在")
+    items = storage.list_decision_task_events(task_id, user_id=user_id)
+    return {
+        "items": [
+            {
+                "sequence_no": item["sequence_no"],
+                "event_type": item["event_type"],
+                "actor": (
+                    "system"
+                    if item["actor_id"] in {"decision-engine", "decision-task-scheduler"}
+                    else "user"
+                ),
+                "details": item["details"],
+                "previous_hash": item["previous_hash"],
+                "event_hash": item["event_hash"],
+                "created_at": item["created_at"],
+            }
+            for item in items
+        ],
+        "count": len(items),
+        "verification": verification,
+    }
 
 
 @router.get("/api/portfolio/transactions")

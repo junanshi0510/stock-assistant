@@ -20,6 +20,26 @@ _PRIORITY_ORDER = {"high": 0, "medium": 1, "normal": 2}
 _SOURCE_DEADLINE_SECONDS = 18
 
 
+def _public_task(item: dict | None) -> dict | None:
+    if not item:
+        return None
+    return {
+        key: item.get(key)
+        for key in (
+            "id",
+            "action_key",
+            "revision",
+            "status",
+            "priority",
+            "first_seen_at",
+            "last_seen_at",
+            "acknowledged_at",
+            "snoozed_until",
+            "resolved_at",
+        )
+    }
+
+
 def _number(value: Any) -> float | None:
     try:
         return float(value) if value is not None else None
@@ -749,6 +769,27 @@ def build_decision_center(*, user_id: str = "default") -> dict:
     for failure in market.get("failed") or []:
         unavailable.append({"scope": failure.get("source") or "市场数据源", "error": failure.get("error") or failure.get("message")})
 
+    try:
+        task_inbox = storage.sync_decision_tasks(actions, user_id=user_id)
+        task_by_action = {
+            str(item.get("action_key")): item
+            for item in task_inbox.get("items") or []
+        }
+        for action in actions:
+            action["task"] = _public_task(task_by_action.get(str(action.get("id"))))
+        task_inbox = {
+            "status": "available",
+            "generated_at": task_inbox.get("generated_at"),
+            "summary": task_inbox.get("summary") or {},
+        }
+    except Exception as error:
+        task_inbox = {
+            "status": "unavailable",
+            "error": str(error)[:240],
+            "summary": {},
+        }
+        unavailable.append({"scope": "投资任务收件箱", "error": task_inbox["error"]})
+
     return {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "policy": "行动清单只使用用户确认持仓和已标注的真实来源；它用于风险复盘与研究排序，不提供买卖指令或收益承诺。",
@@ -756,6 +797,7 @@ def build_decision_center(*, user_id: str = "default") -> dict:
         "workflow": workflow,
         "portfolio": portfolio,
         "market": market,
+        "task_inbox": task_inbox,
         "actions": actions[:12],
         "summary": {
             "high_count": sum(item["priority"] == "high" for item in actions),

@@ -83,6 +83,29 @@ export function fetchDecisionCenter() {
   return getJson('/api/decision-center')
 }
 
+export function fetchDecisionTasks({ status = '', includeResolved = false, limit = 50 } = {}) {
+  const query = new URLSearchParams({
+    include_resolved: String(includeResolved),
+    limit: String(limit),
+  })
+  if (status) query.set('status', status)
+  return getJson(`/api/decision-tasks?${query.toString()}`)
+}
+
+export function updateDecisionTask(taskId, status, expectedRevision, snoozeHours = null) {
+  const payload = { status, expected_revision: expectedRevision }
+  if (status === 'snoozed') payload.snooze_hours = snoozeHours
+  return getJson(`/api/decision-tasks/${encodeURIComponent(taskId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export function fetchDecisionTaskAudit(taskId) {
+  return getJson(`/api/decision-tasks/${encodeURIComponent(taskId)}/audit`)
+}
+
 export function fetchPortfolioTransactions() {
   return getJson('/api/portfolio/transactions')
 }

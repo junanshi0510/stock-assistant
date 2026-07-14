@@ -15,6 +15,44 @@ import decision_center  # noqa: E402
 
 
 class DecisionCenterTests(unittest.TestCase):
+    def setUp(self):
+        def fake_sync(actions, **_kwargs):
+            items = [
+                {
+                    "id": f"task-{item['id']}",
+                    "action_key": item["id"],
+                    "revision": 1,
+                    "status": "open",
+                    "priority": item["priority"],
+                    "first_seen_at": "2026-07-15T00:00:00+00:00",
+                    "last_seen_at": "2026-07-15T00:00:00+00:00",
+                }
+                for item in actions
+                if item["id"] != "no-high-priority-item"
+            ]
+            return {
+                "status": "available",
+                "generated_at": "2026-07-15T00:00:00+00:00",
+                "items": items,
+                "summary": {
+                    "open_count": len(items),
+                    "snoozed_count": 0,
+                    "acknowledged_count": 0,
+                    "resolved_count": 0,
+                    "active_count": len(items),
+                },
+            }
+
+        self.task_sync = patch.object(
+            decision_center.storage,
+            "sync_decision_tasks",
+            side_effect=fake_sync,
+        )
+        self.task_sync.start()
+
+    def tearDown(self):
+        self.task_sync.stop()
+
     def test_workflow_exposes_one_ordered_next_action(self):
         profile = {"configured": False, "review_required": False}
         portfolio = {
@@ -133,6 +171,8 @@ class DecisionCenterTests(unittest.TestCase):
         self.assertIn("market-risk-review", action_ids)
         self.assertEqual(result["portfolio"]["status"], "available")
         self.assertEqual(result["market"]["status"], "available")
+        self.assertEqual(result["task_inbox"]["status"], "available")
+        self.assertTrue(all(item.get("task") for item in result["actions"]))
 
     def test_unavailable_market_is_explicit_and_not_replaced(self):
         portfolio = {
