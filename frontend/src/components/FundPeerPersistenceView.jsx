@@ -76,6 +76,13 @@ function durabilityTone(status) {
   return 'unavailable'
 }
 
+function dueDiligenceTone(status) {
+  if (status === 'distinct_candidate' || status === 'partial_overlap_candidate') return 'positive'
+  if (status === 'duplicate_but_cost_edge' || status === 'distinct_but_costlier') return 'warning'
+  if (status === 'duplicate_without_cost_edge' || status === 'blocked_by_durability') return 'negative'
+  return 'unavailable'
+}
+
 function gateValue(check) {
   if (Array.isArray(check.observed)) return check.observed.map((value) => pp(value)).join(' / ')
   if (check.observed != null) return `${pp(check.observed)}${check.threshold != null ? ` · 阈值 ${pp(check.threshold, false)}` : ''}`
@@ -86,6 +93,8 @@ function AlternativeRows({ alternatives }) {
   const rows = alternatives?.alternatives || []
   const audit = alternatives?.durability_audit || {}
   const auditSummary = audit.summary || {}
+  const dueAudit = alternatives?.due_diligence_audit || {}
+  const dueSummary = dueAudit.summary || {}
   if (!rows.length) return null
   return (
     <div className="peer-alternative-results">
@@ -101,33 +110,47 @@ function AlternativeRows({ alternatives }) {
           <div><dt>仅近期领先</dt><dd>{auditSummary.recent_leader_only_count ?? 0}</dd></div>
         </dl>
       </div>
+      <div className={`peer-due-diligence-summary ${dueAudit.status || 'unavailable'}`}>
+        <div><span>费率与披露持仓复核</span><b>{dueAudit.status === 'evaluated' ? `${dueSummary.evaluated_count || 0} 只已验证` : '真实尽调证据不完整'}</b></div>
+        <dl>
+          <div><dt>进入持有期核验</dt><dd>{dueSummary.holding_period_cost_review_count ?? 0}</dd></div>
+          <div><dt>高重合无优势</dt><dd>{dueSummary.duplicate_without_cost_edge_count ?? 0}</dd></div>
+          <div><dt>费率缺口</dt><dd>{dueSummary.incomplete_fee_count ?? 0}</dd></div>
+        </dl>
+      </div>
       <div className="peer-alternative-list">
         {rows.slice(0, 3).map((item) => {
           const durability = item.durability || {}
+          const dueDiligence = item.due_diligence || {}
+          const overlap = dueDiligence.overlap || {}
+          const fees = dueDiligence.fees || {}
           const rolling6 = durability.rolling?.['6m'] || {}
           const rolling12 = durability.rolling?.['12m'] || {}
+          const commonStocks = (overlap.common_stocks || []).map((row) => row.name).filter(Boolean).slice(0, 3)
           return (
             <article key={item.code}>
               <div className="peer-alternative-name">
                 <span>{item.code}</span>
                 <b>{item.name || item.code}</b>
                 <em className={durabilityTone(durability.status)}>{durability.label || '持续性尚未验证'}</em>
+                <em className={dueDiligenceTone(dueDiligence.status)}>{dueDiligence.label || '替换价值尚未验证'}</em>
               </div>
               <dl>
-                <div><dt>近 1 年</dt><dd className={tone(item.metrics?.return_1y)}>{pct(item.metrics?.return_1y, true)}</dd></div>
                 <div><dt>滚动 6 月胜率</dt><dd>{pct(rolling6.win_rate_pct)}</dd></div>
                 <div><dt>滚动 12 月胜率</dt><dd>{pct(rolling12.win_rate_pct)}</dd></div>
                 <div><dt>12 月中位超额</dt><dd className={tone(rolling12.median_excess_pp)}>{pp(rolling12.median_excess_pp)}</dd></div>
-                <div><dt>回撤差</dt><dd className={tone(durability.risk?.drawdown_delta_pp)}>{pp(durability.risk?.drawdown_delta_pp)}</dd></div>
-                <div><dt>页面申购费</dt><dd>{pct(item.fee?.current_rate)}</dd></div>
+                <div><dt>持股重合下界</dt><dd>{pct(overlap.stock_overlap_lower_bound_pct)}</dd></div>
+                <div><dt>年度费率差</dt><dd className={tone(fees.annual_rate_delta_pp == null ? null : -fees.annual_rate_delta_pp)}>{pp(fees.annual_rate_delta_pp)}</dd></div>
+                <div><dt>候选明确运作费</dt><dd>{pct(fees.candidate_declared_annual_rate_pct)}</dd></div>
               </dl>
               <p><strong>持续性</strong>{durability.rationale || '真实每日收益复核不可用，不能把榜单领先升级为换仓候选。'}</p>
-              <p><strong>待核验</strong>{item.cautions?.[0] || '赎回费、销售服务费、持仓重合和基金经理稳定性。'}</p>
+              <p><strong>替换价值</strong>{dueDiligence.rationale || '真实费率或定期报告持仓不完整，本轮停止换仓尽调。'}</p>
+              <p><strong>{commonStocks.length ? '共同披露持股' : '下一步缺口'}</strong>{commonStocks.length ? commonStocks.join('、') : (dueDiligence.decision_gate?.remaining_requirements?.[0] || '用户逐笔持有天数与销售平台当日赎回报价。')}</p>
             </article>
           )
         })}
       </div>
-      <p className="peer-alternative-policy">滚动窗口会重叠，历史胜率不是未来上涨概率。只有持续性门禁通过才继续费用和持仓重合尽调，仍不等于应当换仓。</p>
+      <p className="peer-alternative-policy">历史胜率不是未来上涨概率，定期报告也不是实时持仓。只有第二阶段门禁通过才继续核对用户逐笔持有天数和平台赎回报价，仍不等于应当换仓。</p>
     </div>
   )
 }

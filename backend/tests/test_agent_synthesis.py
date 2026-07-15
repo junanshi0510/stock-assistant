@@ -187,6 +187,11 @@ class InvestmentSynthesisTests(unittest.TestCase):
                     "summary": {"due_diligence_count": 1},
                     "raw_daily_points": [{"date": "2026-07-10", "daily_return_pct": 1}],
                 },
+                "due_diligence_audit": {
+                    "status": "evaluated",
+                    "summary": {"holding_period_cost_review_count": 1},
+                    "raw_portfolios": [{"code": "000002"}],
+                },
                 "share_class_exclusions": [{"code": "000003"}],
                 "alternatives": [{
                     "code": "000002",
@@ -199,6 +204,26 @@ class InvestmentSynthesisTests(unittest.TestCase):
                             "12m": {"win_rate_pct": 65, "median_excess_pp": 4},
                         },
                         "decision_gate": {"eligible_for_due_diligence": True},
+                    },
+                    "due_diligence": {
+                        "status": "distinct_candidate",
+                        "label": "差异化候选可继续核验",
+                        "overlap": {
+                            "stock_overlap_lower_bound_pct": 5,
+                            "common_stocks": [{"code": "A", "name": "甲", "overlap_contribution_pct": 5}],
+                        },
+                        "fees": {
+                            "annual_rate_delta_pp": -0.2,
+                            "selected_redemption_bands": [
+                                {"holding_period": "小于7天", "rate_pct": 1.5},
+                                {"holding_period": "7天以上", "rate_pct": 0},
+                            ],
+                            "actual_redemption_rate_pct": None,
+                        },
+                        "decision_gate": {
+                            "eligible_for_holding_period_cost_review": True,
+                            "automatic_switch_allowed": False,
+                        },
                     },
                 }],
             },
@@ -224,6 +249,11 @@ class InvestmentSynthesisTests(unittest.TestCase):
         )
         self.assertNotIn("recent_windows", alternatives["alternatives"][0]["durability"]["rolling"]["6m"])
         self.assertNotIn("raw_daily_points", alternatives["durability_audit"])
+        due_diligence = alternatives["alternatives"][0]["due_diligence"]
+        self.assertEqual(due_diligence["status"], "distinct_candidate")
+        self.assertEqual(due_diligence["fees"]["selected_redemption_band_count"], 2)
+        self.assertNotIn("selected_redemption_bands", due_diligence["fees"])
+        self.assertNotIn("raw_portfolios", alternatives["due_diligence_audit"])
 
     def test_private_context_is_redacted_and_model_action_is_restricted(self):
         gateway = _Gateway(_model_output(), private_context_enabled=False)

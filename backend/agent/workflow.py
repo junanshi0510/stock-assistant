@@ -640,6 +640,7 @@ class AgentWorkflowRunner:
                     "metrics": row.get("metrics") or {},
                     "fee": row.get("fee") or {},
                     "durability": row.get("durability") or {},
+                    "due_diligence": row.get("due_diligence") or {},
                     "advantages": row.get("advantages") or [],
                     "cautions": row.get("cautions") or [],
                     "evidence_id": alternative_evidence_id,

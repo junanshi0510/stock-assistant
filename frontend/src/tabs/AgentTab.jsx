@@ -1404,15 +1404,16 @@ export default function AgentTab() {
               <div className="agent-alternative-grid">
                 {result.alternatives.map((item) => {
                   const durability = item.durability || {}
+                  const dueDiligence = item.due_diligence || {}
                   return (
                     <article key={item.code}>
-                      <div><b>{item.code} {item.name}</b><span>{durability.label || '持续性尚未验证'}</span></div>
+                      <div><b>{item.code} {item.name}</b><span>{dueDiligence.label || durability.label || '替换价值尚未验证'}</span></div>
                       <dl>
                         <div><dt>滚动 6 月胜率</dt><dd>{pct(durability.rolling?.['6m']?.win_rate_pct)}</dd></div>
-                        <div><dt>滚动 12 月胜率</dt><dd>{pct(durability.rolling?.['12m']?.win_rate_pct)}</dd></div>
-                        <div><dt>12 月中位超额</dt><dd>{pp(durability.rolling?.['12m']?.median_excess_pp)}</dd></div>
+                        <div><dt>持股重合下界</dt><dd>{pct(dueDiligence.overlap?.stock_overlap_lower_bound_pct)}</dd></div>
+                        <div><dt>年度费率差</dt><dd>{pp(dueDiligence.fees?.annual_rate_delta_pp)}</dd></div>
                       </dl>
-                      <p>{durability.rationale || '真实每日收益持续性复核未完成，不能依据榜单直接换入。'}</p>
+                      <p>{dueDiligence.rationale || durability.rationale || '真实持续性、费率或披露持仓复核未完成，不能依据榜单直接换入。'}</p>
                       <button className="ghost" onClick={() => openEvidence(item.evidence_id)}><FileSearch size={14} aria-hidden="true" />证据</button>
                     </article>
                   )

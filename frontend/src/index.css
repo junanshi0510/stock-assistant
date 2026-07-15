@@ -4560,15 +4560,24 @@ tbody tr:hover { background: #f0f8f6; }
 .peer-alternative-head span { color: var(--faint); font-size: 10px; }
 .peer-alternative-head b { margin-top: 2px; color: #263943; font-size: 12px; }
 .peer-alternative-head small { color: var(--faint); font-size: 10px; }
-.peer-durability-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid #dce4e6; }
+.peer-durability-summary,
+.peer-due-diligence-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid #dce4e6; }
 .peer-durability-summary > div span,
-.peer-durability-summary > div b { display: block; }
-.peer-durability-summary > div span { color: var(--faint); font-size: 10px; }
-.peer-durability-summary > div b { margin-top: 2px; color: #263943; font-size: 12px; }
-.peer-durability-summary dl { display: grid; grid-template-columns: repeat(3, minmax(58px, 1fr)); gap: 10px; margin: 0; }
-.peer-durability-summary dl div { min-width: 0; }
-.peer-durability-summary dt { color: var(--faint); font-size: 9px; }
-.peer-durability-summary dd { margin: 2px 0 0; color: #263943; font-size: 12px; font-weight: 800; }
+.peer-durability-summary > div b,
+.peer-due-diligence-summary > div span,
+.peer-due-diligence-summary > div b { display: block; }
+.peer-durability-summary > div span,
+.peer-due-diligence-summary > div span { color: var(--faint); font-size: 10px; }
+.peer-durability-summary > div b,
+.peer-due-diligence-summary > div b { margin-top: 2px; color: #263943; font-size: 12px; }
+.peer-durability-summary dl,
+.peer-due-diligence-summary dl { display: grid; grid-template-columns: repeat(3, minmax(58px, 1fr)); gap: 10px; margin: 0; }
+.peer-durability-summary dl div,
+.peer-due-diligence-summary dl div { min-width: 0; }
+.peer-durability-summary dt,
+.peer-due-diligence-summary dt { color: var(--faint); font-size: 9px; }
+.peer-durability-summary dd,
+.peer-due-diligence-summary dd { margin: 2px 0 0; color: #263943; font-size: 12px; font-weight: 800; }
 .peer-alternative-list { border-top: 1px solid #dce4e6; }
 .peer-alternative-list article { display: grid; grid-template-columns: minmax(105px, .72fr) minmax(0, 1.28fr); gap: 6px 10px; align-items: start; padding: 9px 0; border-bottom: 1px solid #dce4e6; }
 .peer-alternative-name { min-width: 0; }
@@ -6181,8 +6190,10 @@ button.decision-workflow-stage:hover:not(:disabled) { background: #f4f8f8; box-s
   .fund-peer-diagnosis,
   .fund-peer-review-head,
   .peer-alternative-head { align-items: stretch; grid-template-columns: minmax(0, 1fr); flex-direction: column; }
-  .peer-durability-summary { align-items: stretch; flex-direction: column; }
-  .peer-durability-summary dl { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .peer-durability-summary,
+  .peer-due-diligence-summary { align-items: stretch; flex-direction: column; }
+  .peer-durability-summary dl,
+  .peer-due-diligence-summary dl { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .fund-peer-tools { align-self: flex-start; }
   .fund-peer-diagnosis small { text-align: left; white-space: normal; }
   .fund-peer-horizons { grid-template-columns: minmax(0, 1fr); }

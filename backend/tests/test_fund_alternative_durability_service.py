@@ -100,6 +100,14 @@ class FundAlternativeDurabilityServiceTests(unittest.TestCase):
             ],
             "summary": {},
         }
+        due_diligence = {
+            "status": "evaluated",
+            "candidates": [
+                {"code": code, "status": "blocked_by_durability"}
+                for code in ("100001", "100003", "100004")
+            ],
+            "summary": {},
+        }
         with (
             patch.object(funds, "_fund_search_one", return_value={"name": "当前基金A", "type": "混合型"}),
             patch.object(
@@ -124,6 +132,7 @@ class FundAlternativeDurabilityServiceTests(unittest.TestCase):
             ),
             patch.object(funds, "_alternative_row", side_effect=alternative) as loader,
             patch.object(funds, "_alternative_durability_audit", return_value=audit),
+            patch.object(funds, "_alternative_due_diligence_audit", return_value=due_diligence),
         ):
             result = funds.get_fund_alternatives("001056", limit=3, months=36)
 
@@ -133,6 +142,7 @@ class FundAlternativeDurabilityServiceTests(unittest.TestCase):
         self.assertEqual([row["code"] for row in result["alternatives"]], ["100001", "100003", "100004"])
         self.assertEqual(result["share_class_exclusions"][0]["code"], "100002")
         self.assertEqual(result["alternatives"][0]["durability"]["status"], "mixed_evidence")
+        self.assertEqual(result["alternatives"][0]["due_diligence"]["status"], "blocked_by_durability")
 
 
 if __name__ == "__main__":

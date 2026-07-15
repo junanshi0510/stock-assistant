@@ -16,7 +16,7 @@ from .llm_gateway import LLMGateway, ModelInvocationError, ModelUnavailableError
 
 
 PROMPT_TEMPLATE_ID = "fund_decision_synthesis"
-PROMPT_TEMPLATE_VERSION = "1.6.0"
+PROMPT_TEMPLATE_VERSION = "1.7.0"
 OUTPUT_SCHEMA_VERSION = "fund_ai_synthesis.v1"
 
 DecisionAction = Literal[
@@ -212,8 +212,72 @@ def _public_durability(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _public_due_diligence(payload: dict[str, Any]) -> dict[str, Any]:
+    overlap = payload.get("overlap") or {}
+    fees = payload.get("fees") or {}
+    manager = payload.get("manager") or {}
+    gate = payload.get("decision_gate") or {}
+    return {
+        "status": payload.get("status"),
+        "label": payload.get("label"),
+        "rationale": payload.get("rationale"),
+        "source_gaps": payload.get("source_gaps") or [],
+        "overlap": {
+            key: overlap.get(key)
+            for key in (
+                "status",
+                "level",
+                "stock_overlap_lower_bound_pct",
+                "industry_overlap_lower_bound_pct",
+                "common_stock_count",
+                "common_industry_count",
+                "common_stocks",
+                "common_industries",
+                "selected_stock_period",
+                "candidate_stock_period",
+                "selected_industry_period",
+                "candidate_industry_period",
+            )
+        },
+        "fees": {
+            key: fees.get(key)
+            for key in (
+                "status",
+                "selected_declared_annual_rate_pct",
+                "candidate_declared_annual_rate_pct",
+                "annual_rate_delta_pp",
+                "selected_first_band_entry_rate_pct",
+                "candidate_first_band_entry_rate_pct",
+                "entry_rate_delta_pp",
+                "actual_redemption_rate_pct",
+                "actual_redemption_rate_reason",
+                "nav_already_net_of_operating_fees",
+            )
+        }
+        | {"selected_redemption_band_count": len(fees.get("selected_redemption_bands") or [])},
+        "manager": {
+            "status": manager.get("status"),
+            "same_manager": manager.get("same_manager"),
+            "selected": manager.get("selected") or {},
+            "candidate": manager.get("candidate") or {},
+        },
+        "decision_gate": {
+            "eligible_for_holding_period_cost_review": gate.get(
+                "eligible_for_holding_period_cost_review"
+            ),
+            "automatic_switch_allowed": gate.get("automatic_switch_allowed"),
+            "automatic_purchase_allowed": gate.get("automatic_purchase_allowed"),
+            "automatic_redemption_allowed": gate.get("automatic_redemption_allowed"),
+            "reason": gate.get("reason"),
+            "checks": gate.get("checks") or [],
+            "remaining_requirements": gate.get("remaining_requirements") or [],
+        },
+    }
+
+
 def _public_alternatives(payload: dict[str, Any]) -> dict[str, Any]:
     audit = payload.get("durability_audit") or {}
+    due_diligence = payload.get("due_diligence_audit") or {}
     return {
         "as_of": payload.get("as_of"),
         "durability_audit": {
@@ -223,6 +287,14 @@ def _public_alternatives(payload: dict[str, Any]) -> dict[str, Any]:
             "method": audit.get("method") or {},
             "limitations": audit.get("limitations") or [],
             "policy": audit.get("policy"),
+        },
+        "due_diligence_audit": {
+            "status": due_diligence.get("status"),
+            "reason": due_diligence.get("reason"),
+            "summary": due_diligence.get("summary") or {},
+            "method": due_diligence.get("method") or {},
+            "limitations": due_diligence.get("limitations") or [],
+            "policy": due_diligence.get("policy"),
         },
         "share_class_exclusion_count": len(payload.get("share_class_exclusions") or []),
         "alternatives": [
@@ -234,6 +306,7 @@ def _public_alternatives(payload: dict[str, Any]) -> dict[str, Any]:
                 "metrics": row.get("metrics") or {},
                 "fee": row.get("fee") or {},
                 "durability": _public_durability(row.get("durability") or {}),
+                "due_diligence": _public_due_diligence(row.get("due_diligence") or {}),
                 "advantages": row.get("advantages") or [],
                 "cautions": row.get("cautions") or [],
             }
@@ -552,7 +625,7 @@ _SYSTEM_PROMPT = """你是金融投资助手中的证据合成模型。你的任
 4. action 和 action_plan.current_action 必须与 allowed_action 完全一致。大模型不能绕过投资政策、仓位、市场权限、策略发布或数据完整性门禁。
 5. 每一项判断必须引用 evidence_catalog 中存在的 Evidence ID。区分事实、判断、反证和未知项。
 6. 新闻和情绪只能作为催化剂、风险或待验证线索，不能单独构成买入理由，也不能把相关性写成因果关系。
-7. 采用以下研究顺序：组合适配与重合风险；底层市场和板块环境；中期趋势与动量及其反转风险；同类相对表现、费用和载体质量；披露持仓与盈利支撑；新闻催化；失效条件；分批执行和复盘。同类平均只用于相对诊断，不得称为可买入替代品；替代审查也不等于赎回指令。候选基金的 durability.decision_gate 未通过时，不得把近期榜单领先描述为可换入机会；即使通过，也只能进入费用和持仓重合尽调。
+7. 采用以下研究顺序：组合适配与重合风险；底层市场和板块环境；中期趋势与动量及其反转风险；同类相对表现、费用和载体质量；披露持仓与盈利支撑；新闻催化；失效条件；分批执行和复盘。同类平均只用于相对诊断，不得称为可买入替代品；替代审查也不等于赎回指令。候选基金的 durability.decision_gate 未通过时，不得把近期榜单领先描述为可换入机会；通过后仍必须检查 due_diligence。只有 due_diligence.decision_gate.eligible_for_holding_period_cost_review 为 true 时，才可描述为“进入用户持有期成本核验”，不得描述为应当换仓。actual_redemption_rate_pct 为空时必须把用户逐笔持有天数和平台报价列为未知项。
 8. 不得承诺盈利、使用确定性涨跌措辞、输出自动交易命令或暴露隐式思维链。confidence 最高只能是 medium。
 9. 如果关键数据不足，status 必须为 insufficient，并把缺口写入 unknowns；不要编造替代数据。
 10. 只返回符合给定 JSON Schema 的 JSON 对象，不要返回 Markdown 或额外说明。

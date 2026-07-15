@@ -202,6 +202,16 @@ def _alternatives(_payload):
                 },
                 "decision_gate": {"eligible_for_due_diligence": True},
             },
+            "due_diligence": {
+                "status": "distinct_candidate",
+                "label": "差异化候选可继续核验",
+                "overlap": {"stock_overlap_lower_bound_pct": 4.5},
+                "fees": {"annual_rate_delta_pp": -0.2},
+                "decision_gate": {
+                    "eligible_for_holding_period_cost_review": True,
+                    "automatic_switch_allowed": False,
+                },
+            },
             "advantages": ["回撤更浅"],
             "cautions": ["仍需检查持仓重合"],
         }],
@@ -575,6 +585,10 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(
             run["result"]["alternatives"][0]["durability"]["status"],
             "durable_advantage",
+        )
+        self.assertEqual(
+            run["result"]["alternatives"][0]["due_diligence"]["status"],
+            "distinct_candidate",
         )
         self.assertEqual(
             run["result"]["peer_persistence"]["diagnostic_id"],

@@ -33,6 +33,7 @@ from strategies.fund_conditioned_forward import (
     unavailable_conditioned_forward,
 )
 from strategies.fund_alternative_durability import evaluate_alternative_durability
+from strategies.fund_alternative_due_diligence import evaluate_alternative_due_diligence
 from strategies.fund_peer_persistence import (
     evaluate_peer_persistence,
     unavailable_peer_persistence,
@@ -55,6 +56,7 @@ _NAV_URL = "https://api.fund.eastmoney.com/f10/lsjz"
 _PROFILE_URL = "https://fundgz.1234567.com.cn/js/{code}.js"
 _TREND_URL = "https://fund.eastmoney.com/pingzhongdata/{code}.js"
 _SEARCH_URL = "https://fund.eastmoney.com/js/fundcode_search.js"
+_FEE_URL = "https://fundf10.eastmoney.com/jjfl_{code}.html"
 
 _HEADERS = {
     "User-Agent": (
@@ -605,6 +607,185 @@ def _fund_fact_sheet(code: str) -> dict:
         "flow_rows": flow_rows[-8:],
         "flow_summary": flow_summary,
     }
+
+
+def _fee_text(value) -> str:
+    if value is None:
+        return ""
+    try:
+        if bool(pd.isna(value)):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return re.sub(r"\s+", "", str(value).replace("\xa0", " "))
+
+
+def _fee_column_name(value) -> str:
+    if isinstance(value, tuple):
+        parts = [_fee_text(item) for item in value]
+        return "|".join(item for item in parts if item and item.lower() != "nan")
+    return _fee_text(value)
+
+
+def _declared_rate(value) -> float | None:
+    text = _fee_text(value)
+    if not text:
+        return None
+    if re.fullmatch(r"[-—]+", text) or text in {"无", "不收取"}:
+        return 0.0
+    match = re.search(r"(-?\d+(?:\.\d+)?)%", text)
+    return _num(match.group(1)) if match else None
+
+
+def _fee_table_contains(frame: pd.DataFrame, *labels: str) -> bool:
+    text = "|".join(
+        [_fee_column_name(column) for column in frame.columns]
+        + [_fee_text(value) for value in frame.astype(object).to_numpy().ravel()]
+    )
+    return all(label in text for label in labels)
+
+
+def _alternating_fee_fields(frame: pd.DataFrame) -> dict[str, str]:
+    if frame.empty:
+        return {}
+    values = [_fee_text(value) for value in frame.iloc[0].tolist()]
+    return {
+        values[index]: values[index + 1]
+        for index in range(0, len(values) - 1, 2)
+        if values[index]
+    }
+
+
+def _purchase_fee_bands(frame: pd.DataFrame) -> list[dict]:
+    columns = [_fee_column_name(column) for column in frame.columns]
+    amount_index = next((index for index, name in enumerate(columns) if "适用金额" in name), None)
+    if amount_index is None:
+        return []
+    bands = []
+    for _, series in frame.iterrows():
+        amount = _fee_text(series.iloc[amount_index])
+        fee_parts = [
+            _fee_text(series.iloc[index])
+            for index in range(len(columns))
+            if index != amount_index and _fee_text(series.iloc[index])
+        ]
+        fee_text = "|".join(fee_parts)
+        percentages = [
+            _num(value)
+            for value in re.findall(r"(\d+(?:\.\d+)?)%", fee_text)
+        ]
+        percentages = [value for value in percentages if value is not None]
+        fixed_match = re.search(r"每笔(\d+(?:\.\d+)?)元", fee_text)
+        bands.append({
+            "amount_range": amount,
+            "source_text": fee_text,
+            "source_rate_pct": _round(percentages[0]) if percentages else None,
+            "current_rate_pct": _round(percentages[-1]) if percentages else None,
+            "fixed_fee_yuan": _round(_num(fixed_match.group(1))) if fixed_match else None,
+        })
+    return bands
+
+
+def _redemption_fee_bands(frame: pd.DataFrame) -> list[dict]:
+    columns = [_fee_column_name(column) for column in frame.columns]
+    duration_index = next((index for index, name in enumerate(columns) if "适用期限" in name), None)
+    rate_index = next((index for index, name in enumerate(columns) if "赎回费率" in name), None)
+    if duration_index is None or rate_index is None:
+        return []
+    rows = []
+    for _, series in frame.iterrows():
+        duration = _fee_text(series.iloc[duration_index])
+        source_text = _fee_text(series.iloc[rate_index])
+        rows.append({
+            "holding_period": duration,
+            "rate_pct": _round(_declared_rate(source_text)),
+            "source_text": source_text,
+        })
+    return rows
+
+
+def _parse_fund_fee_schedule_html(code: str, html: str) -> dict:
+    try:
+        tables = pd.read_html(StringIO(str(html or "")))
+    except ValueError as error:
+        raise RuntimeError("基金费率页没有可解析表格") from error
+    operating_index = next(
+        (index for index, frame in enumerate(tables) if _fee_table_contains(frame, "管理费率", "托管费率")),
+        None,
+    )
+    redemption_index = next(
+        (index for index, frame in enumerate(tables) if _fee_table_contains(frame, "适用期限", "赎回费率")),
+        None,
+    )
+    if operating_index is None or redemption_index is None:
+        raise RuntimeError("基金费率页缺少运作费用或赎回费率表")
+    purchase_indexes = [
+        index
+        for index, frame in enumerate(tables)
+        if operating_index < index < redemption_index and _fee_table_contains(frame, "适用金额", "费率")
+    ]
+    if not purchase_indexes:
+        raise RuntimeError("基金费率页缺少申购费率表")
+
+    operating_fields = _alternating_fee_fields(tables[operating_index])
+    management_rate = _declared_rate(operating_fields.get("管理费率"))
+    custodian_rate = _declared_rate(operating_fields.get("托管费率"))
+    service_rate = _declared_rate(operating_fields.get("销售服务费率"))
+    if management_rate is None or custodian_rate is None or service_rate is None:
+        raise RuntimeError("基金费率页运作费率字段不完整")
+    purchase_bands = _purchase_fee_bands(tables[purchase_indexes[-1]])
+    redemption_bands = _redemption_fee_bands(tables[redemption_index])
+    if not purchase_bands or not redemption_bands:
+        raise RuntimeError("基金费率页申购或赎回费率区间为空")
+
+    title_match = re.search(r"<title>(.*?)</title>", str(html or ""), re.I | re.S)
+    title = re.sub(r"\s+", " ", title_match.group(1)).strip() if title_match else ""
+    return {
+        "status": "available",
+        "source": "天天基金基金费率档案 / 基金公司披露",
+        "source_url": _FEE_URL.format(code=code),
+        "code": code,
+        "title": title,
+        "operating": {
+            "management_rate_pct": _round(management_rate),
+            "custodian_rate_pct": _round(custodian_rate),
+            "sales_service_rate_pct": _round(service_rate),
+            "declared_annual_total_rate_pct": _round(
+                management_rate + custodian_rate + service_rate
+            ),
+            "nav_already_net_of_operating_fees": True,
+        },
+        "purchase": {
+            "bands": purchase_bands,
+            "first_band_current_rate_pct": purchase_bands[0].get("current_rate_pct"),
+            "first_band_source_rate_pct": purchase_bands[0].get("source_rate_pct"),
+        },
+        "redemption": {"bands": redemption_bands},
+        "method": {
+            "operating": "管理费、托管费和销售服务费按页面年度披露相加；基金净值已扣除这些费用。",
+            "purchase": "申购费保留金额分档和页面优惠费率，不假设其他销售平台执行同一折扣。",
+            "redemption": "赎回费保留持有期限分档；没有用户逐笔持有天数时不选择具体费率。",
+        },
+    }
+
+
+def _fund_fee_schedule(code: str) -> dict:
+    code = str(code or "").strip()
+    if not re.fullmatch(r"\d{6}", code):
+        raise ValueError("基金代码需要是 6 位数字")
+    cache_key = ("fund_fee_schedule", code)
+    cached = _cache_get(cache_key)
+    if cached:
+        return cached
+    response = _session().get(
+        _FEE_URL.format(code=code),
+        headers=_NAV_HEADERS,
+        timeout=18,
+    )
+    response.raise_for_status()
+    result = _parse_fund_fee_schedule_html(code, response.text)
+    _cache_put(cache_key, result)
+    return result
 
 
 def _fund_peer_comparison_series(code: str) -> dict:
@@ -1468,6 +1649,22 @@ def _provider_daily_return_points(df: pd.DataFrame) -> list[dict]:
     ]
 
 
+def _alternative_manager_rows(data: dict) -> list[dict]:
+    rows = []
+    managers = ((data.get("fact_sheet") or {}).get("managers") or [])
+    for item in managers[:2] if isinstance(managers, list) else []:
+        if not isinstance(item, dict):
+            continue
+        rows.append({
+            "id": str(item.get("id") or ""),
+            "name": str(item.get("name") or ""),
+            "work_time": item.get("work_time"),
+            "score": item.get("score"),
+            "excess_vs_peer": item.get("excess_vs_peer"),
+        })
+    return rows
+
+
 def _alternative_durability_audit(
     selected: dict,
     alternatives: list[dict],
@@ -1488,6 +1685,60 @@ def _alternative_durability_audit(
             "points": _provider_daily_return_points(candidate_df),
         })
     return evaluate_alternative_durability(selected_payload, candidate_payloads)
+
+
+def _alternative_due_diligence_audit(
+    selected: dict,
+    alternatives: list[dict],
+    durability_audit: dict,
+) -> dict:
+    rows = [selected, *alternatives]
+
+    def load(row):
+        code = str(row.get("code") or "")
+        try:
+            portfolio = get_fund_portfolio(code)
+        except Exception as error:
+            portfolio = {
+                "status": "unavailable",
+                "code": code,
+                "reason": f"real_periodic_portfolio_unavailable:{str(error)[:180]}",
+                "stocks": [],
+                "industries": [],
+            }
+        try:
+            fees = _fund_fee_schedule(code)
+        except Exception as error:
+            fees = {
+                "status": "unavailable",
+                "code": code,
+                "reason": f"real_fee_schedule_unavailable:{str(error)[:180]}",
+            }
+        return code, {
+            "code": code,
+            "name": row.get("name") or "",
+            "portfolio": portfolio,
+            "fees": fees,
+            "managers": row.get("managers") or [],
+        }
+
+    with ThreadPoolExecutor(max_workers=min(4, len(rows) or 1)) as pool:
+        loaded = dict(pool.map(load, rows))
+    durability_by_code = {
+        str(item.get("code") or ""): item
+        for item in durability_audit.get("candidates") or []
+    }
+    selected_payload = loaded.get(str(selected.get("code") or ""), {
+        "code": selected.get("code"),
+        "name": selected.get("name") or "",
+    })
+    candidate_payloads = []
+    for row in alternatives:
+        code = str(row.get("code") or "")
+        payload = loaded.get(code, {"code": code, "name": row.get("name") or ""})
+        payload["durability"] = durability_by_code.get(code) or {}
+        candidate_payloads.append(payload)
+    return evaluate_alternative_due_diligence(selected_payload, candidate_payloads)
 
 
 def _alternative_row(code: str, rank_row: dict, selected_metrics: dict, selected_rank: int | None, months: int) -> dict:
@@ -1608,6 +1859,7 @@ def _alternative_row(code: str, rank_row: dict, selected_metrics: dict, selected
             "source_rate": fee.get("source_rate"),
             "current_rate": fee.get("current_rate"),
         },
+        "managers": _alternative_manager_rows(data),
         "score": score,
         "label": label,
         "trend_state": data.get("trend_state"),
@@ -1715,6 +1967,7 @@ def get_fund_alternatives(code: str, sort: str = "1y", limit: int = 5, months: i
             "source_rate": ((selected_analysis.get("fact_sheet") or {}).get("fee") or {}).get("source_rate"),
             "current_rate": ((selected_analysis.get("fact_sheet") or {}).get("fee") or {}).get("current_rate"),
         },
+        "managers": _alternative_manager_rows(selected_analysis),
         "rank_row": selected_rank_row,
     }
     try:
@@ -1740,6 +1993,32 @@ def get_fund_alternatives(code: str, sort: str = "1y", limit: int = 5, months: i
     }
     for row in alternatives:
         row["durability"] = durability_by_code.get(str(row.get("code") or ""))
+    try:
+        due_diligence_audit = _alternative_due_diligence_audit(
+            selected,
+            alternatives,
+            durability_audit,
+        )
+    except Exception as error:
+        due_diligence_audit = {
+            "diagnostic_id": "fund_alternative_due_diligence",
+            "diagnostic_version": "1.0.0",
+            "status": "unavailable",
+            "reason": f"real_fee_and_portfolio_audit_unavailable:{error}",
+            "candidates": [],
+            "summary": {
+                "candidate_count": len(alternatives),
+                "evaluated_count": 0,
+                "holding_period_cost_review_count": 0,
+            },
+            "policy": "真实费率或定期报告持仓审查不可用时，停止换仓成本核验，不推断缺失数据。",
+        }
+    due_diligence_by_code = {
+        str(item.get("code") or ""): item
+        for item in due_diligence_audit.get("candidates") or []
+    }
+    for row in alternatives:
+        row["due_diligence"] = due_diligence_by_code.get(str(row.get("code") or ""))
     summary = {
         "best_score": alternatives[0],
         "lower_volatility": min(alternatives, key=lambda row: row["metrics"].get("annual_volatility") if row["metrics"].get("annual_volatility") is not None else 999),
@@ -1747,8 +2026,11 @@ def get_fund_alternatives(code: str, sort: str = "1y", limit: int = 5, months: i
         "shallower_drawdown": max(alternatives, key=lambda row: row["metrics"].get("max_drawdown") if row["metrics"].get("max_drawdown") is not None else -999),
     }
     return {
-        "status": "complete" if durability_audit.get("status") == "evaluated" else "partial",
-        "source": "东方财富基金同类排行 + 东方财富/天天基金真实净值与每日收益",
+        "status": "complete" if (
+            durability_audit.get("status") == "evaluated"
+            and due_diligence_audit.get("status") == "evaluated"
+        ) else "partial",
+        "source": "东方财富基金同类排行 + 东方财富/天天基金真实净值、每日收益、费率档案与定期报告持仓",
         "source_url": "https://fund.eastmoney.com/data/fundranking.html",
         "code": code,
         "sort": sort,
@@ -1759,6 +2041,7 @@ def get_fund_alternatives(code: str, sort: str = "1y", limit: int = 5, months: i
         "alternatives": alternatives,
         "summary": summary,
         "durability_audit": durability_audit,
+        "due_diligence_audit": due_diligence_audit,
         "share_class_exclusions": share_class_exclusions[:20],
         "failed": failed[:8],
         "method": {
@@ -1766,7 +2049,8 @@ def get_fund_alternatives(code: str, sort: str = "1y", limit: int = 5, months: i
             "share_class_deduplication": f"候选池按基金名称归并 A/C 等同策略份额，本轮排除 {len(share_class_exclusions)} 个重复份额。",
             "score": "初筛评分综合同类排名、近3/6/12月收益、年化波动、最大回撤、买入节奏评分和基金规模。",
             "durability": "再用数据源披露的每日收益复利为总回报指数，在完全相同的月末日期上检查滚动6/12个月胜率、中位超额、回撤和追涨风险。",
-            "note": "只有持续性门禁通过才允许继续费用和持仓重合尽调；任何候选都不等于自动换仓建议。",
+            "due_diligence": "持续性通过后读取双方真实费率档案和最新可得定期报告，计算披露持仓重合下界、年度明确运作费率差和经理证据完整性。",
+            "note": "只有第二阶段尽调通过才允许继续核对用户实际持有天数和平台赎回报价；任何候选都不等于自动换仓建议。",
         },
     }
 
