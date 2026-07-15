@@ -1,9 +1,13 @@
+import { useState } from 'react'
 import {
   ArrowRightLeft,
   CircleAlert,
   CircleCheck,
+  Clock3,
   FileSearch,
+  ReceiptText,
   RefreshCw,
+  Save,
   Scale,
   ShieldAlert,
 } from 'lucide-react'
@@ -105,7 +109,169 @@ function gateValue(check) {
   return check.status === 'pending' ? '尚未核验' : '当前不可用'
 }
 
-function AlternativeRows({ alternatives }) {
+const EMPTY_QUOTE = {
+  platformName: '',
+  quotedAt: '',
+  redemptionFee: '',
+  entryFee: '',
+  arrivalDate: '',
+  candidateAvailable: false,
+  platformAcknowledged: false,
+  varianceAcknowledged: false,
+  note: '',
+}
+
+function quoteStatus(latest) {
+  if (!latest) return null
+  const expiresAt = latest.payload?.platform_quote?.quote_expires_at
+  if (latest.status === 'confirmed_current' && expiresAt && Date.parse(expiresAt) < Date.now()) return 'expired'
+  return latest.status
+}
+
+function quoteStatusLabel(status) {
+  if (status === 'confirmed_current') return '成本证据当前有效'
+  if (status === 'confirmed_with_blocker') return '报价已记录，申购受限'
+  if (status === 'expired') return '平台报价已过期'
+  if (status === 'superseded') return '持仓或成本证据已变化'
+  if (status === 'integrity_failed') return '审计完整性失败'
+  return '尚未确认平台报价'
+}
+
+function displayTime(value) {
+  if (!value || Number.isNaN(Date.parse(value))) return '-'
+  return new Date(value).toLocaleString('zh-CN', { hour12: false })
+}
+
+function SwitchQuotePanel({ item, costReady, onConfirm }) {
+  const binding = item.switch_cost_binding || null
+  const latest = item.latest_platform_quote || null
+  const latestPayload = latest?.payload || {}
+  const status = quoteStatus(latest)
+  const [open, setOpen] = useState(false)
+  const [form, setForm] = useState(EMPTY_QUOTE)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const eligible = Boolean(costReady && binding?.integrity_verified && onConfirm)
+
+  function update(field, value) {
+    setForm((current) => ({ ...current, [field]: value }))
+  }
+
+  async function submit(event) {
+    event.preventDefault()
+    setSaving(true)
+    setError('')
+    try {
+      const parsedTime = new Date(form.quotedAt)
+      if (Number.isNaN(parsedTime.getTime())) throw new Error('请填写有效的平台报价时间')
+      await onConfirm(item.code, {
+        review_id: binding.review_id,
+        expected_review_payload_sha256: binding.payload_sha256,
+        platform_name: form.platformName.trim(),
+        quoted_at: parsedTime.toISOString(),
+        redemption_fee_yuan: Number(form.redemptionFee),
+        candidate_entry_fee_yuan: Number(form.entryFee),
+        expected_redemption_arrival_date: form.arrivalDate,
+        candidate_purchase_available: form.candidateAvailable,
+        acknowledged_platform_quote: form.platformAcknowledged,
+        acknowledged_fee_variance: form.varianceAcknowledged,
+        note: form.note.trim(),
+      })
+      setForm(EMPTY_QUOTE)
+      setOpen(false)
+    } catch (requestError) {
+      setError(requestError?.message || '平台报价保存失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className={`peer-platform-quote ${String(status || 'not-recorded').replaceAll('_', '-')}`}>
+      <div className="peer-platform-quote-head">
+        <div>
+          <span>销售平台真实报价</span>
+          <b>{quoteStatusLabel(status)}</b>
+        </div>
+        {eligible && (
+          <button type="button" className="ghost compact" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
+            <ReceiptText size={14} /> {latest ? '更新报价' : '录入报价'}
+          </button>
+        )}
+      </div>
+
+      {latest && (
+        <>
+          <dl className="peer-platform-quote-facts">
+            <div><dt>平台报价总成本</dt><dd>{money(latestPayload.confirmed_cost?.total_switching_cost_yuan)}</dd></div>
+            <div><dt>成本率</dt><dd>{pct(latestPayload.confirmed_cost?.total_switching_cost_rate_pct)}</dd></div>
+            <div><dt>预计到账</dt><dd>{latestPayload.settlement?.expected_redemption_arrival_date || '-'}</dd></div>
+            <div><dt>现金在途</dt><dd>{latestPayload.settlement?.cash_gap_days == null ? '-' : `${latestPayload.settlement.cash_gap_days} 天`}</dd></div>
+            <div><dt>历史覆盖期</dt><dd>{months(latestPayload.historical_cost_hurdle?.confirmed_cost_coverage_months)}</dd></div>
+            <div><dt>审计链</dt><dd>{latest.integrity?.verified ? '通过' : '失败'}</dd></div>
+          </dl>
+          <small>
+            {latestPayload.platform_quote?.platform_name || '销售平台'} · 报价于 {displayTime(latestPayload.platform_quote?.quoted_at)} ·
+            有效至 {displayTime(latestPayload.platform_quote?.quote_expires_at)} · 第 {latest.revision || 1} 版
+          </small>
+        </>
+      )}
+
+      {!latest && eligible && <small>成本快照完整且哈希校验通过，尚未记录销售平台本次交易页报价。</small>}
+      {!eligible && costReady && <small>成本快照绑定或完整性校验失败，请刷新真实候选后再核对。</small>}
+
+      {open && eligible && (
+        <form className="peer-platform-quote-form" onSubmit={submit}>
+          <label>
+            <span>销售平台</span>
+            <input value={form.platformName} onChange={(event) => update('platformName', event.target.value)} minLength={2} maxLength={80} required />
+          </label>
+          <label>
+            <span>报价时间</span>
+            <input type="datetime-local" value={form.quotedAt} onChange={(event) => update('quotedAt', event.target.value)} required />
+          </label>
+          <label>
+            <span>平台赎回费</span>
+            <input type="number" inputMode="decimal" min="0" step="0.01" value={form.redemptionFee} onChange={(event) => update('redemptionFee', event.target.value)} required />
+          </label>
+          <label>
+            <span>候选申购费</span>
+            <input type="number" inputMode="decimal" min="0" step="0.01" value={form.entryFee} onChange={(event) => update('entryFee', event.target.value)} required />
+          </label>
+          <label>
+            <span>预计赎回到账日</span>
+            <input type="date" value={form.arrivalDate} onChange={(event) => update('arrivalDate', event.target.value)} required />
+          </label>
+          <label className="full-width">
+            <span>报价备注</span>
+            <input value={form.note} onChange={(event) => update('note', event.target.value)} maxLength={300} placeholder="可选：订单页、限额或到账说明" />
+          </label>
+          <label className="peer-quote-check full-width">
+            <input type="checkbox" checked={form.candidateAvailable} onChange={(event) => update('candidateAvailable', event.target.checked)} />
+            <span>候选基金当前可申购</span>
+          </label>
+          <label className="peer-quote-check full-width">
+            <input type="checkbox" checked={form.platformAcknowledged} onChange={(event) => update('platformAcknowledged', event.target.checked)} required />
+            <span>费用来自销售平台本次交易确认页，不是上方披露费率</span>
+          </label>
+          <label className="peer-quote-check full-width">
+            <input type="checkbox" checked={form.varianceAcknowledged} onChange={(event) => update('varianceAcknowledged', event.target.checked)} />
+            <span>若报价明显偏离披露区间，我已复核并确认差异</span>
+          </label>
+          {error && <div className="error full-width">{error}</div>}
+          <div className="peer-quote-submit full-width">
+            <small><Clock3 size={12} /> 报价保存后 24 小时自动过期，不触发自动交易。</small>
+            <button type="submit" className="primary compact" disabled={saving || !form.platformAcknowledged}>
+              <Save size={14} /> {saving ? '保存中' : '确认并留痕'}
+            </button>
+          </div>
+        </form>
+      )}
+    </div>
+  )
+}
+
+function AlternativeRows({ alternatives, onConfirmSwitchQuote }) {
   const rows = alternatives?.alternatives || []
   const audit = alternatives?.durability_audit || {}
   const auditSummary = audit.summary || {}
@@ -140,9 +306,9 @@ function AlternativeRows({ alternatives }) {
         <div className={`peer-switch-cost-summary ${costAudit.status || 'unavailable'}`}>
           <div><span>我的 FIFO 换仓成本</span><b>{costSummary.ready_for_platform_quote_count || 0} 只完成披露成本核算</b></div>
           <dl>
-            <div><dt>待平台报价</dt><dd>{costSummary.ready_for_platform_quote_count ?? 0}</dd></div>
-            <div><dt>被门禁阻断</dt><dd>{costSummary.blocked_count ?? 0}</dd></div>
-            <div><dt>剩余批次</dt><dd>{costAudit.ledger?.remaining_lot_count ?? 0}</dd></div>
+            <div><dt>披露成本完整</dt><dd>{costSummary.ready_for_platform_quote_count ?? 0}</dd></div>
+            <div><dt>平台报价有效</dt><dd>{costSummary.current_platform_quote_count ?? 0}</dd></div>
+            <div><dt>报价需重算</dt><dd>{costSummary.stale_platform_quote_count ?? 0}</dd></div>
           </dl>
         </div>
       )}
@@ -160,6 +326,7 @@ function AlternativeRows({ alternatives }) {
           const standard = switchCost?.cost_snapshots?.standard_disclosed || null
           const hurdle = switchCost?.historical_cost_hurdle || {}
           const costReady = switchCost?.status === 'ready_for_platform_quote'
+          const platformStatus = quoteStatus(item.latest_platform_quote)
           return (
             <article key={item.code}>
               <div className="peer-alternative-name">
@@ -190,7 +357,7 @@ function AlternativeRows({ alternatives }) {
                 <div className={`peer-switch-cost ${switchCostTone(switchCost.status)}`}>
                   <div className="peer-switch-cost-head">
                     <div><span>我的换仓成本</span><b>{switchCost.label || '成本核算未完成'}</b></div>
-                    <em>{switchCost.decision_gate?.executable_switch_cost_confirmed ? '报价已确认' : '不可执行'}</em>
+                    <em>{platformStatus === 'confirmed_current' ? '成本已确认' : ['expired', 'superseded'].includes(platformStatus) ? '报价需重算' : '不可执行'}</em>
                   </div>
                   {switchCost.status === 'ready_for_platform_quote' ? (
                     <>
@@ -213,6 +380,7 @@ function AlternativeRows({ alternatives }) {
                         ))}
                       </div>
                       <small>确认净值截至 {switchCost.valuation?.as_of || '-'}；页面优惠费率和历史覆盖期只用于复核，提交前仍以销售平台报价为准。</small>
+                      <SwitchQuotePanel item={item} costReady={costReady} onConfirm={onConfirmSwitchQuote} />
                     </>
                   ) : (
                     <>
@@ -241,6 +409,7 @@ export default function FundPeerPersistenceView({
   alternativesLoading = false,
   alternativesError = '',
   onOpenEvidence,
+  onConfirmSwitchQuote,
 }) {
   const evaluated = data?.status === 'evaluated'
   const diagnosis = data?.diagnosis || {}
@@ -333,7 +502,7 @@ export default function FundPeerPersistenceView({
               </button>
             )}
             {alternativesError && <div className="error fund-peer-alternative-error">{alternativesError}</div>}
-            <AlternativeRows alternatives={alternatives} />
+            <AlternativeRows alternatives={alternatives} onConfirmSwitchQuote={onConfirmSwitchQuote} />
           </div>
         </>
       )}

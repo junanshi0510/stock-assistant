@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import Any
 
 import storage
+import fund_switch_quote_service
 from portfolio_exposure import holdings_sha256
 
 
@@ -49,6 +50,10 @@ def get_portfolio_context(payload: dict[str, Any]) -> dict[str, Any]:
     as_of_values = [str(item.get("updated_at") or "") for item in items if item.get("updated_at")]
     if profile.get("updated_at"):
         as_of_values.append(str(profile["updated_at"]))
+    switch_quotes = fund_switch_quote_service.agent_quote_summary(
+        user_id,
+        target_code=code,
+    )
 
     gaps = []
     if not profile.get("configured"):
@@ -106,6 +111,7 @@ def get_portfolio_context(payload: dict[str, Any]) -> dict[str, Any]:
             "profit_rate": _number((target or {}).get("profit_rate")),
             "updated_at": (target or {}).get("updated_at"),
         },
+        "fund_switch_quotes": switch_quotes,
         "holdings": [
             {
                 "asset_type": item.get("asset_type"),
@@ -126,6 +132,7 @@ def get_portfolio_context(payload: dict[str, Any]) -> dict[str, Any]:
             "profile_binding": "exact_version_id_from_agent_run" if requested_profile_version_id else "active_version_at_tool_call",
             "amounts": "only_user_confirmed_holding_amounts",
             "target_match": "asset_type_fund_and_exact_six_digit_code",
+            "switch_quote_scope": "latest_user_confirmed_quote_per_candidate_with_audit_status",
         },
         "policy": "组合上下文只读取用户已确认持仓和已保存约束，不推断现金、负债或未导入资产。",
     }

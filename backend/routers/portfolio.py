@@ -2,7 +2,7 @@
 """User-confirmed holdings, watchlist, OCR import, and monitoring endpoints."""
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date
+from datetime import date, datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
@@ -12,6 +12,7 @@ import analysis
 import data_fetch
 import decision_center
 import fund_switch_cost_service
+import fund_switch_quote_service
 import holding_level_recurrence
 import holding_thesis
 import holdings_import
@@ -117,6 +118,22 @@ class PortfolioSnapshotRequest(BaseModel):
 
 class PortfolioExposureSnapshotRequest(BaseModel):
     target_code: str | None = Field(default=None, pattern=r"^\d{6}$")
+
+
+class FundSwitchQuoteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    review_id: str = Field(min_length=20, max_length=96)
+    expected_review_payload_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    platform_name: str = Field(min_length=2, max_length=80)
+    quoted_at: datetime
+    redemption_fee_yuan: float = Field(ge=0, le=100_000_000)
+    candidate_entry_fee_yuan: float = Field(ge=0, le=100_000_000)
+    expected_redemption_arrival_date: date
+    candidate_purchase_available: bool
+    acknowledged_platform_quote: bool
+    acknowledged_fee_variance: bool = False
+    note: str = Field(default="", max_length=300)
 
 
 class PortfolioActionReportRequest(BaseModel):
@@ -268,6 +285,62 @@ def get_holding_fund_alternatives(
         raise HTTPException(status_code=400, detail=str(error)) from error
     except Exception as error:
         raise HTTPException(status_code=502, detail=f"真实基金替代成本核算失败:{error}") from error
+
+
+@router.post("/api/holdings/{holding_id}/fund-switch-quotes")
+def create_fund_switch_quote(
+    holding_id: int,
+    req: FundSwitchQuoteRequest,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        return fund_switch_quote_service.submit_fund_switch_quote(
+            holding_id,
+            req.model_dump(mode="json"),
+            user_id=_subject_id(principal),
+            actor_id=_actor_id(principal),
+        )
+    except (
+        fund_switch_quote_service.HoldingNotFoundError,
+        fund_switch_quote_service.CostReviewNotFoundError,
+    ) as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except fund_switch_quote_service.CostReviewConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except fund_switch_quote_service.QuoteValidationError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.get("/api/holdings/{holding_id}/fund-switch-quotes")
+def get_fund_switch_quotes(
+    holding_id: int,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        return fund_switch_quote_service.list_holding_quotes(
+            holding_id,
+            user_id=_subject_id(principal),
+        )
+    except fund_switch_quote_service.HoldingNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@router.get("/api/holdings/{holding_id}/fund-switch-quotes/{candidate_code}/audit")
+def get_fund_switch_quote_audit(
+    holding_id: int,
+    candidate_code: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    if len(candidate_code) != 6 or not candidate_code.isdigit():
+        raise HTTPException(status_code=400, detail="候选基金代码必须为 6 位数字")
+    try:
+        return fund_switch_quote_service.get_quote_audit(
+            holding_id,
+            candidate_code,
+            user_id=_subject_id(principal),
+        )
+    except fund_switch_quote_service.HoldingNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
 
 
 @router.get("/api/holdings/exposure")

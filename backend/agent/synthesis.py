@@ -16,7 +16,7 @@ from .llm_gateway import LLMGateway, ModelInvocationError, ModelUnavailableError
 
 
 PROMPT_TEMPLATE_ID = "fund_decision_synthesis"
-PROMPT_TEMPLATE_VERSION = "1.7.0"
+PROMPT_TEMPLATE_VERSION = "1.8.0"
 OUTPUT_SCHEMA_VERSION = "fund_ai_synthesis.v1"
 
 DecisionAction = Literal[
@@ -333,6 +333,33 @@ def _public_peer_persistence(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _private_switch_quote_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    fields = (
+        "selected_code",
+        "candidate_code",
+        "status",
+        "quoted_at",
+        "quote_expires_at",
+        "total_switching_cost_yuan",
+        "total_switching_cost_rate_pct",
+        "cash_gap_days",
+        "historical_cost_coverage_months",
+        "executable_switch_cost_confirmed",
+        "integrity_verified",
+        "portfolio_binding_current",
+    )
+    items = payload.get("items") if isinstance(payload.get("items"), list) else []
+    return {
+        "status": payload.get("status"),
+        "count": min(len(items), 12),
+        "items": [
+            {key: item.get(key) for key in fields}
+            for item in items[:12]
+            if isinstance(item, dict)
+        ],
+    }
+
+
 def _private_context_summary(outputs: dict[str, dict[str, Any]]) -> dict[str, Any]:
     context = outputs.get("portfolio_context") or {}
     exposure = outputs.get("portfolio_exposure") or {}
@@ -359,6 +386,9 @@ def _private_context_summary(outputs: dict[str, dict[str, Any]]) -> dict[str, An
             },
             "portfolio": context.get("portfolio") or {},
             "target_holding": context.get("target_holding") or {},
+            "fund_switch_quotes": _private_switch_quote_summary(
+                context.get("fund_switch_quotes") or {}
+            ),
             "data_gaps": context.get("data_gaps") or [],
         },
         "portfolio_exposure": {
@@ -625,7 +655,7 @@ _SYSTEM_PROMPT = """你是金融投资助手中的证据合成模型。你的任
 4. action 和 action_plan.current_action 必须与 allowed_action 完全一致。大模型不能绕过投资政策、仓位、市场权限、策略发布或数据完整性门禁。
 5. 每一项判断必须引用 evidence_catalog 中存在的 Evidence ID。区分事实、判断、反证和未知项。
 6. 新闻和情绪只能作为催化剂、风险或待验证线索，不能单独构成买入理由，也不能把相关性写成因果关系。
-7. 采用以下研究顺序：组合适配与重合风险；底层市场和板块环境；中期趋势与动量及其反转风险；同类相对表现、费用和载体质量；披露持仓与盈利支撑；新闻催化；失效条件；分批执行和复盘。同类平均只用于相对诊断，不得称为可买入替代品；替代审查也不等于赎回指令。候选基金的 durability.decision_gate 未通过时，不得把近期榜单领先描述为可换入机会；通过后仍必须检查 due_diligence。只有 due_diligence.decision_gate.eligible_for_holding_period_cost_review 为 true 时，才可描述为“进入用户持有期成本核验”，不得描述为应当换仓。actual_redemption_rate_pct 为空时必须把用户逐笔持有天数和平台报价列为未知项。
+7. 采用以下研究顺序：组合适配与重合风险；底层市场和板块环境；中期趋势与动量及其反转风险；同类相对表现、费用和载体质量；披露持仓与盈利支撑；新闻催化；失效条件；分批执行和复盘。同类平均只用于相对诊断，不得称为可投资替代品；替代审查也不等于赎回指令。候选基金的 durability.decision_gate 未通过时，不得把近期榜单领先描述为可换入机会；通过后仍必须检查 due_diligence。只有 due_diligence.decision_gate.eligible_for_holding_period_cost_review 为 true 时，才可描述为“进入用户持有期成本核验”，不得描述为应当换仓。只有 private_context.portfolio_context.fund_switch_quotes 中对应候选的 status 为 confirmed_current、integrity_verified 与 portfolio_binding_current 均为 true，且 executable_switch_cost_confirmed 为 true 时，才可把成本描述为已确认；其他情况必须把平台报价或到账证据列为未知项。成本已确认仍不授权自动交易。
 8. 不得承诺盈利、使用确定性涨跌措辞、输出自动交易命令或暴露隐式思维链。confidence 最高只能是 medium。
 9. 如果关键数据不足，status 必须为 insufficient，并把缺口写入 unknowns；不要编造替代数据。
 10. 只返回符合给定 JSON Schema 的 JSON 对象，不要返回 Markdown 或额外说明。

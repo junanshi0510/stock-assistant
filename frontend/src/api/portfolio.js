@@ -30,6 +30,22 @@ export function fetchHoldingFundAlternatives(holdingId, sort = '1y', limit = 3, 
   return getJson(`/api/holdings/${encodeURIComponent(holdingId)}/fund-alternatives?${query.toString()}`)
 }
 
+export function createFundSwitchQuote(holdingId, payload) {
+  return getJson(`/api/holdings/${encodeURIComponent(holdingId)}/fund-switch-quotes`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export function fetchFundSwitchQuotes(holdingId) {
+  return getJson(`/api/holdings/${encodeURIComponent(holdingId)}/fund-switch-quotes`)
+}
+
+export function fetchFundSwitchQuoteAudit(holdingId, candidateCode) {
+  return getJson(`/api/holdings/${encodeURIComponent(holdingId)}/fund-switch-quotes/${encodeURIComponent(candidateCode)}/audit`)
+}
+
 export function fetchHoldingsLevelRecurrence(months = 60) {
   return getJson(`/api/holdings/level-recurrence?months=${encodeURIComponent(months)}`)
 }

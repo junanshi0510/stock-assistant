@@ -17,7 +17,7 @@ import AssetLevelRecurrenceView from '../../components/AssetLevelRecurrenceView'
 import FundConditionedForwardView from '../../components/FundConditionedForwardView'
 import FundPeerPersistenceView from '../../components/FundPeerPersistenceView'
 import { fetchFundPeerPersistence } from '../../api/funds'
-import { fetchHoldingFundAlternatives } from '../../api/portfolio'
+import { createFundSwitchQuote, fetchHoldingFundAlternatives } from '../../api/portfolio'
 
 function money(value) {
   if (value == null || Number.isNaN(Number(value))) return '-'
@@ -398,6 +398,32 @@ function HoldingDetail({
     }
   }
 
+  async function confirmPeerSwitchQuote(candidateCode, payload) {
+    const saved = await createFundSwitchQuote(row.id, payload)
+    setPeerAlternatives((current) => {
+      if (!current) return current
+      const nextRows = (current.alternatives || []).map((item) => (
+        item.code === candidateCode
+          ? { ...item, latest_platform_quote: saved }
+          : item
+      ))
+      const summary = current.switch_cost_audit?.summary || {}
+      return {
+        ...current,
+        alternatives: nextRows,
+        switch_cost_audit: current.switch_cost_audit ? {
+          ...current.switch_cost_audit,
+          summary: {
+            ...summary,
+            current_platform_quote_count: nextRows.filter((item) => item.latest_platform_quote?.status === 'confirmed_current').length,
+            stale_platform_quote_count: nextRows.filter((item) => ['expired', 'superseded', 'integrity_failed'].includes(item.latest_platform_quote?.status)).length,
+          },
+        } : null,
+      }
+    })
+    return saved
+  }
+
   return (
     <div className="portfolio-detail-layer">
       <button className="portfolio-detail-backdrop" onClick={onClose} aria-label="关闭持仓详情" />
@@ -473,6 +499,7 @@ function HoldingDetail({
               alternatives={peerAlternatives}
               alternativesLoading={peerAlternativesLoading}
               alternativesError={peerAlternativesError}
+              onConfirmSwitchQuote={confirmPeerSwitchQuote}
             />
           )}
           {reportFund && (

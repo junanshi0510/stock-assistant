@@ -103,6 +103,46 @@ def _evidence_hash(payload: dict[str, Any]) -> str:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
+def build_lot_binding(
+    lot_snapshot: dict[str, Any],
+    confirmed_shares: Any,
+) -> dict[str, Any]:
+    """Create the deterministic ledger fingerprint used to invalidate old quotes."""
+    lots = lot_snapshot.get("remaining_lots")
+    lots = lots if isinstance(lots, list) else []
+    normalized_lots = sorted(
+        (
+            {
+                "transaction_id": item.get("transaction_id"),
+                "trade_type": str(item.get("trade_type") or ""),
+                "trade_date": str(item.get("trade_date") or "")[:10],
+                "shares": _round(item.get("shares"), 8),
+            }
+            for item in lots
+            if isinstance(item, dict)
+        ),
+        key=lambda item: (
+            item.get("trade_date") or "",
+            str(item.get("transaction_id") or ""),
+        ),
+    )
+    binding_payload = {
+        "transaction_count": int(lot_snapshot.get("transaction_count") or 0),
+        "remaining_lots": normalized_lots,
+        "open_shares": _round((lot_snapshot.get("position") or {}).get("open_shares"), 8),
+        "confirmed_shares": _round(confirmed_shares, 8),
+        "integrity_issues": [
+            json.loads(json.dumps(item, ensure_ascii=False, sort_keys=True, default=str))
+            for item in (lot_snapshot.get("integrity_issues") or [])
+        ],
+    }
+    return {
+        "schema_version": "fund_switch_lot_binding.v1",
+        "payload_sha256": _evidence_hash(binding_payload),
+        **binding_payload,
+    }
+
+
 def _blocked(base: dict[str, Any], status: str, label: str, reason: str, requirements: list[str]) -> dict:
     result = {
         **base,
@@ -168,11 +208,13 @@ def evaluate_fund_switch_cost(
     base = {
         "diagnostic_id": DIAGNOSTIC_ID,
         "diagnostic_version": DIAGNOSTIC_VERSION,
+        "holding_id": int(holding.get("id") or 0),
         "selected_code": str(holding.get("code") or ""),
         "candidate_code": str(candidate_code or ""),
         "candidate_name": str(candidate_name or ""),
         "review_on": review_date.isoformat(),
         "coverage": coverage,
+        "ledger_binding": build_lot_binding(lot_snapshot, confirmed_shares),
         "sources": {
             "transaction_lots": "用户录入交易流水 / FIFO 剩余份额",
             "selected_fee_url": selected_fees.get("source_url"),

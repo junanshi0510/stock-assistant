@@ -75,6 +75,23 @@ class FundSwitchCostServiceTests(unittest.TestCase):
                  fund_switch_cost_service.funds,
                  "_fund_fee_schedule",
                  side_effect=lambda code: selected_fee if code == "000001" else candidate_fee,
+             ), \
+             patch.object(
+                 fund_switch_cost_service.storage,
+                 "save_fund_switch_cost_review",
+                 return_value={
+                     "id": "fund_switch_cost_1",
+                     "payload_sha256": "a" * 64,
+                     "evidence_sha256": "b" * 64,
+                     "created_at": "2026-01-31T00:00:00+00:00",
+                     "integrity_verified": True,
+                     "deduplicated": False,
+                 },
+             ) as save_review, \
+             patch.object(
+                 fund_switch_cost_service.fund_switch_quote_service,
+                 "get_latest_quote",
+                 return_value=None,
              ):
             result = fund_switch_cost_service.get_holding_fund_alternatives(
                 9,
@@ -84,15 +101,41 @@ class FundSwitchCostServiceTests(unittest.TestCase):
 
         review = result["alternatives"][0]["switch_cost_review"]
         self.assertEqual(review["status"], "ready_for_platform_quote")
+        self.assertEqual(
+            result["alternatives"][0]["switch_cost_binding"]["review_id"],
+            "fund_switch_cost_1",
+        )
         self.assertEqual(result["switch_cost_audit"]["holding_id"], 9)
         self.assertEqual(result["switch_cost_audit"]["summary"]["ready_for_platform_quote_count"], 1)
+        save_review.assert_called_once_with(review, 9, user_id="user-a")
 
     def test_rejects_holding_from_another_user(self):
         with patch.object(fund_switch_cost_service.storage, "list_holdings", return_value=[]):
             with self.assertRaises(fund_switch_cost_service.HoldingNotFoundError):
                 fund_switch_cost_service.get_holding_fund_alternatives(99, user_id="user-a")
 
+    def test_blocked_candidate_is_not_persisted_as_quoteable_cost_snapshot(self):
+        holding = {"id": 9, "asset_type": "fund", "code": "000001", "shares": 100}
+        alternatives = {
+            "source": "真实基金来源",
+            "selected": {"code": "000001", "as_of": "2026-01-30", "unit_nav": 10},
+            "alternatives": [{"code": "000002", "name": "候选基金"}],
+        }
+        blocked = {
+            "status": "blocked_by_due_diligence",
+            "decision_gate": {"eligible_for_platform_quote_confirmation": False},
+        }
+        with patch.object(fund_switch_cost_service.storage, "list_holdings", return_value=[holding]), \
+             patch.object(fund_switch_cost_service.funds, "get_fund_alternatives", return_value=alternatives), \
+             patch.object(fund_switch_cost_service.portfolio_review, "remaining_lot_snapshot", return_value={}), \
+             patch.object(fund_switch_cost_service.funds, "_fund_fee_schedule", return_value={}), \
+             patch.object(fund_switch_cost_service, "evaluate_fund_switch_cost", return_value=blocked), \
+             patch.object(fund_switch_cost_service.storage, "save_fund_switch_cost_review") as save_review:
+            result = fund_switch_cost_service.get_holding_fund_alternatives(9, user_id="user-a")
+
+        self.assertIsNone(result["alternatives"][0]["switch_cost_binding"])
+        save_review.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
-

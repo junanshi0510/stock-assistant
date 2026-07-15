@@ -44,6 +44,8 @@ EXPECTED_OPERATIONS = {
     "/api/holdings/level-recurrence": {"GET"},
     "/api/holdings/insights": {"GET"},
     "/api/holdings/{holding_id}/fund-alternatives": {"GET"},
+    "/api/holdings/{holding_id}/fund-switch-quotes": {"GET", "POST"},
+    "/api/holdings/{holding_id}/fund-switch-quotes/{candidate_code}/audit": {"GET"},
     "/api/holdings/exposure": {"GET"},
     "/api/holdings/exposure-snapshots": {"GET", "POST"},
     "/api/holdings/exposure-snapshots/{snapshot_id}": {"GET"},

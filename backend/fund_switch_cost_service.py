@@ -6,6 +6,7 @@ from __future__ import annotations
 from datetime import date
 
 import funds
+import fund_switch_quote_service
 import portfolio_review
 import storage
 from strategies.fund_switch_cost import evaluate_fund_switch_cost
@@ -89,6 +90,30 @@ def get_holding_fund_alternatives(
             review_on=review_on,
         )
         item["switch_cost_review"] = review
+        if review.get("status") == "ready_for_platform_quote":
+            persisted = storage.save_fund_switch_cost_review(
+                review,
+                int(holding_id),
+                user_id=user_id,
+            )
+            item["switch_cost_binding"] = {
+                "review_id": persisted.get("id"),
+                "payload_sha256": persisted.get("payload_sha256"),
+                "evidence_sha256": persisted.get("evidence_sha256"),
+                "persisted_at": persisted.get("created_at"),
+                "integrity_verified": bool(persisted.get("integrity_verified")),
+                "deduplicated": bool(persisted.get("deduplicated")),
+            }
+            item["latest_platform_quote"] = fund_switch_quote_service.get_latest_quote(
+                int(holding_id),
+                candidate_code,
+                user_id=user_id,
+                expected_review_id=str(persisted.get("id") or ""),
+                expected_review_payload_sha256=str(persisted.get("payload_sha256") or ""),
+            )
+        else:
+            item["switch_cost_binding"] = None
+            item["latest_platform_quote"] = None
         reviewed.append(review)
 
     ready = sum(item.get("status") == "ready_for_platform_quote" for item in reviewed)
@@ -110,6 +135,15 @@ def get_holding_fund_alternatives(
             "share_reconciliation_failed_count": sum(
                 item.get("status") == "share_reconciliation_failed" for item in reviewed
             ),
+            "current_platform_quote_count": sum(
+                (item.get("latest_platform_quote") or {}).get("status") == "confirmed_current"
+                for item in result.get("alternatives") or []
+            ),
+            "stale_platform_quote_count": sum(
+                (item.get("latest_platform_quote") or {}).get("status")
+                in {"expired", "superseded", "integrity_failed"}
+                for item in result.get("alternatives") or []
+            ),
         },
         "ledger": {
             "transaction_count": lot_snapshot.get("transaction_count"),
@@ -120,4 +154,3 @@ def get_holding_fund_alternatives(
     }
     result["source"] = f"{result.get('source') or ''} + 用户交易账本 FIFO 剩余批次"
     return result
-

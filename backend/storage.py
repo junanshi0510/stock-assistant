@@ -357,6 +357,100 @@ def _get_conn():
         )
         _conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS fund_switch_cost_reviews (
+                id                 TEXT PRIMARY KEY,
+                user_id            TEXT NOT NULL DEFAULT 'default',
+                holding_id         INTEGER NOT NULL,
+                schema_version     TEXT NOT NULL,
+                selected_code      TEXT NOT NULL,
+                candidate_code     TEXT NOT NULL,
+                review_on          TEXT NOT NULL,
+                status             TEXT NOT NULL,
+                evidence_sha256    TEXT NOT NULL,
+                payload_json       TEXT NOT NULL,
+                payload_sha256     TEXT NOT NULL,
+                created_at         TEXT NOT NULL,
+                UNIQUE(user_id, payload_sha256)
+            )
+            """
+        )
+        _conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_fund_switch_cost_history
+            ON fund_switch_cost_reviews(
+                user_id, holding_id, selected_code, candidate_code, created_at DESC
+            )
+            """
+        )
+        _conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_fund_switch_cost_no_update
+            BEFORE UPDATE ON fund_switch_cost_reviews
+            BEGIN
+                SELECT RAISE(ABORT, 'fund switch cost review is immutable');
+            END
+            """
+        )
+        _conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_fund_switch_cost_no_delete
+            BEFORE DELETE ON fund_switch_cost_reviews
+            BEGIN
+                SELECT RAISE(ABORT, 'fund switch cost review is immutable');
+            END
+            """
+        )
+        _conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS fund_switch_quote_events (
+                id                 TEXT PRIMARY KEY,
+                review_id          TEXT NOT NULL,
+                user_id            TEXT NOT NULL DEFAULT 'default',
+                holding_id         INTEGER NOT NULL,
+                selected_code      TEXT NOT NULL,
+                candidate_code     TEXT NOT NULL,
+                sequence_no        INTEGER NOT NULL,
+                schema_version     TEXT NOT NULL,
+                actor_id           TEXT NOT NULL,
+                quoted_at          TEXT NOT NULL,
+                payload_json       TEXT NOT NULL,
+                payload_sha256     TEXT NOT NULL,
+                previous_hash      TEXT,
+                event_hash         TEXT NOT NULL,
+                created_at         TEXT NOT NULL,
+                UNIQUE(user_id, holding_id, candidate_code, sequence_no),
+                FOREIGN KEY(review_id) REFERENCES fund_switch_cost_reviews(id)
+            )
+            """
+        )
+        _conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_fund_switch_quote_history
+            ON fund_switch_quote_events(
+                user_id, holding_id, candidate_code, sequence_no DESC
+            )
+            """
+        )
+        _conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_fund_switch_quote_no_update
+            BEFORE UPDATE ON fund_switch_quote_events
+            BEGIN
+                SELECT RAISE(ABORT, 'fund switch quote events are immutable');
+            END
+            """
+        )
+        _conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_fund_switch_quote_no_delete
+            BEFORE DELETE ON fund_switch_quote_events
+            BEGIN
+                SELECT RAISE(ABORT, 'fund switch quote events are immutable');
+            END
+            """
+        )
+        _conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS portfolio_action_reports (
                 id                 TEXT PRIMARY KEY,
                 user_id            TEXT NOT NULL DEFAULT 'default',
@@ -1838,6 +1932,432 @@ def verify_portfolio_exposure_snapshot(snapshot_id: str, user_id: str = "default
         "snapshot_id": snapshot_id,
         "payload_sha256": digest,
         "reason": reason,
+    }
+
+
+# ==================== 基金替换成本与平台报价 ====================
+
+def _fund_switch_cost_review_from_row(row) -> dict | None:
+    if row is None:
+        return None
+    item = dict(row)
+    item["payload"] = _decode_json(item.pop("payload_json", None), None)
+    item["integrity_verified"] = _fund_switch_cost_review_reason(item) is None
+    return item
+
+
+def _fund_switch_cost_review_reason(item: dict) -> str | None:
+    payload = item.get("payload")
+    if not isinstance(payload, dict):
+        return "payload_invalid"
+    if payload_sha256(payload) != item.get("payload_sha256"):
+        return "payload_hash_mismatch"
+    evidence_payload = dict(payload)
+    embedded_evidence_hash = str(evidence_payload.pop("evidence_sha256", ""))
+    if payload_sha256(evidence_payload) != embedded_evidence_hash:
+        return "evidence_hash_mismatch"
+    binding = payload.get("ledger_binding")
+    if not isinstance(binding, dict):
+        return "ledger_binding_missing"
+    binding_payload = dict(binding)
+    binding_schema = str(binding_payload.pop("schema_version", ""))
+    binding_hash = str(binding_payload.pop("payload_sha256", ""))
+    if (
+        binding_schema != "fund_switch_lot_binding.v1"
+        or payload_sha256(binding_payload) != binding_hash
+    ):
+        return "ledger_binding_hash_mismatch"
+    expected_schema = (
+        f"{payload.get('diagnostic_id')}@{payload.get('diagnostic_version')}"
+    )
+    checks = (
+        (expected_schema, item.get("schema_version"), "schema_version_mismatch"),
+        (payload.get("holding_id"), item.get("holding_id"), "holding_id_mismatch"),
+        (payload.get("selected_code"), item.get("selected_code"), "selected_code_mismatch"),
+        (payload.get("candidate_code"), item.get("candidate_code"), "candidate_code_mismatch"),
+        (payload.get("review_on"), item.get("review_on"), "review_date_mismatch"),
+        (payload.get("status"), item.get("status"), "status_mismatch"),
+        (embedded_evidence_hash, item.get("evidence_sha256"), "evidence_column_mismatch"),
+    )
+    for embedded, stored, reason in checks:
+        if str(embedded or "") != str(stored or ""):
+            return reason
+    return None
+
+
+def save_fund_switch_cost_review(
+    payload: dict,
+    holding_id: int,
+    user_id: str = "default",
+) -> dict:
+    """Persist one immutable, content-addressed disclosed-cost review."""
+    if not isinstance(payload, dict):
+        raise TypeError("fund switch cost review payload must be an object")
+    holding_id = int(holding_id)
+    if holding_id <= 0:
+        raise ValueError("holding id is invalid")
+    diagnostic_id = str(payload.get("diagnostic_id") or "").strip()
+    diagnostic_version = str(payload.get("diagnostic_version") or "").strip()
+    selected_code = str(payload.get("selected_code") or "").strip()
+    candidate_code = str(payload.get("candidate_code") or "").strip()
+    review_on = str(payload.get("review_on") or "").strip()
+    evidence_sha256 = str(payload.get("evidence_sha256") or "").strip()
+    if not diagnostic_id or not diagnostic_version:
+        raise ValueError("fund switch cost review schema is incomplete")
+    if not (selected_code.isdigit() and len(selected_code) == 6):
+        raise ValueError("selected fund code is invalid")
+    if not (candidate_code.isdigit() and len(candidate_code) == 6):
+        raise ValueError("candidate fund code is invalid")
+    try:
+        datetime.date.fromisoformat(review_on)
+    except ValueError as error:
+        raise ValueError("fund switch cost review date is invalid") from error
+    evidence_payload = dict(payload)
+    evidence_payload.pop("evidence_sha256", None)
+    if len(evidence_sha256) != 64 or payload_sha256(evidence_payload) != evidence_sha256:
+        raise ValueError("fund switch cost evidence hash is invalid")
+    if int(payload.get("holding_id") or 0) != holding_id:
+        raise ValueError("fund switch cost review holding id does not match")
+    binding = payload.get("ledger_binding")
+    if not isinstance(binding, dict):
+        raise ValueError("fund switch cost review ledger binding is missing")
+    binding_payload = dict(binding)
+    binding_schema = str(binding_payload.pop("schema_version", ""))
+    binding_hash = str(binding_payload.pop("payload_sha256", ""))
+    if (
+        binding_schema != "fund_switch_lot_binding.v1"
+        or payload_sha256(binding_payload) != binding_hash
+    ):
+        raise ValueError("fund switch cost review ledger binding is invalid")
+
+    schema_version = f"{diagnostic_id}@{diagnostic_version}"
+    payload_json = canonical_json(payload)
+    digest = payload_sha256(payload)
+    review_id = f"fund_switch_cost_{uuid.uuid4().hex}"
+    created_at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds")
+    with _lock:
+        conn = _get_conn()
+        existing = conn.execute(
+            """
+            SELECT * FROM fund_switch_cost_reviews
+            WHERE user_id=? AND payload_sha256=?
+            """,
+            (user_id, digest),
+        ).fetchone()
+        if existing:
+            item = _fund_switch_cost_review_from_row(existing)
+            item["deduplicated"] = True
+            return item
+        conn.execute(
+            """
+            INSERT INTO fund_switch_cost_reviews (
+                id, user_id, holding_id, schema_version, selected_code,
+                candidate_code, review_on, status, evidence_sha256,
+                payload_json, payload_sha256, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                review_id,
+                user_id,
+                holding_id,
+                schema_version,
+                selected_code,
+                candidate_code,
+                review_on,
+                str(payload.get("status") or "unavailable"),
+                evidence_sha256,
+                payload_json,
+                digest,
+                created_at,
+            ),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM fund_switch_cost_reviews WHERE id=?",
+            (review_id,),
+        ).fetchone()
+    item = _fund_switch_cost_review_from_row(row)
+    item["deduplicated"] = False
+    return item
+
+
+def get_fund_switch_cost_review(
+    review_id: str,
+    user_id: str = "default",
+) -> dict | None:
+    with _lock:
+        row = _get_conn().execute(
+            "SELECT * FROM fund_switch_cost_reviews WHERE id=? AND user_id=?",
+            (review_id, user_id),
+        ).fetchone()
+    return _fund_switch_cost_review_from_row(row)
+
+
+def verify_fund_switch_cost_review(
+    review_id: str,
+    user_id: str = "default",
+) -> dict:
+    item = get_fund_switch_cost_review(review_id, user_id=user_id)
+    if item is None:
+        return {
+            "verified": False,
+            "review_id": review_id,
+            "reason": "review_not_found",
+        }
+    reason = _fund_switch_cost_review_reason(item)
+    return {
+        "verified": reason is None,
+        "review_id": review_id,
+        "payload_sha256": item.get("payload_sha256"),
+        "reason": reason,
+    }
+
+
+def _fund_switch_quote_event_from_row(row) -> dict | None:
+    if row is None:
+        return None
+    item = dict(row)
+    item["payload"] = _decode_json(item.pop("payload_json", None), None)
+    payload = item.get("payload")
+    item["integrity_verified"] = bool(
+        isinstance(payload, dict)
+        and payload_sha256(payload) == item.get("payload_sha256")
+        and str(payload.get("review_id") or "") == str(item.get("review_id") or "")
+        and int(payload.get("holding_id") or 0) == int(item.get("holding_id") or 0)
+        and str(payload.get("selected_code") or "") == str(item.get("selected_code") or "")
+        and str(payload.get("candidate_code") or "") == str(item.get("candidate_code") or "")
+        and str(payload.get("quoted_at") or "") == str(item.get("quoted_at") or "")
+        and str(payload.get("schema_version") or "") == str(item.get("schema_version") or "")
+    )
+    return item
+
+
+def append_fund_switch_quote_event(
+    review_id: str,
+    payload: dict,
+    *,
+    actor_id: str,
+    user_id: str = "default",
+) -> dict:
+    """Append a platform quote without mutating any prior user confirmation."""
+    if not isinstance(payload, dict):
+        raise TypeError("fund switch quote payload must be an object")
+    review = get_fund_switch_cost_review(review_id, user_id=user_id)
+    if review is None:
+        raise LookupError("fund switch cost review not found")
+    if not review.get("integrity_verified"):
+        raise ValueError("fund switch cost review integrity failed")
+    holding_id = int(review.get("holding_id") or 0)
+    selected_code = str(review.get("selected_code") or "")
+    candidate_code = str(review.get("candidate_code") or "")
+    schema_version = str(payload.get("schema_version") or "").strip()
+    quoted_at = str(payload.get("quoted_at") or "").strip()
+    if not schema_version or not quoted_at:
+        raise ValueError("fund switch quote metadata is incomplete")
+    expected = {
+        "review_id": review_id,
+        "holding_id": holding_id,
+        "selected_code": selected_code,
+        "candidate_code": candidate_code,
+    }
+    for key, value in expected.items():
+        if str(payload.get(key)) != str(value):
+            raise ValueError(f"fund switch quote {key} does not match review")
+
+    payload_json = canonical_json(payload)
+    digest = payload_sha256(payload)
+    event_id = f"fund_switch_quote_{uuid.uuid4().hex}"
+    created_at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds")
+    with _lock:
+        conn = _get_conn()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            previous = conn.execute(
+                """
+                SELECT sequence_no, event_hash FROM fund_switch_quote_events
+                WHERE user_id=? AND holding_id=? AND candidate_code=?
+                ORDER BY sequence_no DESC LIMIT 1
+                """,
+                (user_id, holding_id, candidate_code),
+            ).fetchone()
+            sequence_no = int(previous["sequence_no"] if previous else 0) + 1
+            previous_hash = previous["event_hash"] if previous else None
+            canonical = {
+                "id": event_id,
+                "review_id": review_id,
+                "user_id": user_id,
+                "holding_id": holding_id,
+                "selected_code": selected_code,
+                "candidate_code": candidate_code,
+                "sequence_no": sequence_no,
+                "schema_version": schema_version,
+                "actor_id": str(actor_id or "system"),
+                "quoted_at": quoted_at,
+                "payload": payload,
+                "payload_sha256": digest,
+                "previous_hash": previous_hash,
+                "created_at": created_at,
+            }
+            event_hash = hashlib.sha256(
+                canonical_json(canonical).encode("utf-8")
+            ).hexdigest()
+            conn.execute(
+                """
+                INSERT INTO fund_switch_quote_events (
+                    id, review_id, user_id, holding_id, selected_code,
+                    candidate_code, sequence_no, schema_version, actor_id,
+                    quoted_at, payload_json, payload_sha256, previous_hash,
+                    event_hash, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event_id,
+                    review_id,
+                    user_id,
+                    holding_id,
+                    selected_code,
+                    candidate_code,
+                    sequence_no,
+                    schema_version,
+                    str(actor_id or "system"),
+                    quoted_at,
+                    payload_json,
+                    digest,
+                    previous_hash,
+                    event_hash,
+                    created_at,
+                ),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        row = conn.execute(
+            "SELECT * FROM fund_switch_quote_events WHERE id=?",
+            (event_id,),
+        ).fetchone()
+    return _fund_switch_quote_event_from_row(row)
+
+
+def list_fund_switch_quote_events(
+    *,
+    holding_id: int,
+    candidate_code: str | None = None,
+    user_id: str = "default",
+    limit: int = 100,
+) -> list[dict]:
+    where = ["user_id=?", "holding_id=?"]
+    params: list = [user_id, int(holding_id)]
+    if candidate_code:
+        where.append("candidate_code=?")
+        params.append(str(candidate_code))
+    params.append(max(1, min(int(limit), 500)))
+    with _lock:
+        rows = _get_conn().execute(
+            f"""
+            SELECT * FROM fund_switch_quote_events
+            WHERE {' AND '.join(where)}
+            ORDER BY candidate_code, sequence_no DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+    return [_fund_switch_quote_event_from_row(row) for row in rows]
+
+
+def list_latest_fund_switch_quotes(
+    user_id: str = "default",
+    *,
+    holding_id: int | None = None,
+) -> list[dict]:
+    where = ["q.user_id=?"]
+    params: list = [user_id]
+    if holding_id is not None:
+        where.append("q.holding_id=?")
+        params.append(int(holding_id))
+    with _lock:
+        rows = _get_conn().execute(
+            f"""
+            SELECT q.* FROM fund_switch_quote_events q
+            WHERE {' AND '.join(where)}
+              AND q.sequence_no=(
+                  SELECT MAX(q2.sequence_no) FROM fund_switch_quote_events q2
+                  WHERE q2.user_id=q.user_id
+                    AND q2.holding_id=q.holding_id
+                    AND q2.candidate_code=q.candidate_code
+              )
+            ORDER BY q.created_at DESC, q.rowid DESC
+            """,
+            params,
+        ).fetchall()
+    return [_fund_switch_quote_event_from_row(row) for row in rows]
+
+
+def verify_fund_switch_quote_audit(
+    holding_id: int,
+    candidate_code: str,
+    user_id: str = "default",
+) -> dict:
+    with _lock:
+        rows = _get_conn().execute(
+            """
+            SELECT * FROM fund_switch_quote_events
+            WHERE user_id=? AND holding_id=? AND candidate_code=?
+            ORDER BY sequence_no
+            """,
+            (user_id, int(holding_id), str(candidate_code)),
+        ).fetchall()
+    events = [_fund_switch_quote_event_from_row(row) for row in rows]
+    previous_hash = None
+    for expected_sequence, item in enumerate(events, start=1):
+        review_integrity = verify_fund_switch_cost_review(
+            str(item.get("review_id") or ""),
+            user_id=user_id,
+        )
+        canonical = {
+            "id": item.get("id"),
+            "review_id": item.get("review_id"),
+            "user_id": item.get("user_id"),
+            "holding_id": item.get("holding_id"),
+            "selected_code": item.get("selected_code"),
+            "candidate_code": item.get("candidate_code"),
+            "sequence_no": item.get("sequence_no"),
+            "schema_version": item.get("schema_version"),
+            "actor_id": item.get("actor_id"),
+            "quoted_at": item.get("quoted_at"),
+            "payload": item.get("payload"),
+            "payload_sha256": item.get("payload_sha256"),
+            "previous_hash": item.get("previous_hash"),
+            "created_at": item.get("created_at"),
+        }
+        calculated = hashlib.sha256(
+            canonical_json(canonical).encode("utf-8")
+        ).hexdigest()
+        if (
+            int(item.get("sequence_no") or 0) != expected_sequence
+            or item.get("previous_hash") != previous_hash
+            or item.get("event_hash") != calculated
+            or not item.get("integrity_verified")
+            or not review_integrity.get("verified")
+        ):
+            return {
+                "verified": False,
+                "holding_id": int(holding_id),
+                "candidate_code": str(candidate_code),
+                "event_count": len(events),
+                "failing_sequence": item.get("sequence_no"),
+                "chain_head": previous_hash,
+                "reason": "quote_or_review_integrity_failed",
+            }
+        previous_hash = item.get("event_hash")
+    return {
+        "verified": bool(events),
+        "holding_id": int(holding_id),
+        "candidate_code": str(candidate_code),
+        "event_count": len(events),
+        "failing_sequence": None,
+        "chain_head": previous_hash,
+        "reason": None if events else "quote_events_missing",
     }
 
 

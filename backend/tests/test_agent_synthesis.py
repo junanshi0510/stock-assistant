@@ -143,6 +143,41 @@ def _context():
 
 
 class InvestmentSynthesisTests(unittest.TestCase):
+    def test_private_switch_quote_context_is_bounded_to_audited_aggregate_fields(self):
+        outputs = {
+            "portfolio_context": {
+                "fund_switch_quotes": {
+                    "status": "available",
+                    "count": 1,
+                    "items": [{
+                        "selected_code": "000001",
+                        "candidate_code": "000002",
+                        "status": "confirmed_current",
+                        "quoted_at": "2026-07-15T08:00:00+08:00",
+                        "quote_expires_at": "2026-07-16T00:00:00+00:00",
+                        "total_switching_cost_yuan": 15,
+                        "total_switching_cost_rate_pct": 1.5,
+                        "cash_gap_days": 3,
+                        "historical_cost_coverage_months": 4.5,
+                        "executable_switch_cost_confirmed": True,
+                        "integrity_verified": True,
+                        "portfolio_binding_current": True,
+                        "platform_name": "不得发送给模型",
+                        "raw_lots": [{"shares": 100}],
+                    }],
+                },
+            },
+        }
+
+        context = build_synthesis_context({}, outputs, {})
+        quote = context["private_context"]["portfolio_context"]["fund_switch_quotes"]
+
+        self.assertEqual(quote["items"][0]["candidate_code"], "000002")
+        self.assertTrue(quote["items"][0]["integrity_verified"])
+        self.assertTrue(quote["items"][0]["portfolio_binding_current"])
+        self.assertNotIn("platform_name", quote["items"][0])
+        self.assertNotIn("raw_lots", quote["items"][0])
+
     def test_peer_persistence_is_bounded_and_evidence_linked(self):
         outputs = {
             "fund_analysis": {"code": "001480", "name": "测试基金"},
