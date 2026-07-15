@@ -160,7 +160,7 @@ def build_default_registry(
     registry.register(ToolDefinition(
         name="fund.alternatives.get",
         version="1.0.0",
-        description="基于真实同类排行和净值指标筛选多维替代研究候选。",
+        description="基于真实同类排行、数据源每日收益滚动胜率、回撤和追涨门禁筛选替代研究候选，并归并同策略份额。",
         risk_level="R0",
         timeout_seconds=120,
         handler=lambda payload: fund_service.get_fund_alternatives(

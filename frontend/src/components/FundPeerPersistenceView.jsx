@@ -68,6 +68,14 @@ function GateIcon({ status }) {
   return <ShieldAlert size={14} aria-hidden="true" />
 }
 
+function durabilityTone(status) {
+  if (status === 'durable_advantage') return 'positive'
+  if (status === 'advantage_but_hot') return 'warning'
+  if (status === 'recent_leader_only') return 'negative'
+  if (status === 'mixed_evidence') return 'mixed'
+  return 'unavailable'
+}
+
 function gateValue(check) {
   if (Array.isArray(check.observed)) return check.observed.map((value) => pp(value)).join(' / ')
   if (check.observed != null) return `${pp(check.observed)}${check.threshold != null ? ` · 阈值 ${pp(check.threshold, false)}` : ''}`
@@ -76,6 +84,8 @@ function gateValue(check) {
 
 function AlternativeRows({ alternatives }) {
   const rows = alternatives?.alternatives || []
+  const audit = alternatives?.durability_audit || {}
+  const auditSummary = audit.summary || {}
   if (!rows.length) return null
   return (
     <div className="peer-alternative-results">
@@ -83,25 +93,41 @@ function AlternativeRows({ alternatives }) {
         <div><span>真实同类候选</span><b>{alternatives.selected?.category_name || alternatives.selected?.category || '同类基金'}</b></div>
         <small>榜单截至 {alternatives.as_of || '-'}</small>
       </div>
-      <div className="peer-alternative-list">
-        {rows.slice(0, 3).map((item) => (
-          <article key={item.code}>
-            <div className="peer-alternative-name">
-              <span>{item.code}</span>
-              <b>{item.name || item.code}</b>
-              <em>{item.label || '继续研究'}</em>
-            </div>
-            <dl>
-              <div><dt>近 1 年</dt><dd className={tone(item.metrics?.return_1y)}>{pct(item.metrics?.return_1y, true)}</dd></div>
-              <div><dt>年化波动</dt><dd>{pct(item.metrics?.annual_volatility)}</dd></div>
-              <div><dt>最大回撤</dt><dd className="negative">{pct(item.metrics?.max_drawdown)}</dd></div>
-            </dl>
-            <p><strong>优势</strong>{item.advantages?.[0] || '未形成明确优势，继续核验。'}</p>
-            <p><strong>代价</strong>{item.cautions?.[0] || '费用、持仓重合和基金经理稳定性尚待核验。'}</p>
-          </article>
-        ))}
+      <div className={`peer-durability-summary ${audit.status || 'unavailable'}`}>
+        <div><span>滚动持续性复核</span><b>{audit.status === 'evaluated' ? `${auditSummary.evaluated_count || 0} 只已验证` : '真实日收益验证不完整'}</b></div>
+        <dl>
+          <div><dt>进入尽调</dt><dd>{auditSummary.due_diligence_count ?? 0}</dd></div>
+          <div><dt>追涨区</dt><dd>{auditSummary.hot_count ?? 0}</dd></div>
+          <div><dt>仅近期领先</dt><dd>{auditSummary.recent_leader_only_count ?? 0}</dd></div>
+        </dl>
       </div>
-      <p className="peer-alternative-policy">候选来自真实同类榜单和确认净值指标，不等于应当换仓；当前仍未扣除申赎费、税费与机会成本。</p>
+      <div className="peer-alternative-list">
+        {rows.slice(0, 3).map((item) => {
+          const durability = item.durability || {}
+          const rolling6 = durability.rolling?.['6m'] || {}
+          const rolling12 = durability.rolling?.['12m'] || {}
+          return (
+            <article key={item.code}>
+              <div className="peer-alternative-name">
+                <span>{item.code}</span>
+                <b>{item.name || item.code}</b>
+                <em className={durabilityTone(durability.status)}>{durability.label || '持续性尚未验证'}</em>
+              </div>
+              <dl>
+                <div><dt>近 1 年</dt><dd className={tone(item.metrics?.return_1y)}>{pct(item.metrics?.return_1y, true)}</dd></div>
+                <div><dt>滚动 6 月胜率</dt><dd>{pct(rolling6.win_rate_pct)}</dd></div>
+                <div><dt>滚动 12 月胜率</dt><dd>{pct(rolling12.win_rate_pct)}</dd></div>
+                <div><dt>12 月中位超额</dt><dd className={tone(rolling12.median_excess_pp)}>{pp(rolling12.median_excess_pp)}</dd></div>
+                <div><dt>回撤差</dt><dd className={tone(durability.risk?.drawdown_delta_pp)}>{pp(durability.risk?.drawdown_delta_pp)}</dd></div>
+                <div><dt>页面申购费</dt><dd>{pct(item.fee?.current_rate)}</dd></div>
+              </dl>
+              <p><strong>持续性</strong>{durability.rationale || '真实每日收益复核不可用，不能把榜单领先升级为换仓候选。'}</p>
+              <p><strong>待核验</strong>{item.cautions?.[0] || '赎回费、销售服务费、持仓重合和基金经理稳定性。'}</p>
+            </article>
+          )
+        })}
+      </div>
+      <p className="peer-alternative-policy">滚动窗口会重叠，历史胜率不是未来上涨概率。只有持续性门禁通过才继续费用和持仓重合尽调，仍不等于应当换仓。</p>
     </div>
   )
 }

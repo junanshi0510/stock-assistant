@@ -16,7 +16,7 @@ from .llm_gateway import LLMGateway, ModelInvocationError, ModelUnavailableError
 
 
 PROMPT_TEMPLATE_ID = "fund_decision_synthesis"
-PROMPT_TEMPLATE_VERSION = "1.5.0"
+PROMPT_TEMPLATE_VERSION = "1.6.0"
 OUTPUT_SCHEMA_VERSION = "fund_ai_synthesis.v1"
 
 DecisionAction = Literal[
@@ -183,9 +183,48 @@ def _analysis_summary(analysis: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _public_durability(payload: dict[str, Any]) -> dict[str, Any]:
+    rolling = payload.get("rolling") or {}
+    return {
+        "status": payload.get("status"),
+        "label": payload.get("label"),
+        "rationale": payload.get("rationale"),
+        "as_of": payload.get("as_of"),
+        "rolling": {
+            window: {
+                key: (rolling.get(window) or {}).get(key)
+                for key in (
+                    "sample_count",
+                    "win_rate_pct",
+                    "median_excess_pp",
+                    "lower_quartile_excess_pp",
+                    "worst_excess_pp",
+                    "downside_protection_rate_pct",
+                    "candidate_return_percentile",
+                    "candidate_median_return_pct",
+                    "latest",
+                )
+            }
+            for window in ("6m", "12m")
+        },
+        "risk": payload.get("risk") or {},
+        "decision_gate": payload.get("decision_gate") or {},
+    }
+
+
 def _public_alternatives(payload: dict[str, Any]) -> dict[str, Any]:
+    audit = payload.get("durability_audit") or {}
     return {
         "as_of": payload.get("as_of"),
+        "durability_audit": {
+            "status": audit.get("status"),
+            "reason": audit.get("reason"),
+            "summary": audit.get("summary") or {},
+            "method": audit.get("method") or {},
+            "limitations": audit.get("limitations") or [],
+            "policy": audit.get("policy"),
+        },
+        "share_class_exclusion_count": len(payload.get("share_class_exclusions") or []),
         "alternatives": [
             {
                 "code": row.get("code"),
@@ -193,6 +232,8 @@ def _public_alternatives(payload: dict[str, Any]) -> dict[str, Any]:
                 "score": row.get("score"),
                 "label": row.get("label"),
                 "metrics": row.get("metrics") or {},
+                "fee": row.get("fee") or {},
+                "durability": _public_durability(row.get("durability") or {}),
                 "advantages": row.get("advantages") or [],
                 "cautions": row.get("cautions") or [],
             }
@@ -511,7 +552,7 @@ _SYSTEM_PROMPT = """你是金融投资助手中的证据合成模型。你的任
 4. action 和 action_plan.current_action 必须与 allowed_action 完全一致。大模型不能绕过投资政策、仓位、市场权限、策略发布或数据完整性门禁。
 5. 每一项判断必须引用 evidence_catalog 中存在的 Evidence ID。区分事实、判断、反证和未知项。
 6. 新闻和情绪只能作为催化剂、风险或待验证线索，不能单独构成买入理由，也不能把相关性写成因果关系。
-7. 采用以下研究顺序：组合适配与重合风险；底层市场和板块环境；中期趋势与动量及其反转风险；同类相对表现、费用和载体质量；披露持仓与盈利支撑；新闻催化；失效条件；分批执行和复盘。同类平均只用于相对诊断，不得称为可买入替代品；替代审查也不等于赎回指令。
+7. 采用以下研究顺序：组合适配与重合风险；底层市场和板块环境；中期趋势与动量及其反转风险；同类相对表现、费用和载体质量；披露持仓与盈利支撑；新闻催化；失效条件；分批执行和复盘。同类平均只用于相对诊断，不得称为可买入替代品；替代审查也不等于赎回指令。候选基金的 durability.decision_gate 未通过时，不得把近期榜单领先描述为可换入机会；即使通过，也只能进入费用和持仓重合尽调。
 8. 不得承诺盈利、使用确定性涨跌措辞、输出自动交易命令或暴露隐式思维链。confidence 最高只能是 medium。
 9. 如果关键数据不足，status 必须为 insufficient，并把缺口写入 unknowns；不要编造替代数据。
 10. 只返回符合给定 JSON Schema 的 JSON 对象，不要返回 Markdown 或额外说明。

@@ -32,6 +32,7 @@ from strategies.fund_conditioned_forward import (
     evaluate_conditioned_forward_strategy,
     unavailable_conditioned_forward,
 )
+from strategies.fund_alternative_durability import evaluate_alternative_durability
 from strategies.fund_peer_persistence import (
     evaluate_peer_persistence,
     unavailable_peer_persistence,
@@ -1428,10 +1429,72 @@ def _metric_delta(candidate: dict, selected: dict, key: str) -> float | None:
     return c - s
 
 
+def _fund_strategy_key(name: str) -> str:
+    """Collapse common A/C-style share classes to one investment strategy."""
+    value = re.sub(r"\s+", "", str(name or "")).upper()
+    value = value.replace("（", "(").replace("）", ")")
+    value = re.sub(r"(?:[/\-]?[A-FHIRY](?:类|份额)?)$", "", value)
+    return re.sub(r"[^0-9A-Z\u4e00-\u9fff()]", "", value)
+
+
+def _dedupe_fund_share_classes(rows: list[dict], selected_name: str) -> tuple[list[dict], list[dict]]:
+    selected_key = _fund_strategy_key(selected_name)
+    seen = {selected_key} if selected_key else set()
+    unique = []
+    excluded = []
+    for row in rows:
+        strategy_key = _fund_strategy_key(row.get("name") or "")
+        if strategy_key and strategy_key in seen:
+            excluded.append({
+                "code": row.get("code"),
+                "name": row.get("name"),
+                "reason": "same_strategy_share_class",
+                "strategy_key": strategy_key,
+            })
+            continue
+        if strategy_key:
+            seen.add(strategy_key)
+        unique.append(row)
+    return unique, excluded
+
+
+def _provider_daily_return_points(df: pd.DataFrame) -> list[dict]:
+    return [
+        {
+            "date": str(row.get("date") or ""),
+            "daily_return_pct": _num(row.get("daily_return")),
+        }
+        for _, row in df.iterrows()
+    ]
+
+
+def _alternative_durability_audit(
+    selected: dict,
+    alternatives: list[dict],
+    months: int,
+) -> dict:
+    selected_df = _fetch_nav_history(str(selected["code"]), months)
+    selected_payload = {
+        "code": selected["code"],
+        "name": selected.get("name") or "",
+        "points": _provider_daily_return_points(selected_df),
+    }
+    candidate_payloads = []
+    for row in alternatives:
+        candidate_df = _fetch_nav_history(str(row["code"]), months)
+        candidate_payloads.append({
+            "code": row["code"],
+            "name": row.get("name") or "",
+            "points": _provider_daily_return_points(candidate_df),
+        })
+    return evaluate_alternative_durability(selected_payload, candidate_payloads)
+
+
 def _alternative_row(code: str, rank_row: dict, selected_metrics: dict, selected_rank: int | None, months: int) -> dict:
     data = analyze_fund(code, months)
     metrics = data.get("metrics") or {}
     timing = data.get("timing") or {}
+    fee = (data.get("fact_sheet") or {}).get("fee") or {}
     rank = rank_row.get("rank")
     score = 50
     advantages = []
@@ -1541,6 +1604,10 @@ def _alternative_row(code: str, rank_row: dict, selected_metrics: dict, selected
         "unit_nav": data.get("latest", {}).get("unit_nav"),
         "as_of": data.get("as_of"),
         "scale_yi": scale,
+        "fee": {
+            "source_rate": fee.get("source_rate"),
+            "current_rate": fee.get("current_rate"),
+        },
         "score": score,
         "label": label,
         "trend_state": data.get("trend_state"),
@@ -1589,7 +1656,11 @@ def get_fund_alternatives(code: str, sort: str = "1y", limit: int = 5, months: i
     selected_analysis = analyze_fund(code, months)
     selected_metrics = selected_analysis.get("metrics") or {}
 
-    pool_rows = [row for row in rank_items if row.get("code") and row.get("code") != code]
+    raw_pool_rows = [row for row in rank_items if row.get("code") and row.get("code") != code]
+    pool_rows, share_class_exclusions = _dedupe_fund_share_classes(
+        raw_pool_rows,
+        selected_analysis.get("name") or info.get("name") or "",
+    )
     pool_rows = pool_rows[:max(12, limit * 4)]
     failed = []
 
@@ -1640,8 +1711,35 @@ def get_fund_alternatives(code: str, sort: str = "1y", limit: int = 5, months: i
             "current_drawdown": selected_metrics.get("current_drawdown"),
             "dca_score": selected_metrics.get("dca_score"),
         },
+        "fee": {
+            "source_rate": ((selected_analysis.get("fact_sheet") or {}).get("fee") or {}).get("source_rate"),
+            "current_rate": ((selected_analysis.get("fact_sheet") or {}).get("fee") or {}).get("current_rate"),
+        },
         "rank_row": selected_rank_row,
     }
+    try:
+        durability_audit = _alternative_durability_audit(selected, alternatives, months)
+    except Exception as error:
+        durability_audit = {
+            "diagnostic_id": "fund_alternative_durability",
+            "diagnostic_version": "1.0.0",
+            "status": "unavailable",
+            "reason": f"real_daily_return_audit_unavailable:{error}",
+            "candidates": [],
+            "summary": {
+                "candidate_count": len(alternatives),
+                "evaluated_count": 0,
+                "due_diligence_count": 0,
+                "hot_count": 0,
+            },
+            "policy": "真实每日收益持续性审查不可用时，不把同类榜单排名升级为换仓候选。",
+        }
+    durability_by_code = {
+        str(item.get("code") or ""): item
+        for item in durability_audit.get("candidates") or []
+    }
+    for row in alternatives:
+        row["durability"] = durability_by_code.get(str(row.get("code") or ""))
     summary = {
         "best_score": alternatives[0],
         "lower_volatility": min(alternatives, key=lambda row: row["metrics"].get("annual_volatility") if row["metrics"].get("annual_volatility") is not None else 999),
@@ -1649,7 +1747,8 @@ def get_fund_alternatives(code: str, sort: str = "1y", limit: int = 5, months: i
         "shallower_drawdown": max(alternatives, key=lambda row: row["metrics"].get("max_drawdown") if row["metrics"].get("max_drawdown") is not None else -999),
     }
     return {
-        "source": "东方财富基金同类排行 + 东方财富/天天基金真实净值",
+        "status": "complete" if durability_audit.get("status") == "evaluated" else "partial",
+        "source": "东方财富基金同类排行 + 东方财富/天天基金真实净值与每日收益",
         "source_url": "https://fund.eastmoney.com/data/fundranking.html",
         "code": code,
         "sort": sort,
@@ -1659,11 +1758,15 @@ def get_fund_alternatives(code: str, sort: str = "1y", limit: int = 5, months: i
         "selected": selected,
         "alternatives": alternatives,
         "summary": summary,
+        "durability_audit": durability_audit,
+        "share_class_exclusions": share_class_exclusions[:20],
         "failed": failed[:8],
         "method": {
             "candidate_pool": f"先从同类榜单前 {len(pool_rows)} 只真实基金中筛选，再读取真实净值指标横向比较。",
-            "score": "替代评分综合同类排名、近3/6/12月收益、年化波动、最大回撤、买入节奏评分和基金规模。",
-            "note": "替代品不是自动换仓建议，只表示值得进一步研究；最终还要看费用、持仓重合度和个人风险承受能力。",
+            "share_class_deduplication": f"候选池按基金名称归并 A/C 等同策略份额，本轮排除 {len(share_class_exclusions)} 个重复份额。",
+            "score": "初筛评分综合同类排名、近3/6/12月收益、年化波动、最大回撤、买入节奏评分和基金规模。",
+            "durability": "再用数据源披露的每日收益复利为总回报指数，在完全相同的月末日期上检查滚动6/12个月胜率、中位超额、回撤和追涨风险。",
+            "note": "只有持续性门禁通过才允许继续费用和持仓重合尽调；任何候选都不等于自动换仓建议。",
         },
     }
 

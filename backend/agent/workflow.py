@@ -638,6 +638,8 @@ class AgentWorkflowRunner:
                     "label": row.get("label"),
                     "trend_state": row.get("trend_state"),
                     "metrics": row.get("metrics") or {},
+                    "fee": row.get("fee") or {},
+                    "durability": row.get("durability") or {},
                     "advantages": row.get("advantages") or [],
                     "cautions": row.get("cautions") or [],
                     "evidence_id": alternative_evidence_id,

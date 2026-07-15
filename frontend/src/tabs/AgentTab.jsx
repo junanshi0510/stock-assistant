@@ -154,6 +154,11 @@ function pct(value) {
   return `${Number(value) > 0 ? '+' : ''}${Number(value).toFixed(2)}%`
 }
 
+function pp(value) {
+  if (value == null || Number.isNaN(Number(value))) return '-'
+  return `${Number(value) > 0 ? '+' : ''}${Number(value).toFixed(2)} 个百分点`
+}
+
 function metricValue(item) {
   if (item.value == null) return '-'
   if (item.unit === '%') {
@@ -1397,18 +1402,21 @@ export default function AgentTab() {
             <section className="agent-result-section">
               <div className="agent-section-head"><div><span className="eyebrow">同类比较</span><h3>替代研究候选</h3></div><span>候选不等于自动换仓</span></div>
               <div className="agent-alternative-grid">
-                {result.alternatives.map((item) => (
-                  <article key={item.code}>
-                    <div><b>{item.code} {item.name}</b><span>{item.label || '继续研究'}</span></div>
-                    <dl>
-                      <div><dt>近 1 年</dt><dd>{pct(item.metrics?.return_1y)}</dd></div>
-                      <div><dt>最大回撤</dt><dd>{pct(item.metrics?.max_drawdown)}</dd></div>
-                      <div><dt>替代评分</dt><dd>{item.score ?? '-'}</dd></div>
-                    </dl>
-                    <p>{item.advantages?.[0] || item.cautions?.[0] || '需要继续核对费用和持仓重合。'}</p>
-                    <button className="ghost" onClick={() => openEvidence(item.evidence_id)}><FileSearch size={14} aria-hidden="true" />证据</button>
-                  </article>
-                ))}
+                {result.alternatives.map((item) => {
+                  const durability = item.durability || {}
+                  return (
+                    <article key={item.code}>
+                      <div><b>{item.code} {item.name}</b><span>{durability.label || '持续性尚未验证'}</span></div>
+                      <dl>
+                        <div><dt>滚动 6 月胜率</dt><dd>{pct(durability.rolling?.['6m']?.win_rate_pct)}</dd></div>
+                        <div><dt>滚动 12 月胜率</dt><dd>{pct(durability.rolling?.['12m']?.win_rate_pct)}</dd></div>
+                        <div><dt>12 月中位超额</dt><dd>{pp(durability.rolling?.['12m']?.median_excess_pp)}</dd></div>
+                      </dl>
+                      <p>{durability.rationale || '真实每日收益持续性复核未完成，不能依据榜单直接换入。'}</p>
+                      <button className="ghost" onClick={() => openEvidence(item.evidence_id)}><FileSearch size={14} aria-hidden="true" />证据</button>
+                    </article>
+                  )
+                })}
               </div>
             </section>
           )}

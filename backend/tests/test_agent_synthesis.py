@@ -176,6 +176,55 @@ class InvestmentSynthesisTests(unittest.TestCase):
         )
         self.assertNotIn("fund_points", context["peer_persistence"])
 
+    def test_alternative_durability_is_bounded_and_evidence_linked(self):
+        outputs = {
+            "fund_analysis": {"code": "001480", "name": "测试基金"},
+            "fund_alternatives": {
+                "status": "evaluated",
+                "as_of": "2026-07-10",
+                "durability_audit": {
+                    "status": "evaluated",
+                    "summary": {"due_diligence_count": 1},
+                    "raw_daily_points": [{"date": "2026-07-10", "daily_return_pct": 1}],
+                },
+                "share_class_exclusions": [{"code": "000003"}],
+                "alternatives": [{
+                    "code": "000002",
+                    "name": "候选基金",
+                    "durability": {
+                        "status": "durable_advantage",
+                        "label": "持续优势待尽调",
+                        "rolling": {
+                            "6m": {"win_rate_pct": 70, "recent_windows": [1, 2, 3]},
+                            "12m": {"win_rate_pct": 65, "median_excess_pp": 4},
+                        },
+                        "decision_gate": {"eligible_for_due_diligence": True},
+                    },
+                }],
+            },
+        }
+        evidence = {
+            "fund_alternatives": {
+                "id": "ev_alternatives",
+                "provider": "fund.alternatives.get@1.0.0",
+                "as_of": "2026-07-10",
+                "quality_status": "complete",
+                "payload_sha256": "b" * 64,
+            }
+        }
+
+        context = build_synthesis_context({}, outputs, evidence)
+
+        alternatives = context["alternatives"]
+        self.assertEqual(alternatives["evidence_id"], "ev_alternatives")
+        self.assertEqual(alternatives["share_class_exclusion_count"], 1)
+        self.assertEqual(
+            alternatives["alternatives"][0]["durability"]["status"],
+            "durable_advantage",
+        )
+        self.assertNotIn("recent_windows", alternatives["alternatives"][0]["durability"]["rolling"]["6m"])
+        self.assertNotIn("raw_daily_points", alternatives["durability_audit"])
+
     def test_private_context_is_redacted_and_model_action_is_restricted(self):
         gateway = _Gateway(_model_output(), private_context_enabled=False)
         service = InvestmentSynthesisService(gateway)

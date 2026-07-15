@@ -192,6 +192,16 @@ def _alternatives(_payload):
             "label": "值得继续研究",
             "trend_state": "震荡上行",
             "metrics": {"return_1y": 18.2, "max_drawdown": -14.3},
+            "fee": {"current_rate": 0.15},
+            "durability": {
+                "status": "durable_advantage",
+                "label": "持续优势待尽调",
+                "rolling": {
+                    "6m": {"win_rate_pct": 70},
+                    "12m": {"win_rate_pct": 65, "median_excess_pp": 4.2},
+                },
+                "decision_gate": {"eligible_for_due_diligence": True},
+            },
             "advantages": ["回撤更浅"],
             "cautions": ["仍需检查持仓重合"],
         }],
@@ -562,6 +572,10 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(run["result"]["fund"]["code"], "001480")
         self.assertEqual(run["result"]["schema_version"], "fund_deep_research.v6")
         self.assertEqual(run["result"]["alternatives"][0]["code"], "000001")
+        self.assertEqual(
+            run["result"]["alternatives"][0]["durability"]["status"],
+            "durable_advantage",
+        )
         self.assertEqual(
             run["result"]["peer_persistence"]["diagnostic_id"],
             "fund_peer_relative_persistence",
