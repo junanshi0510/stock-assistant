@@ -5,6 +5,7 @@ import {
   createPortfolioActionReport,
   deleteHolding,
   fetchHoldings,
+  fetchHoldingsLevelRecurrence,
   fetchHoldingTheses,
   fetchLatestPortfolioActionReport,
   parseHoldingsText,
@@ -44,6 +45,9 @@ export default function HoldingsTab() {
   const [loading, setLoading] = useState(false)
   const [actionReport, setActionReport] = useState(null)
   const [actionReportLoading, setActionReportLoading] = useState(false)
+  const [levelRecurrence, setLevelRecurrence] = useState(null)
+  const [levelRecurrenceLoading, setLevelRecurrenceLoading] = useState(false)
+  const [levelRecurrenceError, setLevelRecurrenceError] = useState('')
   const [theses, setTheses] = useState(null)
   const [thesisSaving, setThesisSaving] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
@@ -80,6 +84,19 @@ export default function HoldingsTab() {
     }
   }
 
+  async function loadLevelRecurrence() {
+    setLevelRecurrenceLoading(true)
+    setLevelRecurrenceError('')
+    try {
+      setLevelRecurrence(await fetchHoldingsLevelRecurrence(60))
+    } catch (e) {
+      setLevelRecurrence(null)
+      setLevelRecurrenceError(e.message || '真实持仓估值历史到达批量读取失败')
+    } finally {
+      setLevelRecurrenceLoading(false)
+    }
+  }
+
   async function loadTheses() {
     try {
       setTheses(await fetchHoldingTheses())
@@ -91,6 +108,7 @@ export default function HoldingsTab() {
   useEffect(() => {
     loadHoldings()
     loadLatestActionReport()
+    loadLevelRecurrence()
     loadTheses()
   }, [])
 
@@ -174,7 +192,7 @@ export default function HoldingsTab() {
       const result = await saveHoldings(rows)
       setData({ items: result.items, summary: result.summary })
       resetMaintenance()
-      await Promise.all([loadLatestActionReport(), loadTheses()])
+      await Promise.all([loadLatestActionReport(), loadLevelRecurrence(), loadTheses()])
     } catch (e) {
       setError(e.message)
     }
@@ -184,7 +202,7 @@ export default function HoldingsTab() {
     setError('')
     try {
       await deleteHolding(id)
-      await Promise.all([loadHoldings(), loadLatestActionReport(), loadTheses()])
+      await Promise.all([loadHoldings(), loadLatestActionReport(), loadLevelRecurrence(), loadTheses()])
     } catch (e) {
       setError(e.message)
       throw e
@@ -230,6 +248,10 @@ export default function HoldingsTab() {
         theses={theses}
         thesisSaving={thesisSaving}
         onSaveThesis={doSaveThesis}
+        levelRecurrence={levelRecurrence}
+        levelRecurrenceLoading={levelRecurrenceLoading}
+        levelRecurrenceError={levelRecurrenceError}
+        onRefreshLevelRecurrence={loadLevelRecurrence}
       />
 
       {error && <div className="error portfolio-page-error">{error}</div>}

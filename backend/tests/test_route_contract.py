@@ -41,6 +41,7 @@ EXPECTED_OPERATIONS = {
     "/api/multi_compare": {"POST"},
     "/api/watchlist": {"GET", "POST", "DELETE"},
     "/api/holdings": {"GET", "POST"},
+    "/api/holdings/level-recurrence": {"GET"},
     "/api/holdings/insights": {"GET"},
     "/api/holdings/exposure": {"GET"},
     "/api/holdings/exposure-snapshots": {"GET", "POST"},

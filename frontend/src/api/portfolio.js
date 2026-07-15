@@ -21,6 +21,10 @@ export function fetchHoldings() {
   return getJson('/api/holdings')
 }
 
+export function fetchHoldingsLevelRecurrence(months = 60) {
+  return getJson(`/api/holdings/level-recurrence?months=${encodeURIComponent(months)}`)
+}
+
 export function fetchHoldingsInsights(maxFunds = 6) {
   return getJson(`/api/holdings/insights?max_funds=${encodeURIComponent(maxFunds)}`)
 }

@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 import analysis
 import data_fetch
 import decision_center
+import holding_level_recurrence
 import holding_thesis
 import holdings_import
 import holdings as holdings_mod
@@ -209,6 +210,25 @@ def delete_watchlist(
 @router.get("/api/holdings")
 def get_holdings(principal: AuthPrincipal = Depends(principal_from_request)):
     return holdings_mod.list_holdings(user_id=_subject_id(principal))
+
+
+@router.get("/api/holdings/level-recurrence")
+def get_holdings_level_recurrence(
+    months: int = Query(default=60, ge=6, le=120),
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        items = storage.list_holdings(user_id=_subject_id(principal))
+        return holding_level_recurrence.build_holding_level_recurrence(
+            items,
+            stock_months=months,
+            max_workers=6,
+        )
+    except Exception as error:
+        raise HTTPException(
+            status_code=502,
+            detail=f"真实持仓估值历史到达批量读取失败:{error}",
+        ) from error
 
 
 @router.get("/api/holdings/insights")

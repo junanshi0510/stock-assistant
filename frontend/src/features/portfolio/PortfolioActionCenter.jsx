@@ -13,6 +13,7 @@ import {
   Upload,
   X,
 } from 'lucide-react'
+import AssetLevelRecurrenceView from '../../components/AssetLevelRecurrenceView'
 
 function money(value) {
   if (value == null || Number.isNaN(Number(value))) return '-'
@@ -76,6 +77,58 @@ function evidenceValue(item) {
   }
   if (label.includes('金额') || label.includes('收益')) return money(value)
   return String(value)
+}
+
+function levelValue(value) {
+  if (value == null || Number.isNaN(Number(value))) return '-'
+  const number = Number(value)
+  return number.toFixed(number >= 100 ? 2 : 4)
+}
+
+function recurrenceMeta(record, loading, error) {
+  const data = record?.recurrence
+  if (!data) {
+    if (loading) return { tone: 'loading', primary: '读取中', secondary: '真实行情与历史', title: '正在读取真实来源' }
+    if (error) return { tone: 'unavailable', primary: '批量读取失败', secondary: error, title: error }
+    return { tone: 'unavailable', primary: '未返回', secondary: '没有收到该持仓结果', title: '没有收到该持仓结果' }
+  }
+
+  const target = data.target || {}
+  const occurrence = data.occurrence || {}
+  const nearest = data.nearest || {}
+  const targetText = target.value == null ? '' : `当前 ${levelValue(target.value)}`
+  const sourceText = [targetText, target.as_of, target.source].filter(Boolean).join(' · ')
+  if (data.status === 'reached' || data.status === 'reached_exact') {
+    const days = occurrence.calendar_days_ago
+    return {
+      tone: 'matched',
+      primary: occurrence.date || '-',
+      secondary: [targetText, days == null ? '' : `${days} 天前`].filter(Boolean).join(' · '),
+      title: sourceText,
+    }
+  }
+  if (data.status === 'crossed_between') {
+    return {
+      tone: 'matched',
+      primary: '区间穿越',
+      secondary: `${occurrence.from_date || '-'} 至 ${occurrence.to_date || '-'}`,
+      title: sourceText,
+    }
+  }
+  if (data.status === 'not_found_in_coverage') {
+    return {
+      tone: 'nearest',
+      primary: '覆盖期未到达',
+      secondary: nearest.date ? `最近值 ${nearest.date}` : '没有可比历史值',
+      title: sourceText,
+    }
+  }
+  return {
+    tone: 'unavailable',
+    primary: '数据不可用',
+    secondary: data.reason || '真实来源当前不可用',
+    title: data.reason || sourceText,
+  }
 }
 
 function fallbackRows(items, total) {
@@ -257,7 +310,18 @@ function HoldingThesisSection({ row, record, assessment, saving, onSave }) {
   )
 }
 
-function HoldingDetail({ row, report, thesisRecord, thesisSaving, onSaveThesis, onClose, onDelete }) {
+function HoldingDetail({
+  row,
+  report,
+  thesisRecord,
+  thesisSaving,
+  onSaveThesis,
+  levelRecord,
+  levelLoading,
+  levelError,
+  onClose,
+  onDelete,
+}) {
   useEffect(() => {
     function onKeyDown(event) {
       if (event.key === 'Escape') onClose()
@@ -321,6 +385,14 @@ function HoldingDetail({ row, report, thesisRecord, thesisSaving, onSaveThesis, 
 
         <section className="portfolio-detail-section">
           <h4>真实市场证据</h4>
+          {levelRecord?.recurrence ? (
+            <AssetLevelRecurrenceView data={levelRecord.recurrence} />
+          ) : (
+            <div className={`portfolio-level-placeholder ${levelError ? 'error-state' : ''}`}>
+              <RefreshCw size={15} className={levelLoading ? 'spin-icon' : ''} />
+              <span>{levelLoading ? '正在读取当前估值与历史到达时间' : levelError || '该持仓尚未返回估值历史到达结果'}</span>
+            </div>
+          )}
           {trend ? (
             <dl className="portfolio-detail-facts">
               <div><dt>净值日期</dt><dd>{trend.as_of || '-'}</dd></div>
@@ -330,7 +402,7 @@ function HoldingDetail({ row, report, thesisRecord, thesisSaving, onSaveThesis, 
               <div><dt>当前回撤</dt><dd className="delta-neg">{percent(trend.current_drawdown)}</dd></div>
               <div><dt>历史最大回撤</dt><dd className="delta-neg">{percent(trend.max_drawdown)}</dd></div>
             </dl>
-          ) : <p className="portfolio-empty-line">没有成功返回的真实基金趋势证据，相关操作结论已停止。</p>}
+          ) : <p className="portfolio-empty-line">{row.asset_type === 'fund' ? '没有成功返回的真实基金趋势证据，相关操作结论已停止。' : '当前行动报告没有绑定股票趋势证据。'}</p>}
           {reportFund && (
             <p className="portfolio-source-line">
               持仓披露期：{reportFund.stock_period || '-'} · 行业披露期：{reportFund.industry_period || '-'}
@@ -395,6 +467,10 @@ export default function PortfolioActionCenter({
   theses,
   thesisSaving,
   onSaveThesis,
+  levelRecurrence,
+  levelRecurrenceLoading,
+  levelRecurrenceError,
+  onRefreshLevelRecurrence,
 }) {
   const [selectedCode, setSelectedCode] = useState(null)
   const total = useMemo(
@@ -409,7 +485,12 @@ export default function PortfolioActionCenter({
     () => new Map((theses?.items || []).map((item) => [holdingKey(item), item])),
     [theses],
   )
+  const levelRecurrenceMap = useMemo(
+    () => new Map((levelRecurrence?.items || []).map((item) => [item.key || holdingKey(item), item])),
+    [levelRecurrence],
+  )
   const selectedThesis = selected ? thesisMap.get(holdingKey(selected)) || null : null
+  const selectedLevelRecord = selected ? levelRecurrenceMap.get(holdingKey(selected)) || null : null
   const summary = activeReport?.summary || {
     holding_count: items.length,
     total_amount: total || null,
@@ -490,32 +571,57 @@ export default function PortfolioActionCenter({
         <div className="portfolio-section-head">
           <div>
             <h3>持仓清单</h3>
-            <p>每只持仓一行，按操作优先级排序；点击查看规则、趋势和重复暴露。</p>
+            <p>每只持仓一行，按操作优先级排序；点击查看估值回溯、趋势、规则和重复暴露。</p>
           </div>
-          <span>{rows.length} 项</span>
+          <div className="portfolio-level-status">
+            <span>
+              {levelRecurrenceLoading
+                ? '估值回溯读取中'
+                : `${levelRecurrence?.summary?.available_count ?? 0}/${rows.length} 项可用`}
+            </span>
+            <button
+              className="icon-button"
+              onClick={onRefreshLevelRecurrence}
+              disabled={levelRecurrenceLoading || rows.length === 0}
+              title="刷新当前估值历史到达时间"
+              aria-label="刷新当前估值历史到达时间"
+            >
+              <RefreshCw size={15} className={levelRecurrenceLoading ? 'spin-icon' : ''} />
+            </button>
+          </div>
         </div>
         {rows.length > 0 ? (
           <div className="portfolio-holding-list">
             <div className="portfolio-holding-columns" aria-hidden="true">
-              <span>持仓</span><span>金额</span><span>占比</span><span>累计收益</span><span>操作状态</span><span></span>
+              <span>持仓</span><span>金额</span><span>占比</span><span>累计收益</span><span>上次到达当前估值</span><span>操作状态</span><span></span>
             </div>
-            {rows.map((row) => (
-              <button
-                className="portfolio-holding-row"
-                key={`${row.asset_type}-${row.market}-${row.code}`}
-                onClick={() => setSelectedCode(`${row.asset_type}:${row.market}:${row.code}`)}
-              >
-                <span className="portfolio-holding-name">
-                  <b>{row.name || row.code}</b>
-                  <small>{row.code} · {row.asset_type === 'fund' ? '基金' : '股票'} · {row.market || '-'}</small>
-                </span>
-                <span data-label="金额"><b>{money(row.amount)}</b></span>
-                <span data-label="占比"><b>{percent(row.allocation_ratio)}</b></span>
-                <span data-label="累计收益" className={deltaClass(row.profit)}><b>{money(row.profit)}</b><small>{percent(row.profit_rate, true)}</small></span>
-                <span data-label="操作状态"><i className={`portfolio-action-badge ${actionTone(row.decision?.action)}`}>{row.decision?.label || '待复核'}</i></span>
-                <ChevronRight size={17} aria-hidden="true" />
-              </button>
-            ))}
+            {rows.map((row) => {
+              const level = recurrenceMeta(
+                levelRecurrenceMap.get(holdingKey(row)),
+                levelRecurrenceLoading,
+                levelRecurrenceError,
+              )
+              return (
+                <button
+                  className="portfolio-holding-row"
+                  key={`${row.asset_type}-${row.market}-${row.code}`}
+                  onClick={() => setSelectedCode(`${row.asset_type}:${row.market}:${row.code}`)}
+                >
+                  <span className="portfolio-holding-name">
+                    <b>{row.name || row.code}</b>
+                    <small>{row.code} · {row.asset_type === 'fund' ? '基金' : '股票'} · {row.market || '-'}</small>
+                  </span>
+                  <span data-label="金额"><b>{money(row.amount)}</b></span>
+                  <span data-label="占比"><b>{percent(row.allocation_ratio)}</b></span>
+                  <span data-label="累计收益" className={deltaClass(row.profit)}><b>{money(row.profit)}</b><small>{percent(row.profit_rate, true)}</small></span>
+                  <span data-label="上次同估值" className={`portfolio-level-cell ${level.tone}`} title={level.title}>
+                    <b>{level.primary}</b><small>{level.secondary}</small>
+                  </span>
+                  <span data-label="操作状态"><i className={`portfolio-action-badge ${actionTone(row.decision?.action)}`}>{row.decision?.label || '待复核'}</i></span>
+                  <ChevronRight size={17} aria-hidden="true" />
+                </button>
+              )
+            })}
           </div>
         ) : (
           <div className="portfolio-empty-state">
@@ -563,6 +669,9 @@ export default function PortfolioActionCenter({
           thesisRecord={selectedThesis}
           thesisSaving={thesisSaving}
           onSaveThesis={onSaveThesis}
+          levelRecord={selectedLevelRecord}
+          levelLoading={levelRecurrenceLoading}
+          levelError={levelRecurrenceError}
           onClose={() => setSelectedCode(null)}
           onDelete={onDelete}
         />
