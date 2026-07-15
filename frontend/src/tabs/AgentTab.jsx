@@ -40,6 +40,7 @@ import {
   rerunAgentRun,
 } from '../api/agent'
 import AssetLevelRecurrenceView from '../components/AssetLevelRecurrenceView'
+import FundPeerPersistenceView from '../components/FundPeerPersistenceView'
 import PersonalizedDecisionView from '../components/PersonalizedDecisionView'
 import FundMarketProfileView from '../components/FundMarketProfileView'
 import DecisionOutcomeView from '../components/DecisionOutcomeView'
@@ -77,6 +78,7 @@ const STEP_LABELS = {
   'fund.analysis.get': '真实净值与风险分析',
   'fund.estimate.get': '盘中估值核验',
   'fund.disclosure_changes.get': '定期报告披露变化',
+  'fund.peer_persistence.get': '同类相对表现持续性',
   'fund.alternatives.get': '同类替代候选',
   'portfolio.context.get': '真实持仓与投资约束',
   'fund.personalized_decision.evaluate': '个人风险门禁与金额策略',
@@ -1381,6 +1383,15 @@ export default function AgentTab() {
               </div>
             </div>
           </section>
+
+          {result.peer_persistence && (
+            <section className="agent-result-section">
+              <FundPeerPersistenceView
+                data={result.peer_persistence}
+                onOpenEvidence={openEvidence}
+              />
+            </section>
+          )}
 
           {result.alternatives?.length > 0 && (
             <section className="agent-result-section">

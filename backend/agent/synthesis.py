@@ -16,7 +16,7 @@ from .llm_gateway import LLMGateway, ModelInvocationError, ModelUnavailableError
 
 
 PROMPT_TEMPLATE_ID = "fund_decision_synthesis"
-PROMPT_TEMPLATE_VERSION = "1.4.0"
+PROMPT_TEMPLATE_VERSION = "1.5.0"
 OUTPUT_SCHEMA_VERSION = "fund_ai_synthesis.v1"
 
 DecisionAction = Literal[
@@ -202,6 +202,23 @@ def _public_alternatives(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _public_peer_persistence(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": payload.get("status"),
+        "as_of": payload.get("as_of"),
+        "peer_name": payload.get("peer_name"),
+        "diagnosis": payload.get("diagnosis") or {},
+        "horizons": payload.get("horizons") or [],
+        "quarters": payload.get("quarters") or [],
+        "replacement_review": payload.get("replacement_review") or {},
+        "confidence": payload.get("confidence") or {},
+        "coverage": payload.get("coverage") or {},
+        "stage_validation": payload.get("stage_validation") or {},
+        "limitations": payload.get("limitations") or [],
+        "policy": payload.get("policy"),
+    }
+
+
 def _private_context_summary(outputs: dict[str, dict[str, Any]]) -> dict[str, Any]:
     context = outputs.get("portfolio_context") or {}
     exposure = outputs.get("portfolio_exposure") or {}
@@ -303,6 +320,10 @@ def build_synthesis_context(
         "alternatives": _with_evidence(
             _public_alternatives(outputs.get("fund_alternatives") or {}),
             _evidence_id(evidence, "fund_alternatives"),
+        ),
+        "peer_persistence": _with_evidence(
+            _public_peer_persistence(outputs.get("fund_peer_persistence") or {}),
+            _evidence_id(evidence, "fund_peer_persistence"),
         ),
         "strategy_governance": _with_evidence(
             outputs.get("strategy_governance"), _evidence_id(evidence, "strategy_governance")
@@ -490,7 +511,7 @@ _SYSTEM_PROMPT = """你是金融投资助手中的证据合成模型。你的任
 4. action 和 action_plan.current_action 必须与 allowed_action 完全一致。大模型不能绕过投资政策、仓位、市场权限、策略发布或数据完整性门禁。
 5. 每一项判断必须引用 evidence_catalog 中存在的 Evidence ID。区分事实、判断、反证和未知项。
 6. 新闻和情绪只能作为催化剂、风险或待验证线索，不能单独构成买入理由，也不能把相关性写成因果关系。
-7. 采用以下研究顺序：组合适配与重合风险；底层市场和板块环境；中期趋势与动量及其反转风险；同类相对表现、费用和载体质量；披露持仓与盈利支撑；新闻催化；失效条件；分批执行和复盘。
+7. 采用以下研究顺序：组合适配与重合风险；底层市场和板块环境；中期趋势与动量及其反转风险；同类相对表现、费用和载体质量；披露持仓与盈利支撑；新闻催化；失效条件；分批执行和复盘。同类平均只用于相对诊断，不得称为可买入替代品；替代审查也不等于赎回指令。
 8. 不得承诺盈利、使用确定性涨跌措辞、输出自动交易命令或暴露隐式思维链。confidence 最高只能是 medium。
 9. 如果关键数据不足，status 必须为 insufficient，并把缺口写入 unknowns；不要编造替代数据。
 10. 只返回符合给定 JSON Schema 的 JSON 对象，不要返回 Markdown 或额外说明。

@@ -63,6 +63,18 @@ class FundRouterTests(unittest.TestCase):
         self.assertEqual(actual, expected)
         service.assert_called_once_with(code="110022")
 
+    def test_peer_persistence_forwards_code(self):
+        expected = {"status": "evaluated", "code": "110022"}
+        with patch.object(
+            fund_router.funds_mod,
+            "get_fund_peer_persistence",
+            return_value=expected,
+        ) as service:
+            actual = fund_router.fund_peer_persistence("110022")
+
+        self.assertEqual(actual, expected)
+        service.assert_called_once_with(code="110022")
+
     def test_compare_request_forwards_all_codes_and_months(self):
         expected = {"codes": ["110022", "001480"]}
         request = fund_router.FundCompareRequest(codes=["110022", "001480"], months=24)

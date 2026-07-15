@@ -11,7 +11,10 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from agent.synthesis import InvestmentSynthesisService  # noqa: E402
+from agent.synthesis import (  # noqa: E402
+    InvestmentSynthesisService,
+    build_synthesis_context,
+)
 
 
 def _assessment(title, evidence_id, direction="neutral"):
@@ -140,6 +143,39 @@ def _context():
 
 
 class InvestmentSynthesisTests(unittest.TestCase):
+    def test_peer_persistence_is_bounded_and_evidence_linked(self):
+        outputs = {
+            "fund_analysis": {"code": "001480", "name": "测试基金"},
+            "fund_peer_persistence": {
+                "status": "evaluated",
+                "as_of": "2026-07-10",
+                "peer_name": "同类平均",
+                "diagnosis": {"status": "underperformance_watch"},
+                "horizons": [{"window": "12m", "excess_return_pp": -2.1}],
+                "quarters": [],
+                "replacement_review": {"triggered": False},
+                "fund_points": [{"date": "2026-07-10", "cumulative_return_pct": 1}],
+            },
+        }
+        evidence = {
+            "fund_peer_persistence": {
+                "id": "ev_peer",
+                "provider": "fund.peer_persistence.get@1.0.0",
+                "as_of": "2026-07-10",
+                "quality_status": "complete",
+                "payload_sha256": "a" * 64,
+            }
+        }
+
+        context = build_synthesis_context({}, outputs, evidence)
+
+        self.assertEqual(context["peer_persistence"]["evidence_id"], "ev_peer")
+        self.assertEqual(
+            context["peer_persistence"]["diagnosis"]["status"],
+            "underperformance_watch",
+        )
+        self.assertNotIn("fund_points", context["peer_persistence"])
+
     def test_private_context_is_redacted_and_model_action_is_restricted(self):
         gateway = _Gateway(_model_output(), private_context_enabled=False)
         service = InvestmentSynthesisService(gateway)

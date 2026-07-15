@@ -195,6 +195,13 @@ class AgentWorkflowRunner:
                 required=False,
                 input_payload={"code": code},
             ))
+        steps.append(WorkflowStep(
+            key="fund_peer_persistence",
+            tool_name="fund.peer_persistence.get",
+            tool_version="1.0.0",
+            required=False,
+            input_payload={"code": code},
+        ))
         if payload.get("include_alternatives", True):
             steps.append(WorkflowStep(
                 key="fund_alternatives",
@@ -215,7 +222,7 @@ class AgentWorkflowRunner:
         declared = str(payload.get("status") or "").lower()
         if declared == "unavailable":
             return "unavailable"
-        if declared == "partial" or payload.get("failed"):
+        if declared in {"partial", "insufficient", "insufficient_data"} or payload.get("failed"):
             return "partial"
         return "complete"
 
@@ -636,6 +643,22 @@ class AgentWorkflowRunner:
                     "evidence_id": alternative_evidence_id,
                 })
 
+        peer_persistence_payload = outputs.get("fund_peer_persistence") or {}
+        peer_persistence_result = None
+        if peer_persistence_payload:
+            peer_persistence_evidence_id = (
+                evidence.get("fund_peer_persistence") or {}
+            ).get("id")
+            peer_persistence_result = {
+                **peer_persistence_payload,
+                "evidence_id": peer_persistence_evidence_id,
+                "evidence_ids": (
+                    [peer_persistence_evidence_id]
+                    if peer_persistence_evidence_id
+                    else []
+                ),
+            }
+
         intelligence_payload = outputs.get("fund_intelligence") or {}
         intelligence_result = None
         if intelligence_payload:
@@ -693,7 +716,7 @@ class AgentWorkflowRunner:
             headline += " 部分真实数据暂不可用，结论范围已收窄。"
 
         return {
-            "schema_version": "fund_deep_research.v5",
+            "schema_version": "fund_deep_research.v6",
             "generated_at": _now(),
             "intent": "fund_deep_research",
             "scope": {
@@ -744,6 +767,7 @@ class AgentWorkflowRunner:
             },
             "estimate": estimate_result,
             "disclosure_changes": disclosure_result,
+            "peer_persistence": peer_persistence_result,
             "alternatives": alternative_result,
             "next_actions": playbook.get("execution_steps") or [],
             "unavailable": unavailable,

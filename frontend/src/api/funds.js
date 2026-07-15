@@ -45,6 +45,10 @@ export function fetchFundPeers(code, sort = '1y', limit = 1000) {
   return getJson(`/api/funds/peers?${query.toString()}`)
 }
 
+export function fetchFundPeerPersistence(code) {
+  return getJson(`/api/funds/peer-persistence?code=${encodeURIComponent(code)}`)
+}
+
 export function fetchFundAlternatives(code, sort = '1y', limit = 5, months = 36) {
   const query = new URLSearchParams({ code, sort, limit: String(limit), months: String(months) })
   return getJson(`/api/funds/alternatives?${query.toString()}`)

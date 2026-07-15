@@ -1235,6 +1235,7 @@ LLM 只接收完成脱敏、结构化且带 Evidence ID 的工具结果。提示
 | `fund.portfolio.get` | `/api/funds/portfolio` | R0 | 定期报告持仓和披露期 |
 | `fund.disclosure_changes.get` | `/api/funds/disclosure-changes` | R0 | 两期披露变化和可比性 |
 | `fund.peers.get` | `/api/funds/peers` | R0 | 同类定义、排名和分位 |
+| `fund.peer_persistence.get` | `/api/funds/peer-persistence` | R0 | 同日期相对收益、非重叠季度持续性与替代审查门禁 |
 | `fund.alternatives.get` | `/api/funds/alternatives` | R0 | 多维替代候选和权衡 |
 | `fund.dividends.get` | `/api/funds/dividends` | R0 | 历史分红事实 |
 | `fund.compare.run` | `/api/funds/compare` | R0 | 统一窗口净值比较、相关性和批量建议依据 |

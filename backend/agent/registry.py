@@ -148,6 +148,16 @@ def build_default_registry(
         handler=lambda payload: fund_service.get_fund_disclosure_changes(str(payload["code"])),
     ))
     registry.register(ToolDefinition(
+        name="fund.peer_persistence.get",
+        version="1.0.0",
+        description="使用数据源原生同类平均和同日期基金序列诊断相对表现持续性，只允许触发替代审查。",
+        risk_level="R0",
+        timeout_seconds=25,
+        handler=lambda payload: fund_service.get_fund_peer_persistence(
+            str(payload["code"])
+        ),
+    ))
+    registry.register(ToolDefinition(
         name="fund.alternatives.get",
         version="1.0.0",
         description="基于真实同类排行和净值指标筛选多维替代研究候选。",

@@ -20,6 +20,7 @@ import re
 import statistics
 import time
 from concurrent.futures import ThreadPoolExecutor
+from html.parser import HTMLParser
 from io import StringIO
 
 import pandas as pd
@@ -30,6 +31,10 @@ from akshare.utils import demjson
 from strategies.fund_conditioned_forward import (
     evaluate_conditioned_forward_strategy,
     unavailable_conditioned_forward,
+)
+from strategies.fund_peer_persistence import (
+    evaluate_peer_persistence,
+    unavailable_peer_persistence,
 )
 from strategies.fund_decision_outcome import evaluate_fund_decision_outcome
 from strategies.fund_strategy_shadow_outcome import evaluate_fund_strategy_shadow_outcome
@@ -145,6 +150,106 @@ def _num(v):
 
 def _round(v, digits=2):
     return round(v, digits) if v is not None else None
+
+
+class _PeerStageHTMLParser(HTMLParser):
+    """Collect top-level list cells from the provider's stage-return fragment."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.rows: list[list[str]] = []
+        self._ul_depth = 0
+        self._row: list[str] | None = None
+        self._cell_parts: list[str] | None = None
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "ul":
+            if self._ul_depth == 0:
+                self._row = []
+            self._ul_depth += 1
+        elif tag == "li" and self._ul_depth == 1 and self._cell_parts is None:
+            self._cell_parts = []
+
+    def handle_data(self, data):
+        if self._cell_parts is not None:
+            self._cell_parts.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == "li" and self._cell_parts is not None and self._ul_depth == 1:
+            value = re.sub(r"\s+", "", "".join(self._cell_parts))
+            if self._row is not None:
+                self._row.append(value)
+            self._cell_parts = None
+        elif tag == "ul" and self._ul_depth:
+            self._ul_depth -= 1
+            if self._ul_depth == 0:
+                if self._row:
+                    self.rows.append(self._row)
+                self._row = None
+
+
+def _parse_peer_stage_comparison_html(fragment: str) -> dict:
+    parser = _PeerStageHTMLParser()
+    parser.feed(str(fragment or ""))
+    period_labels = {
+        "近3月": "3m",
+        "近6月": "6m",
+        "近1年": "12m",
+    }
+    periods = {}
+    for row in parser.rows:
+        if len(row) < 3 or row[0] not in period_labels:
+            continue
+        fund_return = _num(row[1])
+        peer_return = _num(row[2])
+        if fund_return is None or peer_return is None:
+            continue
+        period = period_labels[row[0]]
+        periods[period] = {
+            "window": period,
+            "provider_label": row[0],
+            "fund_return_pct": _round(fund_return),
+            "peer_return_pct": _round(peer_return),
+            "excess_return_pp": _round(fund_return - peer_return),
+        }
+    if not periods:
+        raise RuntimeError("东方财富阶段涨幅接口缺少基金与同类平均数据")
+    return periods
+
+
+def _fund_peer_stage_comparison(code: str) -> dict:
+    cache_key = ("fund_peer_stage_comparison", code)
+    cached = _cache_get(cache_key)
+    if cached:
+        return cached
+    url = (
+        "https://fundf10.eastmoney.com/FundArchivesDatas.aspx"
+        f"?type=jdzf&code={code}"
+    )
+    response = _session().get(url, headers=_NAV_HEADERS, timeout=18)
+    response.raise_for_status()
+    content_match = re.search(
+        r'\bcontent\s*:\s*("(?:\\.|[^"\\])*")',
+        response.text,
+        flags=re.S,
+    )
+    if not content_match:
+        raise RuntimeError("东方财富阶段涨幅接口响应缺少 content")
+    try:
+        fragment = json.loads(content_match.group(1))
+    except json.JSONDecodeError as error:
+        raise RuntimeError("东方财富阶段涨幅接口 content 无法解析") from error
+    periods = _parse_peer_stage_comparison_html(fragment)
+    result = {
+        "status": "available" if {"3m", "6m", "12m"}.issubset(periods) else "partial",
+        "source": "东方财富基金阶段涨幅",
+        "source_url": url,
+        "periods": periods,
+        "peer_definition": "平台二级分类基金组成的指数阶段涨跌幅",
+        "as_of_basis": "基金最近净值更新日",
+    }
+    _cache_put(cache_key, result)
+    return result
 
 
 def _cell(row: dict, *names):
@@ -561,6 +666,19 @@ def _fund_peer_comparison_series(code: str) -> dict:
     fund_rows = parse_points(fund_item)
     if len(peer_rows) < 2 or len(fund_rows) < 2:
         raise RuntimeError("东方财富基金与同类累计收益序列有效点不足")
+    try:
+        stage_comparison = _fund_peer_stage_comparison(code)
+    except Exception as error:
+        stage_comparison = {
+            "status": "unavailable",
+            "reason": f"provider_stage_comparison_unavailable:{error}",
+            "source": "东方财富基金阶段涨幅",
+            "source_url": (
+                "https://fundf10.eastmoney.com/FundArchivesDatas.aspx"
+                f"?type=jdzf&code={code}"
+            ),
+            "periods": {},
+        }
     return {
         "type": "provider_same_category_average",
         "name": "同类平均",
@@ -574,7 +692,57 @@ def _fund_peer_comparison_series(code: str) -> dict:
         "fund_observation_count": len(fund_rows),
         "points": peer_rows,
         "fund_points": fund_rows,
+        "stage_comparison": stage_comparison,
         "method": "同类序列必须明确命名为同类平均；基金序列必须与页面基金名称唯一前缀匹配。两条累计收益序列使用同口径计算，不按位置猜测，不以单位净值或市场指数替代。",
+    }
+
+
+def get_fund_peer_persistence(code: str) -> dict:
+    """Evaluate peer-relative persistence from provider-native comparable series."""
+    code = str(code or "").strip()
+    if not re.fullmatch(r"\d{6}", code):
+        raise ValueError("基金代码需要是 6 位数字")
+    try:
+        series = _fund_peer_comparison_series(code)
+    except Exception as error:
+        result = unavailable_peer_persistence(
+            f"provider_native_peer_series_unavailable:{error}"
+        )
+        return {
+            **result,
+            "code": code,
+            "source": "东方财富基金详情页 Data_grandTotal",
+            "source_url": f"https://fund.eastmoney.com/{code}.html",
+            "peer_name": "同类平均",
+            "policy": "真实同类平均序列不可用时停止诊断，不使用市场指数、单位净值或其他基金分类替代。",
+        }
+    try:
+        result = evaluate_peer_persistence(series)
+    except Exception as error:
+        result = unavailable_peer_persistence(
+            f"peer_persistence_calculation_failed:{error}"
+        )
+    return {
+        **result,
+        "code": code,
+        "fund_name": series.get("fund_name") or "",
+        "fund_series_name": series.get("fund_series_name") or "",
+        "source": series.get("source") or "东方财富基金详情页 Data_grandTotal",
+        "source_url": series.get("source_url") or f"https://fund.eastmoney.com/{code}.html",
+        "peer_name": series.get("name") or "同类平均",
+        "provider_series": {
+            "series_start": series.get("series_start"),
+            "series_end": series.get("series_end"),
+            "fund_observation_count": series.get("fund_observation_count"),
+            "peer_observation_count": series.get("observation_count"),
+            "stage_comparison_status": (
+                series.get("stage_comparison") or {}
+            ).get("status"),
+            "stage_comparison_source_url": (
+                series.get("stage_comparison") or {}
+            ).get("source_url"),
+        },
+        "policy": "诊断只比较数据源原生基金序列与明确标记的同类平均；近一年阶段值必须先通过近3月和近6月双窗口口径校验。同类平均不是可投资替代品，触发条件只允许进入替代审查，不允许自动赎回。",
     }
 
 

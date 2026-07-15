@@ -327,6 +327,7 @@ class StrategyShadowOutcomeService:
         if (run.get("result") or {}).get("schema_version") not in {
             "fund_deep_research.v4",
             "fund_deep_research.v5",
+            "fund_deep_research.v6",
         }:
             return {"eligible": False, "reason": "governance_snapshot_not_available"}
         strategy = snapshot["strategy"]

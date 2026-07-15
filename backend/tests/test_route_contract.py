@@ -90,6 +90,7 @@ EXPECTED_OPERATIONS = {
     "/api/funds/estimate": {"GET"},
     "/api/funds/disclosure-changes": {"GET"},
     "/api/funds/peers": {"GET"},
+    "/api/funds/peer-persistence": {"GET"},
     "/api/funds/alternatives": {"GET"},
     "/api/funds/dividends": {"GET"},
     "/api/funds/compare": {"POST"},

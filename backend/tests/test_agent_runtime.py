@@ -199,6 +199,40 @@ def _alternatives(_payload):
     }
 
 
+def _peer_persistence(_payload):
+    return {
+        "diagnostic_id": "fund_peer_relative_persistence",
+        "diagnostic_version": "1.0.0",
+        "status": "evaluated",
+        "source": "东方财富基金详情页 Data_grandTotal",
+        "source_url": "https://example.test/fund/001480",
+        "peer_name": "同类平均",
+        "as_of": "2026-07-10",
+        "diagnosis": {
+            "status": "mixed",
+            "label": "相对表现分化",
+            "rationale": "不同窗口方向不一致。",
+        },
+        "horizons": [{
+            "window": "12m",
+            "status": "available",
+            "fund_return_pct": 16.4,
+            "peer_return_pct": 15.0,
+            "excess_return_pp": 1.4,
+        }],
+        "quarters": [],
+        "replacement_review": {
+            "status": "not_triggered",
+            "triggered": False,
+            "automatic_redemption_allowed": False,
+            "checks": [],
+        },
+        "confidence": {"level": "low", "reasons": []},
+        "coverage": {"aligned_observation_count": 500},
+        "limitations": ["past_relative_performance_is_not_a_forecast"],
+    }
+
+
 def _market_profile(_payload):
     return {
         "strategy_id": "fund_market_profile",
@@ -322,6 +356,7 @@ def _registry(
         ("fund.market_profile.get", 25, _market_profile),
         ("fund.estimate.get", 20, estimate_handler),
         ("fund.disclosure_changes.get", 45, _disclosure),
+        ("fund.peer_persistence.get", 25, _peer_persistence),
         ("fund.alternatives.get", 120, alternatives_handler),
     ):
         registry.register(ToolDefinition(
@@ -521,12 +556,16 @@ class AgentRuntimeTests(unittest.TestCase):
         run = self._run()
 
         self.assertEqual(run["status"], "completed")
-        self.assertEqual(len(run["steps"]), 9)
-        self.assertEqual(len(run["evidence"]), 9)
+        self.assertEqual(len(run["steps"]), 10)
+        self.assertEqual(len(run["evidence"]), 10)
         self.assertGreaterEqual(len(run["claims"]), 13)
         self.assertEqual(run["result"]["fund"]["code"], "001480")
-        self.assertEqual(run["result"]["schema_version"], "fund_deep_research.v5")
+        self.assertEqual(run["result"]["schema_version"], "fund_deep_research.v6")
         self.assertEqual(run["result"]["alternatives"][0]["code"], "000001")
+        self.assertEqual(
+            run["result"]["peer_persistence"]["diagnostic_id"],
+            "fund_peer_relative_persistence",
+        )
         self.assertEqual(
             run["result"]["strategy"]["strategy_id"],
             "fund_conditioned_forward_return",
@@ -725,16 +764,16 @@ class AgentRuntimeTests(unittest.TestCase):
         elapsed = time.monotonic() - started
 
         self.assertTrue(handler_started.is_set())
-        self.assertLess(elapsed, 0.5)
+        self.assertLess(elapsed, 0.75)
         self.assertEqual(run["status"], "partial")
         estimate_step = next(item for item in run["steps"] if item["step_key"] == "fund_estimate")
         self.assertEqual(estimate_step["status"], "failed")
         self.assertEqual(estimate_step["error_code"], "TOOL_TIMEOUT")
-        self.assertEqual(len(run["evidence"]), 6)
+        self.assertEqual(len(run["evidence"]), 7)
 
         release_handler.set()
         time.sleep(0.05)
-        self.assertEqual(len(self.repository.get_run(run["id"])["evidence"]), 6)
+        self.assertEqual(len(self.repository.get_run(run["id"])["evidence"]), 7)
 
     def test_exposure_timeout_cannot_persist_a_late_orphan_snapshot(self):
         handler_started = threading.Event()

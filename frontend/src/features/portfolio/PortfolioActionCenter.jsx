@@ -15,6 +15,8 @@ import {
 } from 'lucide-react'
 import AssetLevelRecurrenceView from '../../components/AssetLevelRecurrenceView'
 import FundConditionedForwardView from '../../components/FundConditionedForwardView'
+import FundPeerPersistenceView from '../../components/FundPeerPersistenceView'
+import { fetchFundAlternatives, fetchFundPeerPersistence } from '../../api/funds'
 
 function money(value) {
   if (value == null || Number.isNaN(Number(value))) return '-'
@@ -332,6 +334,14 @@ function HoldingDetail({
   onClose,
   onDelete,
 }) {
+  const [peerPersistence, setPeerPersistence] = useState(null)
+  const [peerPersistenceLoading, setPeerPersistenceLoading] = useState(false)
+  const [peerPersistenceError, setPeerPersistenceError] = useState('')
+  const [peerReloadKey, setPeerReloadKey] = useState(0)
+  const [peerAlternatives, setPeerAlternatives] = useState(null)
+  const [peerAlternativesLoading, setPeerAlternativesLoading] = useState(false)
+  const [peerAlternativesError, setPeerAlternativesError] = useState('')
+
   useEffect(() => {
     function onKeyDown(event) {
       if (event.key === 'Escape') onClose()
@@ -339,6 +349,30 @@ function HoldingDetail({
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
   }, [onClose])
+
+  useEffect(() => {
+    let active = true
+    setPeerPersistence(null)
+    setPeerPersistenceError('')
+    setPeerAlternatives(null)
+    setPeerAlternativesError('')
+    if (row?.asset_type !== 'fund' || !row?.code) {
+      setPeerPersistenceLoading(false)
+      return () => { active = false }
+    }
+    setPeerPersistenceLoading(true)
+    fetchFundPeerPersistence(row.code)
+      .then((result) => {
+        if (active) setPeerPersistence(result)
+      })
+      .catch((requestError) => {
+        if (active) setPeerPersistenceError(requestError?.message || '真实同类持续性诊断失败')
+      })
+      .finally(() => {
+        if (active) setPeerPersistenceLoading(false)
+      })
+    return () => { active = false }
+  }, [row?.asset_type, row?.code, peerReloadKey])
 
   if (!row) return null
   const decision = row.decision || {}
@@ -349,6 +383,18 @@ function HoldingDetail({
     if (!window.confirm(`确认删除 ${row.name || row.code} 的持仓记录？`)) return
     await onDelete(row.id)
     onClose()
+  }
+
+  async function loadPeerAlternatives() {
+    setPeerAlternativesLoading(true)
+    setPeerAlternativesError('')
+    try {
+      setPeerAlternatives(await fetchFundAlternatives(row.code, '1y', 3, 36))
+    } catch (requestError) {
+      setPeerAlternativesError(requestError?.message || '真实同类替代候选读取失败')
+    } finally {
+      setPeerAlternativesLoading(false)
+    }
   }
 
   return (
@@ -415,6 +461,18 @@ function HoldingDetail({
           ) : <p className="portfolio-empty-line">{row.asset_type === 'fund' ? '没有成功返回的真实基金趋势证据，相关操作结论已停止。' : '当前行动报告没有绑定股票趋势证据。'}</p>}
           {row.asset_type === 'fund' && levelRecord?.conditioned_forward && (
             <FundConditionedForwardView data={levelRecord.conditioned_forward} />
+          )}
+          {row.asset_type === 'fund' && (
+            <FundPeerPersistenceView
+              data={peerPersistence}
+              loading={peerPersistenceLoading}
+              error={peerPersistenceError}
+              onRetry={() => setPeerReloadKey((value) => value + 1)}
+              onLoadAlternatives={loadPeerAlternatives}
+              alternatives={peerAlternatives}
+              alternativesLoading={peerAlternativesLoading}
+              alternativesError={peerAlternativesError}
+            />
           )}
           {reportFund && (
             <p className="portfolio-source-line">

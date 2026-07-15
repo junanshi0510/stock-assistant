@@ -136,6 +136,15 @@ def fund_peers(
     )
 
 
+@router.get("/api/funds/peer-persistence")
+def fund_peer_persistence(code: str = Query(..., min_length=6, max_length=6)):
+    return _call_fund_service(
+        "真实基金同类持续性数据获取失败",
+        funds_mod.get_fund_peer_persistence,
+        code=code,
+    )
+
+
 @router.get("/api/funds/alternatives")
 def fund_alternatives(
     code: str = Query(..., min_length=6, max_length=6),

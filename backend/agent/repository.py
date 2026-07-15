@@ -2432,7 +2432,7 @@ class AgentRepository:
                   AND runs.status IN ('completed', 'partial')
                   AND runs.result_json IS NOT NULL
                   AND json_extract(runs.result_json, '$.schema_version')
-                      IN ('fund_deep_research.v4', 'fund_deep_research.v5')
+                      IN ('fund_deep_research.v4', 'fund_deep_research.v5', 'fund_deep_research.v6')
                   AND json_extract(runs.result_json, '$.strategy.signal.direction')
                       IN ('positive', 'negative')
                   AND (
