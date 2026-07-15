@@ -115,7 +115,17 @@ class AssetLevelRecurrenceTests(unittest.TestCase):
         self.assertEqual(result["status"], "crossed_between")
         self.assertEqual(result["occurrence"]["from_date"], "2026-07-09")
         self.assertEqual(result["occurrence"]["to_date"], "2026-07-10")
+        self.assertEqual(result["occurrence"]["from_value"], 1.2)
+        self.assertEqual(result["occurrence"]["to_value"], 1.28)
         self.assertEqual(result["occurrence"]["direction"], "up")
+        self.assertLess(
+            min(result["occurrence"]["from_value"], result["occurrence"]["to_value"]),
+            result["target"]["value"],
+        )
+        self.assertGreater(
+            max(result["occurrence"]["from_value"], result["occurrence"]["to_value"]),
+            result["target"]["value"],
+        )
 
     def test_fund_uses_latest_crossing_instead_of_much_older_exact_value(self):
         result = evaluate_fund_level_recurrence(

@@ -4371,6 +4371,18 @@ tbody tr:hover { background: #f0f8f6; }
 .level-recurrence-result em.unavailable { color: #60737b; background: #edf1f2; }
 .level-recurrence-result b { display: block; margin-top: 4px; font-size: 13px; line-height: 1.4; overflow-wrap: anywhere; }
 .level-recurrence-result small { display: block; margin-top: 5px; color: var(--muted); font-size: 9.5px; line-height: 1.45; }
+.level-recurrence-covered-target {
+  display: block;
+  margin-top: 7px;
+  padding: 6px 8px;
+  border-left: 3px solid #087d68;
+  border-radius: 3px;
+  background: #eef8f5;
+  color: #075f51;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.45;
+}
 .level-recurrence-result p { margin: 3px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
 .level-recurrence-meta { display: flex; align-items: flex-start; gap: 6px; margin-top: 10px; color: var(--muted); font-size: 9.5px; line-height: 1.5; }
 .level-recurrence-meta svg { flex: 0 0 auto; margin-top: 1px; }
@@ -5061,6 +5073,7 @@ button.portfolio-holding-row:hover:not(:disabled) {
   -webkit-line-clamp: 2;
 }
 .portfolio-level-cell.matched > b { color: #087f70; }
+.portfolio-level-cell.matched > small { color: #3e6f69; }
 .portfolio-level-cell.nearest > b { color: #8b6200; }
 .portfolio-level-cell.unavailable > b { color: #6a7880; }
 .portfolio-level-cell.loading > b { color: #356b75; }

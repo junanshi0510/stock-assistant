@@ -85,6 +85,12 @@ function levelValue(value) {
   return number.toFixed(number >= 100 ? 2 : 4)
 }
 
+function shortLevelDate(value) {
+  if (!value || typeof value !== 'string') return '-'
+  const parts = value.split('-')
+  return parts.length === 3 ? `${parts[1]}-${parts[2]}` : value
+}
+
 function recurrenceMeta(record, loading, error) {
   const data = record?.recurrence
   if (!data) {
@@ -108,11 +114,14 @@ function recurrenceMeta(record, loading, error) {
     }
   }
   if (data.status === 'crossed_between') {
+    const fromValue = levelValue(occurrence.from_value)
+    const toValue = levelValue(occurrence.to_value)
+    const targetValue = levelValue(data.target?.value)
     return {
       tone: 'matched',
-      primary: '区间穿越',
-      secondary: `${occurrence.from_date || '-'} 至 ${occurrence.to_date || '-'}`,
-      title: sourceText,
+      primary: `${fromValue} → ${toValue}`,
+      secondary: `覆盖当前 ${targetValue} · ${shortLevelDate(occurrence.from_date)} 至 ${shortLevelDate(occurrence.to_date)}`,
+      title: `确认净值从 ${fromValue} 变动至 ${toValue}，覆盖当前盘中估值 ${targetValue}；确认净值日期 ${occurrence.from_date || '-'} 至 ${occurrence.to_date || '-'}。${sourceText}`,
     }
   }
   if (data.status === 'not_found_in_coverage') {

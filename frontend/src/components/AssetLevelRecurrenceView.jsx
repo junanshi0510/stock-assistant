@@ -14,7 +14,7 @@ function signed(number) {
 
 function statusMeta(status) {
   if (status === 'reached' || status === 'reached_exact') return ['历史曾到达', 'matched']
-  if (status === 'crossed_between') return ['历史曾穿越', 'matched']
+  if (status === 'crossed_between') return ['区间覆盖当前估值', 'matched']
   if (status === 'not_found_in_coverage') return ['覆盖期未到达', 'nearest']
   return ['数据不可用', 'unavailable']
 }
@@ -65,9 +65,14 @@ export default function AssetLevelRecurrenceView({ data, onOpenEvidence }) {
           )}
           {data.status === 'crossed_between' && (
             <>
-              <span>上一次穿越区间</span>
-              <b>{occurrence?.from_date || '-'} 至 {occurrence?.to_date || '-'}</b>
-              <small>{value(occurrence?.from_value)} → {value(occurrence?.to_value)} · {occurrence?.direction === 'up' ? '向上穿越' : '向下穿越'}</small>
+              <span>上一次覆盖当前估值的确认净值区间</span>
+              <b>{value(occurrence?.from_value)} → {value(occurrence?.to_value)}</b>
+              <strong className="level-recurrence-covered-target">
+                当前盘中估值 {value(target?.value)} 位于该区间内
+              </strong>
+              <small>
+                {occurrence?.from_date || '-'} 至 {occurrence?.to_date || '-'} · {occurrence?.direction === 'up' ? '向上穿越' : '向下穿越'}
+              </small>
             </>
           )}
           {data.status === 'not_found_in_coverage' && (
