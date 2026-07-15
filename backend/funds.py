@@ -27,7 +27,10 @@ import requests
 import akshare as ak
 from akshare.utils import demjson
 
-from strategies.fund_conditioned_forward import evaluate_conditioned_forward_strategy
+from strategies.fund_conditioned_forward import (
+    evaluate_conditioned_forward_strategy,
+    unavailable_conditioned_forward,
+)
 from strategies.fund_decision_outcome import evaluate_fund_decision_outcome
 from strategies.fund_strategy_shadow_outcome import evaluate_fund_strategy_shadow_outcome
 from strategies.fund_market_profile import build_fund_market_profile
@@ -3046,7 +3049,11 @@ def get_fund_estimate(code: str) -> dict:
                 target_as_of=profile.get("estimate_date") or "",
                 target_source="东方财富基金估值",
             ),
+            "conditioned_forward": unavailable_conditioned_forward(
+                "live_estimate_unavailable_history_context_not_requested"
+            ),
         }
+    conditioned_forward = None
     try:
         history = _fetch_nav_history(code, months=120)
         points = [
@@ -3061,6 +3068,12 @@ def get_fund_estimate(code: str) -> dict:
             history_source="东方财富基金净值走势 / 天天基金历史净值",
             code=code,
         )
+        try:
+            conditioned_forward = evaluate_conditioned_forward_strategy(points)
+        except Exception as error:
+            conditioned_forward = unavailable_conditioned_forward(
+                f"conditioned_forward_calculation_failed:{error}"
+            )
     except Exception as error:
         level_recurrence = unavailable_level_recurrence(
             asset_type="fund",
@@ -3070,10 +3083,14 @@ def get_fund_estimate(code: str) -> dict:
             target_as_of=profile.get("estimate_date") or "",
             target_source="东方财富基金估值",
         )
+        conditioned_forward = unavailable_conditioned_forward(
+            f"confirmed_nav_history_unavailable:{error}"
+        )
     return {
         **base,
         "status": "available",
         "level_recurrence": level_recurrence,
+        "conditioned_forward": conditioned_forward,
         "method": {
             "estimate": "估算涨跌优先使用数据源给出的估算涨跌幅；缺失时才用估算净值相对上一确认净值计算。",
             "cache": f"估值响应最多缓存 {_PROFILE_CACHE_TTL} 秒，避免频繁请求上游数据源。",

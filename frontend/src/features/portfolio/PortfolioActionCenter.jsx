@@ -14,6 +14,7 @@ import {
   X,
 } from 'lucide-react'
 import AssetLevelRecurrenceView from '../../components/AssetLevelRecurrenceView'
+import FundConditionedForwardView from '../../components/FundConditionedForwardView'
 
 function money(value) {
   if (value == null || Number.isNaN(Number(value))) return '-'
@@ -412,6 +413,9 @@ function HoldingDetail({
               <div><dt>历史最大回撤</dt><dd className="delta-neg">{percent(trend.max_drawdown)}</dd></div>
             </dl>
           ) : <p className="portfolio-empty-line">{row.asset_type === 'fund' ? '没有成功返回的真实基金趋势证据，相关操作结论已停止。' : '当前行动报告没有绑定股票趋势证据。'}</p>}
+          {row.asset_type === 'fund' && levelRecord?.conditioned_forward && (
+            <FundConditionedForwardView data={levelRecord.conditioned_forward} />
+          )}
           {reportFund && (
             <p className="portfolio-source-line">
               持仓披露期：{reportFund.stock_period || '-'} · 行业披露期：{reportFund.industry_period || '-'}

@@ -59,11 +59,17 @@ def _row(
         "code": code,
         "name": str(item.get("name") or "").strip(),
     }
+    conditioned_forward = None
 
     try:
         if asset_type == "fund":
             response = fund_provider(code)
             recurrence = response.get("level_recurrence") if isinstance(response, dict) else None
+            conditioned_forward = (
+                response.get("conditioned_forward")
+                if isinstance(response, dict)
+                else None
+            )
             if not isinstance(recurrence, dict):
                 reason = (
                     response.get("reason")
@@ -82,7 +88,11 @@ def _row(
         label = "基金盘中估值" if asset_type == "fund" else "股票实时价位"
         recurrence = _unavailable(item, f"真实{label}历史到达分析失败: {error}")
 
-    return {**identity, "recurrence": recurrence}
+    return {
+        **identity,
+        "recurrence": recurrence,
+        "conditioned_forward": conditioned_forward,
+    }
 
 
 def build_holding_level_recurrence(
@@ -121,6 +131,10 @@ def build_holding_level_recurrence(
     unavailable_count = sum(status == "unavailable" for status in statuses)
     matched_count = sum(status in MATCHED_STATUSES for status in statuses)
     not_found_count = sum(status == "not_found_in_coverage" for status in statuses)
+    conditioned_statuses = [
+        str((item.get("conditioned_forward") or {}).get("status") or "not_applicable")
+        for item in rows
+    ]
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
@@ -131,6 +145,12 @@ def build_holding_level_recurrence(
             "matched_count": matched_count,
             "not_found_count": not_found_count,
             "unavailable_count": unavailable_count,
+            "historical_context_evaluated_count": sum(
+                status == "evaluated" for status in conditioned_statuses
+            ),
+            "historical_context_insufficient_count": sum(
+                status == "insufficient_data" for status in conditioned_statuses
+            ),
         },
         "coverage": {
             "stock_history_months": stock_months,

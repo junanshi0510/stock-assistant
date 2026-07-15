@@ -54,7 +54,14 @@ class HoldingLevelRecurrenceTests(unittest.TestCase):
 
         def fund_provider(code):
             fund_calls.append(code)
-            return {"level_recurrence": metric("fund", "crossed_between")}
+            return {
+                "level_recurrence": metric("fund", "crossed_between"),
+                "conditioned_forward": {
+                    "strategy_id": "fund_conditioned_forward_return",
+                    "strategy_version": "1.0.0",
+                    "status": "evaluated",
+                },
+            }
 
         result = holding_level_recurrence.build_holding_level_recurrence(
             rows,
@@ -68,6 +75,12 @@ class HoldingLevelRecurrenceTests(unittest.TestCase):
         self.assertEqual(stock_calls, [("港股", "00700", 72)])
         self.assertEqual(result["summary"]["matched_count"], 2)
         self.assertEqual(result["summary"]["unavailable_count"], 0)
+        self.assertEqual(result["summary"]["historical_context_evaluated_count"], 1)
+        self.assertEqual(
+            result["items"][0]["conditioned_forward"]["strategy_id"],
+            "fund_conditioned_forward_return",
+        )
+        self.assertIsNone(result["items"][1]["conditioned_forward"])
         self.assertEqual(result["coverage"]["stock_history_months"], 72)
 
     def test_one_provider_failure_does_not_replace_or_drop_other_rows(self):

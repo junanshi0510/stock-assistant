@@ -17,6 +17,7 @@ from strategies.fund_conditioned_forward import (  # noqa: E402
     STRATEGY_VERSION,
     classify_condition,
     evaluate_conditioned_forward_strategy,
+    unavailable_conditioned_forward,
 )
 
 
@@ -80,6 +81,15 @@ class FundConditionedStrategyTests(unittest.TestCase):
         self.assertEqual(result["decision"], "data_required")
         self.assertEqual(result["signal"]["direction"], "unavailable")
         self.assertEqual(result["confidence"]["level"], "unavailable")
+        self.assertEqual(result["horizons"], [])
+
+    def test_provider_failure_is_unavailable_without_synthetic_samples(self):
+        result = unavailable_conditioned_forward("confirmed_nav_history_unavailable")
+
+        self.assertEqual(result["status"], "unavailable")
+        self.assertEqual(result["decision"], "data_required")
+        self.assertEqual(result["reason"], "confirmed_nav_history_unavailable")
+        self.assertEqual(result["coverage"]["observation_count"], 0)
         self.assertEqual(result["horizons"], [])
 
 

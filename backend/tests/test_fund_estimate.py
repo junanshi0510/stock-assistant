@@ -31,9 +31,20 @@ class FundEstimateTests(unittest.TestCase):
             {"date": "2026-07-08", "unit_nav": 2.6},
             {"date": "2026-07-09", "unit_nav": 2.5},
         ])
+        conditioned_forward = {
+            "strategy_id": "fund_conditioned_forward_return",
+            "strategy_version": "1.0.0",
+            "status": "insufficient_data",
+            "horizons": [],
+        }
         with (
             patch.object(funds, "_fetch_profile", return_value=profile),
             patch.object(funds, "_fetch_nav_history", return_value=history),
+            patch.object(
+                funds,
+                "evaluate_conditioned_forward_strategy",
+                return_value=conditioned_forward,
+            ) as evaluator,
         ):
             result = funds.get_fund_estimate("110022")
 
@@ -44,6 +55,15 @@ class FundEstimateTests(unittest.TestCase):
         self.assertEqual(result["estimate"]["change_value"], 0.05)
         self.assertEqual(result["level_recurrence"]["status"], "crossed_between")
         self.assertEqual(result["level_recurrence"]["target"]["value"], 2.55)
+        self.assertEqual(result["conditioned_forward"], conditioned_forward)
+        evaluator.assert_called_once()
+        self.assertEqual(
+            evaluator.call_args.args[0],
+            [
+                {"date": "2026-07-08", "unit_nav": 2.6},
+                {"date": "2026-07-09", "unit_nav": 2.5},
+            ],
+        )
         self.assertIn("不等于基金最终确认净值", result["policy"])
 
     def test_missing_estimate_is_explicit_instead_of_reusing_confirmed_nav(self):
@@ -63,6 +83,11 @@ class FundEstimateTests(unittest.TestCase):
         self.assertEqual(result["confirmed"]["unit_nav"], 2.5)
         self.assertIsNone(result["estimate"]["unit_nav"])
         self.assertEqual(result["level_recurrence"]["status"], "unavailable")
+        self.assertEqual(result["conditioned_forward"]["status"], "unavailable")
+        self.assertEqual(
+            result["conditioned_forward"]["reason"],
+            "live_estimate_unavailable_history_context_not_requested",
+        )
         self.assertIn("不会用历史净值", result["reason"])
 
     def test_invalid_code_is_rejected(self):

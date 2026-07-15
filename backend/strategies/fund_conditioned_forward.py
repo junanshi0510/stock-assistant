@@ -183,6 +183,14 @@ def _empty_result(points: list[tuple[dt.date, float]], reason: str) -> dict[str,
     }
 
 
+def unavailable_conditioned_forward(reason: str) -> dict[str, Any]:
+    """Return an explicit unavailable result without fabricating historical samples."""
+    result = _empty_result([], reason)
+    result["status"] = "unavailable"
+    result["reason"] = reason
+    return result
+
+
 def evaluate_conditioned_forward_strategy(points: Iterable[Any]) -> dict[str, Any]:
     """Compare forward returns after historical month-ends matching today's condition."""
     normalized = _normalize_points(points)
