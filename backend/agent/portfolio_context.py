@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import Any
 
 import storage
+import fund_switch_execution_service
 import fund_switch_quote_service
 from portfolio_exposure import holdings_sha256
 
@@ -51,6 +52,10 @@ def get_portfolio_context(payload: dict[str, Any]) -> dict[str, Any]:
     if profile.get("updated_at"):
         as_of_values.append(str(profile["updated_at"]))
     switch_quotes = fund_switch_quote_service.agent_quote_summary(
+        user_id,
+        target_code=code,
+    )
+    switch_execution_reviews = fund_switch_execution_service.agent_execution_summary(
         user_id,
         target_code=code,
     )
@@ -112,6 +117,7 @@ def get_portfolio_context(payload: dict[str, Any]) -> dict[str, Any]:
             "updated_at": (target or {}).get("updated_at"),
         },
         "fund_switch_quotes": switch_quotes,
+        "fund_switch_execution_reviews": switch_execution_reviews,
         "holdings": [
             {
                 "asset_type": item.get("asset_type"),
@@ -133,6 +139,7 @@ def get_portfolio_context(payload: dict[str, Any]) -> dict[str, Any]:
             "amounts": "only_user_confirmed_holding_amounts",
             "target_match": "asset_type_fund_and_exact_six_digit_code",
             "switch_quote_scope": "latest_user_confirmed_quote_per_candidate_with_audit_status",
+            "switch_execution_scope": "latest_immutable_pretrade_review_with_current_binding_status",
         },
         "policy": "组合上下文只读取用户已确认持仓和已保存约束，不推断现金、负债或未导入资产。",
     }

@@ -12,6 +12,7 @@ import analysis
 import data_fetch
 import decision_center
 import fund_switch_cost_service
+import fund_switch_execution_service
 import fund_switch_quote_service
 import holding_level_recurrence
 import holding_thesis
@@ -127,13 +128,25 @@ class FundSwitchQuoteRequest(BaseModel):
     expected_review_payload_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     platform_name: str = Field(min_length=2, max_length=80)
     quoted_at: datetime
+    redemption_gross_yuan: float = Field(gt=0, le=100_000_000)
     redemption_fee_yuan: float = Field(ge=0, le=100_000_000)
+    candidate_order_amount_yuan: float = Field(gt=0, le=100_000_000)
     candidate_entry_fee_yuan: float = Field(ge=0, le=100_000_000)
     expected_redemption_arrival_date: date
     candidate_purchase_available: bool
     acknowledged_platform_quote: bool
     acknowledged_fee_variance: bool = False
+    acknowledged_gross_variance: bool = False
+    acknowledged_settlement_risk: bool
     note: str = Field(default="", max_length=300)
+
+
+class FundSwitchExecutionReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_quote_event_id: str = Field(min_length=20, max_length=96)
+    expected_quote_event_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    acknowledged_holding_thesis: bool
 
 
 class PortfolioActionReportRequest(BaseModel):
@@ -341,6 +354,60 @@ def get_fund_switch_quote_audit(
         )
     except fund_switch_quote_service.HoldingNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@router.post(
+    "/api/holdings/{holding_id}/fund-switch-execution-reviews/{candidate_code}"
+)
+def create_fund_switch_execution_review(
+    holding_id: int,
+    candidate_code: str,
+    req: FundSwitchExecutionReviewRequest,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        return fund_switch_execution_service.create_execution_review(
+            holding_id,
+            candidate_code,
+            req.model_dump(mode="json"),
+            user_id=_subject_id(principal),
+            actor_id=_actor_id(principal),
+        )
+    except (
+        fund_switch_execution_service.HoldingNotFoundError,
+        fund_switch_execution_service.QuoteNotFoundError,
+    ) as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except fund_switch_execution_service.ExecutionReviewConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except fund_switch_execution_service.ExecutionReviewValidationError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=502, detail=f"真实换仓执行审查失败:{error}") from error
+
+
+@router.get(
+    "/api/holdings/{holding_id}/fund-switch-execution-reviews/{candidate_code}"
+)
+def get_fund_switch_execution_review(
+    holding_id: int,
+    candidate_code: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        item = fund_switch_execution_service.get_latest_execution_review(
+            holding_id,
+            candidate_code,
+            user_id=_subject_id(principal),
+        )
+        return {
+            "status": "available" if item else "not_recorded",
+            "item": item,
+        }
+    except fund_switch_execution_service.HoldingNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except fund_switch_execution_service.ExecutionReviewValidationError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 @router.get("/api/holdings/exposure")

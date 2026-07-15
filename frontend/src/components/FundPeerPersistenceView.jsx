@@ -77,8 +77,8 @@ function reasonText(data, error) {
 }
 
 function GateIcon({ status }) {
-  if (status === 'pass') return <CircleAlert size={14} aria-hidden="true" />
-  if (status === 'fail') return <CircleCheck size={14} aria-hidden="true" />
+  if (status === 'pass') return <CircleCheck size={14} aria-hidden="true" />
+  if (status === 'fail' || status === 'block') return <CircleAlert size={14} aria-hidden="true" />
   return <ShieldAlert size={14} aria-hidden="true" />
 }
 
@@ -112,12 +112,16 @@ function gateValue(check) {
 const EMPTY_QUOTE = {
   platformName: '',
   quotedAt: '',
+  redemptionGross: '',
   redemptionFee: '',
+  candidateOrderAmount: '',
   entryFee: '',
   arrivalDate: '',
   candidateAvailable: false,
   platformAcknowledged: false,
   varianceAcknowledged: false,
+  grossVarianceAcknowledged: false,
+  settlementRiskAcknowledged: false,
   note: '',
 }
 
@@ -128,10 +132,11 @@ function quoteStatus(latest) {
   return latest.status
 }
 
-function quoteStatusLabel(status) {
-  if (status === 'confirmed_current') return '成本证据当前有效'
+function quoteStatusLabel(status, latest = null) {
+  if (status === 'confirmed_current') return '成本与现金流当前有效'
   if (status === 'confirmed_with_blocker') return '报价已记录，申购受限'
   if (status === 'expired') return '平台报价已过期'
+  if (status === 'superseded' && latest?.payload?.decision_gate?.reason === 'platform_quote_schema_outdated') return '旧报价缺少真实现金流'
   if (status === 'superseded') return '持仓或成本证据已变化'
   if (status === 'integrity_failed') return '审计完整性失败'
   return '尚未确认平台报价'
@@ -169,12 +174,16 @@ function SwitchQuotePanel({ item, costReady, onConfirm }) {
         expected_review_payload_sha256: binding.payload_sha256,
         platform_name: form.platformName.trim(),
         quoted_at: parsedTime.toISOString(),
+        redemption_gross_yuan: Number(form.redemptionGross),
         redemption_fee_yuan: Number(form.redemptionFee),
+        candidate_order_amount_yuan: Number(form.candidateOrderAmount),
         candidate_entry_fee_yuan: Number(form.entryFee),
         expected_redemption_arrival_date: form.arrivalDate,
         candidate_purchase_available: form.candidateAvailable,
         acknowledged_platform_quote: form.platformAcknowledged,
         acknowledged_fee_variance: form.varianceAcknowledged,
+        acknowledged_gross_variance: form.grossVarianceAcknowledged,
+        acknowledged_settlement_risk: form.settlementRiskAcknowledged,
         note: form.note.trim(),
       })
       setForm(EMPTY_QUOTE)
@@ -191,7 +200,7 @@ function SwitchQuotePanel({ item, costReady, onConfirm }) {
       <div className="peer-platform-quote-head">
         <div>
           <span>销售平台真实报价</span>
-          <b>{quoteStatusLabel(status)}</b>
+          <b>{quoteStatusLabel(status, latest)}</b>
         </div>
         {eligible && (
           <button type="button" className="ghost compact" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
@@ -203,11 +212,13 @@ function SwitchQuotePanel({ item, costReady, onConfirm }) {
       {latest && (
         <>
           <dl className="peer-platform-quote-facts">
+            <div><dt>平台赎回总额</dt><dd>{money(latestPayload.cashflow?.redemption_gross_yuan)}</dd></div>
+            <div><dt>预计净到账</dt><dd>{money(latestPayload.cashflow?.redemption_net_proceeds_yuan)}</dd></div>
+            <div><dt>候选拟申购</dt><dd>{money(latestPayload.cashflow?.candidate_order_amount_yuan)}</dd></div>
+            <div><dt>预计留存现金</dt><dd>{money(latestPayload.cashflow?.residual_cash_yuan)}</dd></div>
             <div><dt>平台报价总成本</dt><dd>{money(latestPayload.confirmed_cost?.total_switching_cost_yuan)}</dd></div>
-            <div><dt>成本率</dt><dd>{pct(latestPayload.confirmed_cost?.total_switching_cost_rate_pct)}</dd></div>
             <div><dt>预计到账</dt><dd>{latestPayload.settlement?.expected_redemption_arrival_date || '-'}</dd></div>
             <div><dt>现金在途</dt><dd>{latestPayload.settlement?.cash_gap_days == null ? '-' : `${latestPayload.settlement.cash_gap_days} 天`}</dd></div>
-            <div><dt>历史覆盖期</dt><dd>{months(latestPayload.historical_cost_hurdle?.confirmed_cost_coverage_months)}</dd></div>
             <div><dt>审计链</dt><dd>{latest.integrity?.verified ? '通过' : '失败'}</dd></div>
           </dl>
           <small>
@@ -231,8 +242,16 @@ function SwitchQuotePanel({ item, costReady, onConfirm }) {
             <input type="datetime-local" value={form.quotedAt} onChange={(event) => update('quotedAt', event.target.value)} required />
           </label>
           <label>
+            <span>平台赎回总额</span>
+            <input type="number" inputMode="decimal" min="0.01" step="0.01" value={form.redemptionGross} onChange={(event) => update('redemptionGross', event.target.value)} required />
+          </label>
+          <label>
             <span>平台赎回费</span>
             <input type="number" inputMode="decimal" min="0" step="0.01" value={form.redemptionFee} onChange={(event) => update('redemptionFee', event.target.value)} required />
+          </label>
+          <label>
+            <span>候选拟申购总额</span>
+            <input type="number" inputMode="decimal" min="0.01" step="0.01" value={form.candidateOrderAmount} onChange={(event) => update('candidateOrderAmount', event.target.value)} required />
           </label>
           <label>
             <span>候选申购费</span>
@@ -256,12 +275,20 @@ function SwitchQuotePanel({ item, costReady, onConfirm }) {
           </label>
           <label className="peer-quote-check full-width">
             <input type="checkbox" checked={form.varianceAcknowledged} onChange={(event) => update('varianceAcknowledged', event.target.checked)} />
-            <span>若报价明显偏离披露区间，我已复核并确认差异</span>
+            <span>若报价明显偏离披露费用区间，我已复核并确认差异</span>
+          </label>
+          <label className="peer-quote-check full-width">
+            <input type="checkbox" checked={form.grossVarianceAcknowledged} onChange={(event) => update('grossVarianceAcknowledged', event.target.checked)} />
+            <span>若平台赎回总额明显偏离确认净值估算，我已复核并确认差异</span>
+          </label>
+          <label className="peer-quote-check full-width">
+            <input type="checkbox" checked={form.settlementRiskAcknowledged} onChange={(event) => update('settlementRiskAcknowledged', event.target.checked)} required />
+            <span>我已确认到账前价格、申购额度和费率可能变化，不会垫资提前申购</span>
           </label>
           {error && <div className="error full-width">{error}</div>}
           <div className="peer-quote-submit full-width">
             <small><Clock3 size={12} /> 报价保存后 24 小时自动过期，不触发自动交易。</small>
-            <button type="submit" className="primary compact" disabled={saving || !form.platformAcknowledged}>
+            <button type="submit" className="primary compact" disabled={saving || !form.platformAcknowledged || !form.settlementRiskAcknowledged}>
               <Save size={14} /> {saving ? '保存中' : '确认并留痕'}
             </button>
           </div>
@@ -271,7 +298,122 @@ function SwitchQuotePanel({ item, costReady, onConfirm }) {
   )
 }
 
-function AlternativeRows({ alternatives, onConfirmSwitchQuote }) {
+function executionStatusLabel(status) {
+  if (status === 'ready_for_redemption_review') return '可进入人工赎回复核'
+  if (status === 'blocked_by_policy') return '投资政策未通过'
+  if (status === 'blocked_by_thesis') return '持有逻辑未通过'
+  if (status === 'blocked_by_market') return '市场权限未通过'
+  if (status === 'blocked_by_cashflow') return '现金流未闭合'
+  if (status === 'blocked_by_exposure_evidence') return '组合穿透证据不足'
+  if (status === 'blocked_by_portfolio_limit') return '预计触发组合上限'
+  if (status === 'expired') return '绑定报价已过期'
+  if (status === 'superseded') return '持仓或约束已变化'
+  if (status === 'integrity_failed') return '执行审查完整性失败'
+  return '尚未进行执行审查'
+}
+
+function executionTone(status) {
+  if (status === 'ready_for_redemption_review') return 'ready'
+  if (['expired', 'superseded'].includes(status)) return 'stale'
+  if (status) return 'blocked'
+  return 'not-recorded'
+}
+
+function SwitchExecutionReviewPanel({ item, onReview }) {
+  const quote = item.latest_platform_quote || null
+  const review = item.latest_execution_review || null
+  const payload = review?.payload || {}
+  const decisionGate = payload.decision_gate || {}
+  const [acknowledged, setAcknowledged] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const quoteReady = Boolean(
+    quoteStatus(quote) === 'confirmed_current'
+    && quote?.integrity?.verified
+    && quote?.integrity?.quote_schema_current,
+  )
+  const eligible = Boolean(quoteReady && onReview)
+
+  if (!quote) return null
+
+  async function runReview() {
+    setSaving(true)
+    setError('')
+    try {
+      await onReview(item.code, {
+        expected_quote_event_id: quote.id,
+        expected_quote_event_hash: quote.integrity?.event_hash,
+        acknowledged_holding_thesis: acknowledged,
+      })
+    } catch (requestError) {
+      setError(requestError?.message || '执行审查失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className={`peer-execution-review ${executionTone(review?.status)}`}>
+      <div className="peer-execution-review-head">
+        <div>
+          <span>组合与现金流执行审查</span>
+          <b>{executionStatusLabel(review?.status)}</b>
+        </div>
+        <em>{decisionGate.candidate_purchase_ready ? '申购可执行' : '申购等待到账后重报'}</em>
+      </div>
+
+      {review && (
+        <>
+          <dl className="peer-execution-facts">
+            <div><dt>换仓后候选占比</dt><dd>{pct(payload.position_projection?.candidate_ratio_after_switch_pct)}</dd></div>
+            <div><dt>单品上限</dt><dd>{pct(payload.position_projection?.max_single_ratio_pct)}</dd></div>
+            <div><dt>权益最坏上界</dt><dd>{pct(payload.portfolio_projection?.equity_upper_ratio_pct)}</dd></div>
+            <div><dt>权益上限</dt><dd>{pct(payload.portfolio_projection?.max_equity_ratio_pct)}</dd></div>
+            <div><dt>行业最坏上界</dt><dd>{pct(payload.portfolio_projection?.industry_max_upper_ratio_pct)}</dd></div>
+            <div><dt>行业上限</dt><dd>{pct(payload.portfolio_projection?.max_industry_ratio_pct)}</dd></div>
+          </dl>
+          <div className="peer-execution-gates">
+            {(payload.gates || []).map((gate) => (
+              <div className={gate.status} key={gate.code}>
+                <GateIcon status={gate.status} />
+                <span><b>{gate.label}</b><small>{gate.detail}</small></span>
+              </div>
+            ))}
+          </div>
+          <div className="peer-execution-stages">
+            {(payload.manual_stages || []).map((stage, index) => (
+              <div key={stage.id}>
+                <span>{index + 1}</span>
+                <p><b>{stage.label}</b><small>{stage.id === 'purchase_requote' ? '真实到账后才可继续' : stage.state}</small></p>
+              </div>
+            ))}
+          </div>
+          <small>
+            审查于 {displayTime(payload.generated_at)} 留痕 · 第 {review.revision || 1} 版 ·
+            审计链 {review.integrity?.verified ? '通过' : '失败'} · 当前绑定 {review.integrity?.current_bindings ? '有效' : '已变化'}
+          </small>
+        </>
+      )}
+
+      {!review && <small>先确认平台真实赎回总额、拟申购金额和到账日，再核验投资政策、持有逻辑及换仓后穿透上限。</small>}
+      {!quoteReady && <small>当前报价不是完整有效的 v2 现金流证据，不能进入执行审查。</small>}
+      {eligible && (
+        <div className="peer-execution-action">
+          <label className="peer-quote-check">
+            <input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} />
+            <span>我已人工阅读当前持仓的买入逻辑和退出条件；自由文本条件不由系统代判</span>
+          </label>
+          <button type="button" className="primary compact" onClick={runReview} disabled={saving || !acknowledged}>
+            <FileSearch size={14} /> {saving ? '核验真实披露中' : review ? '重新核验全部门禁' : '核验组合与现金流'}
+          </button>
+        </div>
+      )}
+      {error && <div className="error">{error}</div>}
+    </div>
+  )
+}
+
+function AlternativeRows({ alternatives, onConfirmSwitchQuote, onReviewSwitchExecution }) {
   const rows = alternatives?.alternatives || []
   const audit = alternatives?.durability_audit || {}
   const auditSummary = audit.summary || {}
@@ -308,7 +450,7 @@ function AlternativeRows({ alternatives, onConfirmSwitchQuote }) {
           <dl>
             <div><dt>披露成本完整</dt><dd>{costSummary.ready_for_platform_quote_count ?? 0}</dd></div>
             <div><dt>平台报价有效</dt><dd>{costSummary.current_platform_quote_count ?? 0}</dd></div>
-            <div><dt>报价需重算</dt><dd>{costSummary.stale_platform_quote_count ?? 0}</dd></div>
+            <div><dt>赎回复核就绪</dt><dd>{costSummary.redemption_review_ready_count ?? 0}</dd></div>
           </dl>
         </div>
       )}
@@ -381,6 +523,7 @@ function AlternativeRows({ alternatives, onConfirmSwitchQuote }) {
                       </div>
                       <small>确认净值截至 {switchCost.valuation?.as_of || '-'}；页面优惠费率和历史覆盖期只用于复核，提交前仍以销售平台报价为准。</small>
                       <SwitchQuotePanel item={item} costReady={costReady} onConfirm={onConfirmSwitchQuote} />
+                      <SwitchExecutionReviewPanel item={item} onReview={onReviewSwitchExecution} />
                     </>
                   ) : (
                     <>
@@ -394,7 +537,7 @@ function AlternativeRows({ alternatives, onConfirmSwitchQuote }) {
           )
         })}
       </div>
-      <p className="peer-alternative-policy">历史胜率不是未来上涨概率，定期报告也不是实时持仓。FIFO 披露成本通过后仍必须核对销售平台当日费用和到账时间，不等于应当换仓。</p>
+      <p className="peer-alternative-policy">历史胜率不是未来上涨概率，定期报告也不是实时持仓。赎回复核通过仍不授权交易；候选申购必须等待真实到账并重新报价。</p>
     </div>
   )
 }
@@ -410,6 +553,7 @@ export default function FundPeerPersistenceView({
   alternativesError = '',
   onOpenEvidence,
   onConfirmSwitchQuote,
+  onReviewSwitchExecution,
 }) {
   const evaluated = data?.status === 'evaluated'
   const diagnosis = data?.diagnosis || {}
@@ -502,7 +646,11 @@ export default function FundPeerPersistenceView({
               </button>
             )}
             {alternativesError && <div className="error fund-peer-alternative-error">{alternativesError}</div>}
-            <AlternativeRows alternatives={alternatives} onConfirmSwitchQuote={onConfirmSwitchQuote} />
+            <AlternativeRows
+              alternatives={alternatives}
+              onConfirmSwitchQuote={onConfirmSwitchQuote}
+              onReviewSwitchExecution={onReviewSwitchExecution}
+            />
           </div>
         </>
       )}

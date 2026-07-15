@@ -178,6 +178,43 @@ class InvestmentSynthesisTests(unittest.TestCase):
         self.assertNotIn("platform_name", quote["items"][0])
         self.assertNotIn("raw_lots", quote["items"][0])
 
+    def test_private_execution_review_never_exposes_thesis_text_or_order_authority(self):
+        outputs = {
+            "portfolio_context": {
+                "fund_switch_execution_reviews": {
+                    "status": "available",
+                    "count": 1,
+                    "items": [{
+                        "selected_code": "000001",
+                        "candidate_code": "000002",
+                        "status": "ready_for_redemption_review",
+                        "generated_at": "2026-07-15T00:30:00+00:00",
+                        "blockers": [],
+                        "cashflow": {"cash_gap_days": 3, "pre_funding_allowed": False},
+                        "position_projection": {"candidate_ratio_after_switch_pct": 24.6},
+                        "portfolio_projection": {"equity_upper_ratio_pct": 17.4},
+                        "redemption_review_ready": True,
+                        "candidate_purchase_ready": False,
+                        "execution_authorized": False,
+                        "integrity_verified": True,
+                        "current_bindings": True,
+                        "holding_thesis": {"exit_condition": "不得发送给模型"},
+                        "raw_disclosures": [{"name": "不得发送给模型"}],
+                    }],
+                },
+            },
+        }
+
+        context = build_synthesis_context({}, outputs, {})
+        review = context["private_context"]["portfolio_context"][
+            "fund_switch_execution_reviews"
+        ]["items"][0]
+        self.assertTrue(review["redemption_review_ready"])
+        self.assertFalse(review["candidate_purchase_ready"])
+        self.assertFalse(review["execution_authorized"])
+        self.assertNotIn("holding_thesis", review)
+        self.assertNotIn("raw_disclosures", review)
+
     def test_peer_persistence_is_bounded_and_evidence_linked(self):
         outputs = {
             "fund_analysis": {"code": "001480", "name": "测试基金"},

@@ -13,12 +13,16 @@ import storage
 from strategies.fund_switch_cost import build_lot_binding
 
 
-QUOTE_SCHEMA_VERSION = "fund_switch_platform_quote.v1"
+QUOTE_SCHEMA_VERSION = "fund_switch_platform_quote.v2"
+LEGACY_QUOTE_SCHEMA_VERSION = "fund_switch_platform_quote.v1"
 QUOTE_VALID_HOURS = 24
 MAX_FUTURE_SKEW_MINUTES = 5
 MAX_SETTLEMENT_DAYS = 30
 MATERIAL_VARIANCE_RATE = 0.002
 MATERIAL_VARIANCE_MIN_YUAN = 10.0
+MATERIAL_GROSS_VARIANCE_RATE = 0.005
+MATERIAL_GROSS_VARIANCE_MIN_YUAN = 10.0
+CASHFLOW_ROUNDING_TOLERANCE_YUAN = 0.02
 CHINA_TIMEZONE = dt.timezone(dt.timedelta(hours=8))
 
 
@@ -217,17 +221,44 @@ def submit_fund_switch_quote(
 
     redemption_fee = _number(request.get("redemption_fee_yuan"))
     entry_fee = _number(request.get("candidate_entry_fee_yuan"))
+    platform_gross = _number(request.get("redemption_gross_yuan"))
+    candidate_order_amount = _number(request.get("candidate_order_amount_yuan"))
     if redemption_fee is None or entry_fee is None or redemption_fee < 0 or entry_fee < 0:
         raise QuoteValidationError("赎回费和候选申购费必须是非负有限金额")
-    gross_value = _number(
+    if platform_gross is None or platform_gross <= 0:
+        raise QuoteValidationError("必须填写销售平台显示的本次赎回总额")
+    if candidate_order_amount is None or candidate_order_amount <= 0:
+        raise QuoteValidationError("必须填写销售平台本次候选拟申购总金额")
+    disclosed_gross = _number(
         ((review_payload.get("redemption") or {}).get("gross_value_yuan"))
     )
-    if gross_value is None or gross_value <= 0:
+    if disclosed_gross is None or disclosed_gross <= 0:
         raise CostReviewConflictError("成本快照缺少可校验的赎回总额")
     total_cost = redemption_fee + entry_fee
-    if redemption_fee > gross_value or entry_fee > gross_value or total_cost > gross_value:
+    if redemption_fee >= platform_gross or entry_fee >= candidate_order_amount:
+        raise QuoteValidationError("平台费用必须小于对应的赎回或申购金额")
+    if total_cost > platform_gross:
         raise QuoteValidationError("平台费用不能超过本次赎回总额")
-    cost_rate = total_cost / gross_value * 100
+    redemption_net = platform_gross - redemption_fee
+    if candidate_order_amount > redemption_net + CASHFLOW_ROUNDING_TOLERANCE_YUAN:
+        raise QuoteValidationError("候选拟申购金额不能超过本次预计赎回净到账金额")
+    candidate_net_asset = candidate_order_amount - entry_fee
+    residual_cash = max(0.0, redemption_net - candidate_order_amount)
+    if candidate_net_asset <= 0:
+        raise QuoteValidationError("扣除候选申购费后必须仍有可投资金额")
+    cost_rate = total_cost / platform_gross * 100
+
+    gross_variance_amount = abs(platform_gross - disclosed_gross)
+    gross_tolerance = max(
+        MATERIAL_GROSS_VARIANCE_MIN_YUAN,
+        disclosed_gross * MATERIAL_GROSS_VARIANCE_RATE,
+    )
+    material_gross_variance = gross_variance_amount > gross_tolerance
+    gross_variance_acknowledged = bool(request.get("acknowledged_gross_variance"))
+    if material_gross_variance and not gross_variance_acknowledged:
+        raise QuoteValidationError(
+            "平台赎回总额明显偏离确认净值估算，请复核并确认差异"
+        )
 
     disclosed_low, disclosed_high = _disclosed_cost_range(review_payload)
     if disclosed_low is None or disclosed_high is None:
@@ -241,7 +272,7 @@ def submit_fund_switch_quote(
     else:
         variance_direction = "within_disclosed_range"
         variance_amount = 0.0
-    tolerance = max(MATERIAL_VARIANCE_MIN_YUAN, gross_value * MATERIAL_VARIANCE_RATE)
+    tolerance = max(MATERIAL_VARIANCE_MIN_YUAN, platform_gross * MATERIAL_VARIANCE_RATE)
     material_variance = variance_amount > tolerance
     variance_acknowledged = bool(request.get("acknowledged_fee_variance"))
     if material_variance and not variance_acknowledged:
@@ -255,9 +286,14 @@ def submit_fund_switch_quote(
         ))
     )
     candidate_available = bool(request.get("candidate_purchase_available"))
+    settlement_risk_acknowledged = bool(request.get("acknowledged_settlement_risk"))
+    if not settlement_risk_acknowledged:
+        raise QuoteValidationError("必须确认赎回到账前存在价格、额度和费率变化风险")
     executable_cost_confirmed = bool(
         candidate_available
+        and settlement_risk_acknowledged
         and (not material_variance or variance_acknowledged)
+        and (not material_gross_variance or gross_variance_acknowledged)
     )
     quote_expires_at = quoted_utc + dt.timedelta(hours=QUOTE_VALID_HOURS)
     payload = {
@@ -280,7 +316,23 @@ def submit_fund_switch_quote(
             "candidate_entry_fee_yuan": _round(entry_fee),
             "total_switching_cost_yuan": _round(total_cost),
             "total_switching_cost_rate_pct": _round(cost_rate, 4),
-            "gross_value_yuan": _round(gross_value),
+            "gross_value_yuan": _round(platform_gross),
+        },
+        "cashflow": {
+            "redemption_gross_yuan": _round(platform_gross),
+            "redemption_net_proceeds_yuan": _round(redemption_net),
+            "candidate_order_amount_yuan": _round(candidate_order_amount),
+            "candidate_net_asset_amount_yuan": _round(candidate_net_asset),
+            "residual_cash_yuan": _round(residual_cash),
+            "source": "用户从销售平台本次交易确认页录入总额与拟申购金额，净额由服务端确定性计算",
+        },
+        "gross_comparison": {
+            "confirmed_nav_estimate_yuan": _round(disclosed_gross),
+            "platform_redemption_gross_yuan": _round(platform_gross),
+            "variance_amount_yuan": _round(gross_variance_amount),
+            "material_variance_threshold_yuan": _round(gross_tolerance),
+            "material_variance": material_gross_variance,
+            "acknowledged_gross_variance": gross_variance_acknowledged,
         },
         "disclosed_comparison": {
             "disclosed_low_yuan": _round(disclosed_low),
@@ -295,6 +347,9 @@ def submit_fund_switch_quote(
             "expected_redemption_arrival_date": arrival_date.isoformat(),
             "cash_gap_days": settlement_days,
             "candidate_purchase_available": candidate_available,
+            "settlement_risk_acknowledged": settlement_risk_acknowledged,
+            "purchase_quote_refresh_required_after_arrival": True,
+            "pre_funding_allowed": False,
         },
         "historical_cost_hurdle": {
             "rolling_12m_median_excess_pp": _round(annual_excess),
@@ -312,8 +367,12 @@ def submit_fund_switch_quote(
                 not material_variance or variance_acknowledged
             ),
             "settlement_date_confirmed": True,
+            "settlement_risk_acknowledged": settlement_risk_acknowledged,
+            "cashflow_amounts_confirmed": True,
             "candidate_purchase_available": candidate_available,
             "executable_switch_cost_confirmed": executable_cost_confirmed,
+            "execution_review_required": True,
+            "candidate_purchase_ready": False,
             "automatic_switch_allowed": False,
             "reason": (
                 "cost_evidence_confirmed"
@@ -322,7 +381,7 @@ def submit_fund_switch_quote(
             ),
         },
         "note": str(request.get("note") or "").strip()[:300],
-        "policy": "该记录确认销售平台本次提交前报价与预计到账证据，不冒充最终清算费用，也不构成收益承诺、换仓建议或自动交易指令。",
+        "policy": "该记录确认销售平台本次提交前赎回总额、费用、拟申购金额与预计到账证据，不冒充最终清算费用；候选申购必须等待真实到账并重新报价，也不构成收益承诺、换仓建议或自动交易指令。",
         "quoted_at": quoted_at.isoformat(timespec="seconds"),
     }
     event = storage.append_fund_switch_quote_event(
@@ -346,6 +405,16 @@ def decorate_quote_event(
     current = (now or _utc_now()).astimezone(dt.timezone.utc)
     payload = copy.deepcopy(event.get("payload") or {})
     quote = payload.get("platform_quote") or {}
+    quote_schema_current = payload.get("schema_version") == QUOTE_SCHEMA_VERSION
+    cashflow = payload.get("cashflow") or {}
+    cashflow_complete = bool(
+        quote_schema_current
+        and _number(cashflow.get("redemption_gross_yuan")) is not None
+        and _number(cashflow.get("redemption_net_proceeds_yuan")) is not None
+        and _number(cashflow.get("candidate_order_amount_yuan")) is not None
+        and _number(cashflow.get("candidate_net_asset_amount_yuan")) is not None
+        and _number(cashflow.get("residual_cash_yuan")) is not None
+    )
     expires_at = _datetime(quote.get("quote_expires_at"))
     quoted_at = _datetime(quote.get("quoted_at"))
     quote_current = bool(
@@ -389,6 +458,8 @@ def decorate_quote_event(
     executable = bool(
         integrity_verified
         and quote_current
+        and quote_schema_current
+        and cashflow_complete
         and portfolio_binding.get("current")
         and expected_review_current
         and stored_gate.get("executable_switch_cost_confirmed")
@@ -402,6 +473,9 @@ def decorate_quote_event(
     elif not portfolio_binding.get("current"):
         status = "superseded"
         reason = str(portfolio_binding.get("reason") or "portfolio_ledger_changed")
+    elif not quote_schema_current or not cashflow_complete:
+        status = "superseded"
+        reason = "platform_quote_schema_outdated"
     elif not quote_current:
         status = "expired"
         reason = "platform_quote_expired"
@@ -414,6 +488,8 @@ def decorate_quote_event(
     payload["decision_gate"] = {
         **stored_gate,
         "quote_current": quote_current,
+        "quote_schema_current": quote_schema_current,
+        "cashflow_amounts_confirmed": cashflow_complete,
         "cost_review_integrity_verified": bool(review_integrity.get("verified")),
         "cost_review_current": bool(
             portfolio_binding.get("current") and expected_review_current
@@ -440,6 +516,8 @@ def decorate_quote_event(
             "portfolio_binding_current": bool(portfolio_binding.get("current")),
             "portfolio_binding_reason": portfolio_binding.get("reason"),
             "expected_review_current": expected_review_current,
+            "quote_schema_current": quote_schema_current,
+            "cashflow_complete": cashflow_complete,
             "event_hash": event.get("event_hash"),
             "previous_hash": event.get("previous_hash"),
         },
@@ -569,11 +647,16 @@ def agent_quote_summary(
                 "quote_expires_at": ((item.get("payload") or {}).get("platform_quote") or {}).get("quote_expires_at"),
                 "total_switching_cost_yuan": ((item.get("payload") or {}).get("confirmed_cost") or {}).get("total_switching_cost_yuan"),
                 "total_switching_cost_rate_pct": ((item.get("payload") or {}).get("confirmed_cost") or {}).get("total_switching_cost_rate_pct"),
+                "redemption_gross_yuan": ((item.get("payload") or {}).get("cashflow") or {}).get("redemption_gross_yuan"),
+                "redemption_net_proceeds_yuan": ((item.get("payload") or {}).get("cashflow") or {}).get("redemption_net_proceeds_yuan"),
+                "candidate_order_amount_yuan": ((item.get("payload") or {}).get("cashflow") or {}).get("candidate_order_amount_yuan"),
+                "residual_cash_yuan": ((item.get("payload") or {}).get("cashflow") or {}).get("residual_cash_yuan"),
                 "cash_gap_days": ((item.get("payload") or {}).get("settlement") or {}).get("cash_gap_days"),
                 "historical_cost_coverage_months": ((item.get("payload") or {}).get("historical_cost_hurdle") or {}).get("confirmed_cost_coverage_months"),
                 "executable_switch_cost_confirmed": ((item.get("payload") or {}).get("decision_gate") or {}).get("executable_switch_cost_confirmed"),
                 "integrity_verified": (item.get("integrity") or {}).get("verified"),
                 "portfolio_binding_current": (item.get("integrity") or {}).get("portfolio_binding_current"),
+                "quote_schema_current": (item.get("integrity") or {}).get("quote_schema_current"),
             }
             for item in items
         ],

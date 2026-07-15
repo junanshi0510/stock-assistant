@@ -46,6 +46,7 @@ EXPECTED_OPERATIONS = {
     "/api/holdings/{holding_id}/fund-alternatives": {"GET"},
     "/api/holdings/{holding_id}/fund-switch-quotes": {"GET", "POST"},
     "/api/holdings/{holding_id}/fund-switch-quotes/{candidate_code}/audit": {"GET"},
+    "/api/holdings/{holding_id}/fund-switch-execution-reviews/{candidate_code}": {"GET", "POST"},
     "/api/holdings/exposure": {"GET"},
     "/api/holdings/exposure-snapshots": {"GET", "POST"},
     "/api/holdings/exposure-snapshots/{snapshot_id}": {"GET"},
@@ -129,6 +130,23 @@ class RouteContractTests(unittest.TestCase):
             if path.startswith("/api/")
         }
         self.assertEqual(actual, EXPECTED_OPERATIONS)
+
+    def test_fund_switch_cashflow_and_execution_bindings_are_required(self):
+        schemas = app.openapi()["components"]["schemas"]
+        quote_required = set(schemas["FundSwitchQuoteRequest"]["required"])
+        execution_required = set(
+            schemas["FundSwitchExecutionReviewRequest"]["required"]
+        )
+        self.assertTrue({
+            "redemption_gross_yuan",
+            "candidate_order_amount_yuan",
+            "acknowledged_settlement_risk",
+        }.issubset(quote_required))
+        self.assertEqual(execution_required, {
+            "expected_quote_event_id",
+            "expected_quote_event_hash",
+            "acknowledged_holding_thesis",
+        })
 
     def test_public_strategy_audit_hides_operator_identity_and_reason(self):
         event = {

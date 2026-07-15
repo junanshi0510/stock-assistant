@@ -17,7 +17,11 @@ import AssetLevelRecurrenceView from '../../components/AssetLevelRecurrenceView'
 import FundConditionedForwardView from '../../components/FundConditionedForwardView'
 import FundPeerPersistenceView from '../../components/FundPeerPersistenceView'
 import { fetchFundPeerPersistence } from '../../api/funds'
-import { createFundSwitchQuote, fetchHoldingFundAlternatives } from '../../api/portfolio'
+import {
+  createFundSwitchExecutionReview,
+  createFundSwitchQuote,
+  fetchHoldingFundAlternatives,
+} from '../../api/portfolio'
 
 function money(value) {
   if (value == null || Number.isNaN(Number(value))) return '-'
@@ -404,7 +408,7 @@ function HoldingDetail({
       if (!current) return current
       const nextRows = (current.alternatives || []).map((item) => (
         item.code === candidateCode
-          ? { ...item, latest_platform_quote: saved }
+          ? { ...item, latest_platform_quote: saved, latest_execution_review: null }
           : item
       ))
       const summary = current.switch_cost_audit?.summary || {}
@@ -417,6 +421,32 @@ function HoldingDetail({
             ...summary,
             current_platform_quote_count: nextRows.filter((item) => item.latest_platform_quote?.status === 'confirmed_current').length,
             stale_platform_quote_count: nextRows.filter((item) => ['expired', 'superseded', 'integrity_failed'].includes(item.latest_platform_quote?.status)).length,
+          },
+        } : null,
+      }
+    })
+    return saved
+  }
+
+  async function reviewPeerSwitchExecution(candidateCode, payload) {
+    const saved = await createFundSwitchExecutionReview(row.id, candidateCode, payload)
+    setPeerAlternatives((current) => {
+      if (!current) return current
+      const nextRows = (current.alternatives || []).map((item) => (
+        item.code === candidateCode
+          ? { ...item, latest_execution_review: saved }
+          : item
+      ))
+      const summary = current.switch_cost_audit?.summary || {}
+      return {
+        ...current,
+        alternatives: nextRows,
+        switch_cost_audit: current.switch_cost_audit ? {
+          ...current.switch_cost_audit,
+          summary: {
+            ...summary,
+            redemption_review_ready_count: nextRows.filter((item) => item.latest_execution_review?.status === 'ready_for_redemption_review').length,
+            execution_review_blocked_count: nextRows.filter((item) => item.latest_execution_review && item.latest_execution_review.status !== 'ready_for_redemption_review').length,
           },
         } : null,
       }
@@ -500,6 +530,7 @@ function HoldingDetail({
               alternativesLoading={peerAlternativesLoading}
               alternativesError={peerAlternativesError}
               onConfirmSwitchQuote={confirmPeerSwitchQuote}
+              onReviewSwitchExecution={reviewPeerSwitchExecution}
             />
           )}
           {reportFund && (

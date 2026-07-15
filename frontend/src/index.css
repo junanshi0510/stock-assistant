@@ -4651,6 +4651,44 @@ tbody tr:hover { background: #f0f8f6; }
 .peer-quote-submit small { display: flex; align-items: center; gap: 5px; color: var(--faint); font-size: 8.5px; line-height: 1.45; }
 .peer-quote-submit small svg { flex: 0 0 auto; }
 .peer-quote-submit button { flex: 0 0 auto; }
+.peer-execution-review { margin-top: 10px; padding-top: 9px; border-top: 1px solid #b8cfca; }
+.peer-execution-review-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.peer-execution-review-head span,
+.peer-execution-review-head b { display: block; }
+.peer-execution-review-head span { color: var(--faint); font-size: 9px; }
+.peer-execution-review-head b { margin-top: 2px; color: #344952; font-size: 11px; }
+.peer-execution-review-head em { color: #956300; font-size: 9px; font-style: normal; font-weight: 800; text-align: right; }
+.peer-execution-review.ready .peer-execution-review-head b { color: #087d68; }
+.peer-execution-review.blocked .peer-execution-review-head b { color: #ad3f4a; }
+.peer-execution-review.stale .peer-execution-review-head b { color: #956300; }
+.peer-execution-review .peer-execution-facts { display: grid; grid-column: auto; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px 10px; margin: 8px 0 0; }
+.peer-execution-facts dt { color: var(--faint); font-size: 9px; }
+.peer-execution-facts dd { margin: 2px 0 0; color: #344952; font-size: 11px; font-weight: 800; }
+.peer-execution-gates { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 8px; border-top: 1px solid #d5e0de; }
+.peer-execution-gates > div { display: flex; gap: 6px; min-width: 0; padding: 6px 7px 6px 0; border-bottom: 1px solid #d5e0de; color: #ad3f4a; }
+.peer-execution-gates > div:nth-child(odd) { padding-right: 10px; }
+.peer-execution-gates > div.pass { color: #087d68; }
+.peer-execution-gates svg { flex: 0 0 auto; margin-top: 1px; }
+.peer-execution-gates span,
+.peer-execution-gates b,
+.peer-execution-gates small { display: block; min-width: 0; }
+.peer-execution-gates b { color: #344952; font-size: 9px; }
+.peer-execution-gates small { margin-top: 2px; color: currentColor; font-size: 8px; line-height: 1.4; overflow-wrap: anywhere; }
+.peer-execution-stages { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
+.peer-execution-stages > div { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 5px; min-width: 0; }
+.peer-execution-stages > div > span { display: grid; place-items: center; width: 18px; height: 18px; border: 1px solid #8aa6a0; border-radius: 50%; color: #087d68; font-size: 8px; font-weight: 800; }
+.peer-alternative-list .peer-execution-stages p { grid-column: auto; margin: 0; }
+.peer-execution-stages p b,
+.peer-execution-stages p small { display: block; }
+.peer-execution-stages p b { color: #344952; font-size: 8.5px; line-height: 1.35; }
+.peer-execution-stages p small { margin-top: 2px; color: var(--faint); font-size: 7.5px; overflow-wrap: anywhere; }
+.peer-execution-review > small { display: block; margin-top: 7px; color: var(--faint); font-size: 8.5px; line-height: 1.5; overflow-wrap: anywhere; }
+.peer-execution-action { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; margin-top: 9px; padding-top: 8px; border-top: 1px dashed #b9ccc7; }
+.peer-execution-action .peer-quote-check { display: flex; align-items: flex-start; gap: 7px; min-width: 0; }
+.peer-execution-action .peer-quote-check input { flex: 0 0 auto; width: 15px; height: 15px; margin: 0; accent-color: #0f766e; }
+.peer-execution-action .peer-quote-check span { color: #526670; font-size: 9px; font-weight: 800; line-height: 1.45; }
+.peer-execution-action button { min-height: 32px; border-radius: 5px; white-space: nowrap; }
+.peer-execution-review > .error { margin-top: 8px; }
 .peer-alternative-policy,
 .fund-peer-policy { color: var(--faint); font-size: 8.5px; line-height: 1.5; }
 .peer-alternative-policy { margin: 8px 0 0; font-size: 10px; }
@@ -6272,4 +6310,12 @@ button.decision-workflow-stage:hover:not(:disabled) { background: #f4f8f8; box-s
   .peer-platform-quote-form .full-width { grid-column: 1; }
   .peer-quote-submit { align-items: stretch; flex-direction: column; }
   .peer-quote-submit button { width: 100%; }
+  .peer-execution-review-head { align-items: stretch; flex-direction: column; }
+  .peer-execution-review-head em { text-align: left; }
+  .peer-execution-review .peer-execution-facts,
+  .peer-execution-gates { grid-template-columns: minmax(0, 1fr); }
+  .peer-execution-gates > div:nth-child(odd) { padding-right: 7px; }
+  .peer-execution-stages { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .peer-execution-action { grid-template-columns: minmax(0, 1fr); }
+  .peer-execution-action button { width: 100%; }
 }

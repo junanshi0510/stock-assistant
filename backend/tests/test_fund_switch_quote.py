@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Platform quote confirmations remain real, scoped, fresh, and auditable."""
 
+import copy
 import datetime as dt
 import sqlite3
 import sys
@@ -59,12 +60,16 @@ def quote_request(review, **overrides):
         "expected_review_payload_sha256": review["payload_sha256"],
         "platform_name": "真实销售平台",
         "quoted_at": "2026-07-15T08:00:00+08:00",
+        "redemption_gross_yuan": 1000.0,
         "redemption_fee_yuan": 10.0,
+        "candidate_order_amount_yuan": 985.0,
         "candidate_entry_fee_yuan": 5.0,
         "expected_redemption_arrival_date": "2026-07-18",
         "candidate_purchase_available": True,
         "acknowledged_platform_quote": True,
         "acknowledged_fee_variance": False,
+        "acknowledged_gross_variance": False,
+        "acknowledged_settlement_risk": True,
         "note": "提交页复核",
     }
     payload.update(overrides)
@@ -166,6 +171,10 @@ class FundSwitchQuoteTests(unittest.TestCase):
             result["payload"]["confirmed_cost"]["total_switching_cost_yuan"],
             15.0,
         )
+        self.assertEqual(result["payload"]["schema_version"], "fund_switch_platform_quote.v2")
+        self.assertEqual(result["payload"]["cashflow"]["redemption_net_proceeds_yuan"], 990.0)
+        self.assertEqual(result["payload"]["cashflow"]["candidate_net_asset_amount_yuan"], 980.0)
+        self.assertEqual(result["payload"]["cashflow"]["residual_cash_yuan"], 5.0)
         self.assertEqual(
             result["payload"]["historical_cost_hurdle"]["confirmed_cost_coverage_months"],
             4.5,
@@ -252,16 +261,76 @@ class FundSwitchQuoteTests(unittest.TestCase):
             fund_switch_quote_service.QuoteValidationError,
             "明显超出",
         ):
-            self.submit(redemption_fee_yuan=50, candidate_entry_fee_yuan=50)
+            self.submit(
+                redemption_fee_yuan=50,
+                candidate_order_amount_yuan=940,
+                candidate_entry_fee_yuan=50,
+            )
 
         result = self.submit(
             redemption_fee_yuan=50,
+            candidate_order_amount_yuan=940,
             candidate_entry_fee_yuan=50,
             acknowledged_fee_variance=True,
         )
         comparison = result["payload"]["disclosed_comparison"]
         self.assertTrue(comparison["material_variance"])
         self.assertTrue(comparison["acknowledged_fee_variance"])
+
+    def test_material_gross_variance_requires_explicit_acknowledgement(self):
+        with self.assertRaisesRegex(
+            fund_switch_quote_service.QuoteValidationError,
+            "赎回总额明显偏离",
+        ):
+            self.submit(
+                redemption_gross_yuan=900,
+                candidate_order_amount_yuan=880,
+            )
+
+        result = self.submit(
+            redemption_gross_yuan=900,
+            candidate_order_amount_yuan=880,
+            acknowledged_gross_variance=True,
+        )
+        comparison = result["payload"]["gross_comparison"]
+        self.assertTrue(comparison["material_variance"])
+        self.assertTrue(comparison["acknowledged_gross_variance"])
+
+    def test_cashflow_and_settlement_acknowledgement_fail_closed(self):
+        with self.assertRaisesRegex(
+            fund_switch_quote_service.QuoteValidationError,
+            "不能超过",
+        ):
+            self.submit(candidate_order_amount_yuan=995)
+        with self.assertRaisesRegex(
+            fund_switch_quote_service.QuoteValidationError,
+            "到账前",
+        ):
+            self.submit(acknowledged_settlement_risk=False)
+
+    def test_legacy_quote_is_superseded_instead_of_reused(self):
+        current = self.submit()
+        legacy_payload = copy.deepcopy(current["payload"])
+        legacy_payload["schema_version"] = "fund_switch_platform_quote.v1"
+        legacy_payload.pop("cashflow", None)
+        storage.append_fund_switch_quote_event(
+            self.review["id"],
+            legacy_payload,
+            actor_id="actor-a",
+            user_id="user-a",
+        )
+
+        result = fund_switch_quote_service.get_latest_quote(
+            self.holding_id,
+            "000002",
+            user_id="user-a",
+            now=self.now,
+        )
+        self.assertEqual(result["status"], "superseded")
+        self.assertEqual(
+            result["payload"]["decision_gate"]["reason"],
+            "platform_quote_schema_outdated",
+        )
 
     def test_unavailable_candidate_is_recorded_but_cost_gate_stays_closed(self):
         result = self.submit(candidate_purchase_available=False)

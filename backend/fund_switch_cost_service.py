@@ -6,6 +6,7 @@ from __future__ import annotations
 from datetime import date
 
 import funds
+import fund_switch_execution_service
 import fund_switch_quote_service
 import portfolio_review
 import storage
@@ -114,6 +115,13 @@ def get_holding_fund_alternatives(
         else:
             item["switch_cost_binding"] = None
             item["latest_platform_quote"] = None
+        item["latest_execution_review"] = (
+            fund_switch_execution_service.get_latest_execution_review(
+                int(holding_id),
+                candidate_code,
+                user_id=user_id,
+            )
+        )
         reviewed.append(review)
 
     ready = sum(item.get("status") == "ready_for_platform_quote" for item in reviewed)
@@ -142,6 +150,17 @@ def get_holding_fund_alternatives(
             "stale_platform_quote_count": sum(
                 (item.get("latest_platform_quote") or {}).get("status")
                 in {"expired", "superseded", "integrity_failed"}
+                for item in result.get("alternatives") or []
+            ),
+            "redemption_review_ready_count": sum(
+                (item.get("latest_execution_review") or {}).get("status")
+                == "ready_for_redemption_review"
+                for item in result.get("alternatives") or []
+            ),
+            "execution_review_blocked_count": sum(
+                bool(item.get("latest_execution_review"))
+                and (item.get("latest_execution_review") or {}).get("status")
+                != "ready_for_redemption_review"
                 for item in result.get("alternatives") or []
             ),
         },
