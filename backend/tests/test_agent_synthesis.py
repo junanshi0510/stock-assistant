@@ -215,6 +215,52 @@ class InvestmentSynthesisTests(unittest.TestCase):
         self.assertNotIn("holding_thesis", review)
         self.assertNotIn("raw_disclosures", review)
 
+    def test_private_switch_lifecycle_only_exposes_audited_result_summary(self):
+        outputs = {
+            "portfolio_context": {
+                "fund_switch_lifecycle": {
+                    "status": "available",
+                    "count": 1,
+                    "items": [{
+                        "case_id": "fund_switch_case_private",
+                        "selected_code": "000001",
+                        "candidate_code": "000002",
+                        "status": "completed_attribution_available",
+                        "settlement": {
+                            "settled_on": "2026-07-18",
+                            "actual_received_yuan": 990,
+                        },
+                        "purchase": {
+                            "confirmation_date": "2026-07-18",
+                            "actual_asset_amount_yuan": 980,
+                        },
+                        "attribution": {
+                            "status": "available",
+                            "metrics": {
+                                "as_of": "2026-07-20",
+                                "incremental_value_vs_hold_yuan": 33,
+                            },
+                            "reasons": [],
+                        },
+                        "integrity_verified": True,
+                        "execution_authorized": False,
+                        "platform_name": "不得发送给模型",
+                        "transaction_id": 99,
+                    }],
+                },
+            },
+        }
+
+        context = build_synthesis_context({}, outputs, {})
+        item = context["private_context"]["portfolio_context"][
+            "fund_switch_lifecycle"
+        ]["items"][0]
+        self.assertEqual(item["status"], "completed_attribution_available")
+        self.assertFalse(item["execution_authorized"])
+        self.assertNotIn("case_id", item)
+        self.assertNotIn("platform_name", item)
+        self.assertNotIn("transaction_id", item)
+
     def test_peer_persistence_is_bounded_and_evidence_linked(self):
         outputs = {
             "fund_analysis": {"code": "001480", "name": "测试基金"},

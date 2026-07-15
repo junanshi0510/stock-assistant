@@ -3837,6 +3837,35 @@ def _fetch_nav_history(code: str, months: int = 36) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def get_fund_nav_history(code: str, months: int = 120) -> dict:
+    """Expose confirmed NAV points with provenance for audited calculations."""
+    code = str(code or "").strip()
+    if not re.fullmatch(r"\d{6}", code):
+        raise ValueError("基金代码需要是 6 位数字")
+    frame = _fetch_nav_history(code, months=months)
+    points = []
+    for _, row in frame.iterrows():
+        unit_nav = _num(row.get("unit_nav"))
+        if unit_nav is None:
+            continue
+        points.append({
+            "date": str(row.get("date") or ""),
+            "unit_nav": _round(unit_nav, 8),
+            "acc_nav": _round(_num(row.get("acc_nav")), 8),
+        })
+    if not points:
+        raise RuntimeError("真实确认净值历史为空")
+    return {
+        "code": code,
+        "source": "东方财富基金净值走势 / 天天基金历史净值",
+        "source_url": f"https://fundf10.eastmoney.com/jjjz_{code}.html",
+        "as_of": points[-1]["date"],
+        "observation_count": len(points),
+        "points": points,
+        "method": "仅返回基金管理人确认后的单位净值；不使用盘中估值或合成数据。",
+    }
+
+
 def _period_return(df: pd.DataFrame, days: int):
     latest_date = pd.to_datetime(df.iloc[-1]["date"])
     target = latest_date - pd.Timedelta(days=days)

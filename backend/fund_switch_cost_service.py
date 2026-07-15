@@ -7,6 +7,7 @@ from datetime import date
 
 import funds
 import fund_switch_execution_service
+import fund_switch_lifecycle_service
 import fund_switch_quote_service
 import portfolio_review
 import storage
@@ -122,6 +123,20 @@ def get_holding_fund_alternatives(
                 user_id=user_id,
             )
         )
+        try:
+            item["switch_lifecycle"] = (
+                fund_switch_lifecycle_service.get_candidate_context(
+                    int(holding_id),
+                    candidate_code,
+                    user_id=user_id,
+                )
+            )
+        except Exception as error:
+            item["switch_lifecycle"] = {
+                "status": "unavailable",
+                "case": None,
+                "error": f"fund_switch_lifecycle_unavailable:{str(error)[:180]}",
+            }
         reviewed.append(review)
 
     ready = sum(item.get("status") == "ready_for_platform_quote" for item in reviewed)
@@ -161,6 +176,22 @@ def get_holding_fund_alternatives(
                 bool(item.get("latest_execution_review"))
                 and (item.get("latest_execution_review") or {}).get("status")
                 != "ready_for_redemption_review"
+                for item in result.get("alternatives") or []
+            ),
+            "active_switch_case_count": sum(
+                bool(((item.get("switch_lifecycle") or {}).get("case")))
+                and (((item.get("switch_lifecycle") or {}).get("case") or {}).get("status"))
+                not in {
+                    "completed_attribution_available",
+                    "completed_attribution_blocked",
+                    "integrity_failed",
+                }
+                for item in result.get("alternatives") or []
+            ),
+            "reconciled_switch_case_count": sum(
+                bool(
+                    ((((item.get("switch_lifecycle") or {}).get("case") or {}).get("decision_gate") or {}).get("holdings_reconciled"))
+                )
                 for item in result.get("alternatives") or []
             ),
         },

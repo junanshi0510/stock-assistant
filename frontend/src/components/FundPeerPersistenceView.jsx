@@ -11,6 +11,7 @@ import {
   Scale,
   ShieldAlert,
 } from 'lucide-react'
+import FundSwitchLifecyclePanel, { TERMINAL_LIFECYCLE_STATUSES } from './FundSwitchLifecyclePanel'
 
 const WINDOW_LABELS = {
   '3m': '近 3 个月',
@@ -319,7 +320,7 @@ function executionTone(status) {
   return 'not-recorded'
 }
 
-function SwitchExecutionReviewPanel({ item, onReview }) {
+function SwitchExecutionReviewPanel({ item, onReview, locked = false }) {
   const quote = item.latest_platform_quote || null
   const review = item.latest_execution_review || null
   const payload = review?.payload || {}
@@ -332,7 +333,7 @@ function SwitchExecutionReviewPanel({ item, onReview }) {
     && quote?.integrity?.verified
     && quote?.integrity?.quote_schema_current,
   )
-  const eligible = Boolean(quoteReady && onReview)
+  const eligible = Boolean(quoteReady && onReview && !locked)
 
   if (!quote) return null
 
@@ -397,6 +398,7 @@ function SwitchExecutionReviewPanel({ item, onReview }) {
 
       {!review && <small>先确认平台真实赎回总额、拟申购金额和到账日，再核验投资政策、持有逻辑及换仓后穿透上限。</small>}
       {!quoteReady && <small>当前报价不是完整有效的 v2 现金流证据，不能进入执行审查。</small>}
+      {locked && <small>该候选已有替换批次，执行前证据已锁定；后续只在批次中追加真实交易事实。</small>}
       {eligible && (
         <div className="peer-execution-action">
           <label className="peer-quote-check">
@@ -413,7 +415,16 @@ function SwitchExecutionReviewPanel({ item, onReview }) {
   )
 }
 
-function AlternativeRows({ alternatives, onConfirmSwitchQuote, onReviewSwitchExecution }) {
+function AlternativeRows({
+  alternatives,
+  onConfirmSwitchQuote,
+  onReviewSwitchExecution,
+  onConfirmSwitchSettlement,
+  onConfirmPurchaseRequote,
+  onRecordSwitchPurchase,
+  onReconcileSwitchCase,
+  onRefreshSwitchAttribution,
+}) {
   const rows = alternatives?.alternatives || []
   const audit = alternatives?.durability_audit || {}
   const auditSummary = audit.summary || {}
@@ -469,6 +480,11 @@ function AlternativeRows({ alternatives, onConfirmSwitchQuote, onReviewSwitchExe
           const hurdle = switchCost?.historical_cost_hurdle || {}
           const costReady = switchCost?.status === 'ready_for_platform_quote'
           const platformStatus = quoteStatus(item.latest_platform_quote)
+          const lifecycleStatus = item.switch_lifecycle?.case?.status
+          const lifecycleStarted = Boolean(
+            item.switch_lifecycle?.case
+            && !TERMINAL_LIFECYCLE_STATUSES.has(lifecycleStatus),
+          )
           return (
             <article key={item.code}>
               <div className="peer-alternative-name">
@@ -522,8 +538,16 @@ function AlternativeRows({ alternatives, onConfirmSwitchQuote, onReviewSwitchExe
                         ))}
                       </div>
                       <small>确认净值截至 {switchCost.valuation?.as_of || '-'}；页面优惠费率和历史覆盖期只用于复核，提交前仍以销售平台报价为准。</small>
-                      <SwitchQuotePanel item={item} costReady={costReady} onConfirm={onConfirmSwitchQuote} />
-                      <SwitchExecutionReviewPanel item={item} onReview={onReviewSwitchExecution} />
+                      <SwitchQuotePanel item={item} costReady={costReady && !lifecycleStarted} onConfirm={onConfirmSwitchQuote} />
+                      <SwitchExecutionReviewPanel item={item} onReview={onReviewSwitchExecution} locked={lifecycleStarted} />
+                      <FundSwitchLifecyclePanel
+                        item={item}
+                        onConfirmSettlement={onConfirmSwitchSettlement}
+                        onConfirmPurchaseRequote={onConfirmPurchaseRequote}
+                        onRecordPurchase={onRecordSwitchPurchase}
+                        onReconcile={onReconcileSwitchCase}
+                        onRefreshAttribution={onRefreshSwitchAttribution}
+                      />
                     </>
                   ) : (
                     <>
@@ -554,6 +578,11 @@ export default function FundPeerPersistenceView({
   onOpenEvidence,
   onConfirmSwitchQuote,
   onReviewSwitchExecution,
+  onConfirmSwitchSettlement,
+  onConfirmPurchaseRequote,
+  onRecordSwitchPurchase,
+  onReconcileSwitchCase,
+  onRefreshSwitchAttribution,
 }) {
   const evaluated = data?.status === 'evaluated'
   const diagnosis = data?.diagnosis || {}
@@ -650,6 +679,11 @@ export default function FundPeerPersistenceView({
               alternatives={alternatives}
               onConfirmSwitchQuote={onConfirmSwitchQuote}
               onReviewSwitchExecution={onReviewSwitchExecution}
+              onConfirmSwitchSettlement={onConfirmSwitchSettlement}
+              onConfirmPurchaseRequote={onConfirmPurchaseRequote}
+              onRecordSwitchPurchase={onRecordSwitchPurchase}
+              onReconcileSwitchCase={onReconcileSwitchCase}
+              onRefreshSwitchAttribution={onRefreshSwitchAttribution}
             />
           </div>
         </>

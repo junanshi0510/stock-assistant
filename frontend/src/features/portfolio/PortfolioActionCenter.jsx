@@ -18,9 +18,15 @@ import FundConditionedForwardView from '../../components/FundConditionedForwardV
 import FundPeerPersistenceView from '../../components/FundPeerPersistenceView'
 import { fetchFundPeerPersistence } from '../../api/funds'
 import {
+  createFundSwitchAttributionSnapshot,
   createFundSwitchExecutionReview,
+  createFundSwitchPurchaseRequote,
   createFundSwitchQuote,
+  createFundSwitchSettlement,
+  fetchFundSwitchCandidateContext,
   fetchHoldingFundAlternatives,
+  reconcileFundSwitchCase,
+  recordFundSwitchPurchase,
 } from '../../api/portfolio'
 
 function money(value) {
@@ -402,16 +408,15 @@ function HoldingDetail({
     }
   }
 
-  async function confirmPeerSwitchQuote(candidateCode, payload) {
-    const saved = await createFundSwitchQuote(row.id, payload)
+  function updatePeerCandidate(candidateCode, updater) {
     setPeerAlternatives((current) => {
       if (!current) return current
-      const nextRows = (current.alternatives || []).map((item) => (
-        item.code === candidateCode
-          ? { ...item, latest_platform_quote: saved, latest_execution_review: null }
-          : item
-      ))
+      const nextRows = (current.alternatives || []).map((item) => {
+        if (item.code !== candidateCode) return item
+        return typeof updater === 'function' ? updater(item) : { ...item, ...updater }
+      })
       const summary = current.switch_cost_audit?.summary || {}
+      const terminalStatuses = new Set(['completed_attribution_available', 'completed_attribution_blocked', 'integrity_failed'])
       return {
         ...current,
         alternatives: nextRows,
@@ -421,36 +426,77 @@ function HoldingDetail({
             ...summary,
             current_platform_quote_count: nextRows.filter((item) => item.latest_platform_quote?.status === 'confirmed_current').length,
             stale_platform_quote_count: nextRows.filter((item) => ['expired', 'superseded', 'integrity_failed'].includes(item.latest_platform_quote?.status)).length,
+            redemption_review_ready_count: nextRows.filter((item) => item.latest_execution_review?.status === 'ready_for_redemption_review').length,
+            execution_review_blocked_count: nextRows.filter((item) => item.latest_execution_review && item.latest_execution_review.status !== 'ready_for_redemption_review').length,
+            active_switch_case_count: nextRows.filter((item) => item.switch_lifecycle?.case && !terminalStatuses.has(item.switch_lifecycle.case.status)).length,
+            reconciled_switch_case_count: nextRows.filter((item) => item.switch_lifecycle?.case?.decision_gate?.holdings_reconciled).length,
           },
         } : null,
       }
     })
+  }
+
+  async function confirmPeerSwitchQuote(candidateCode, payload) {
+    const saved = await createFundSwitchQuote(row.id, payload)
+    updatePeerCandidate(candidateCode, (item) => ({ ...item, latest_platform_quote: saved, latest_execution_review: null }))
     return saved
   }
 
   async function reviewPeerSwitchExecution(candidateCode, payload) {
     const saved = await createFundSwitchExecutionReview(row.id, candidateCode, payload)
-    setPeerAlternatives((current) => {
-      if (!current) return current
-      const nextRows = (current.alternatives || []).map((item) => (
-        item.code === candidateCode
-          ? { ...item, latest_execution_review: saved }
-          : item
-      ))
-      const summary = current.switch_cost_audit?.summary || {}
-      return {
-        ...current,
-        alternatives: nextRows,
-        switch_cost_audit: current.switch_cost_audit ? {
-          ...current.switch_cost_audit,
-          summary: {
-            ...summary,
-            redemption_review_ready_count: nextRows.filter((item) => item.latest_execution_review?.status === 'ready_for_redemption_review').length,
-            execution_review_blocked_count: nextRows.filter((item) => item.latest_execution_review && item.latest_execution_review.status !== 'ready_for_redemption_review').length,
-          },
-        } : null,
+    let lifecycle
+    try {
+      lifecycle = await fetchFundSwitchCandidateContext(row.id, candidateCode)
+    } catch (requestError) {
+      lifecycle = {
+        status: 'unavailable',
+        case: null,
+        error: requestError?.message || '替换批次上下文读取失败',
       }
-    })
+    }
+    updatePeerCandidate(candidateCode, (item) => ({ ...item, latest_execution_review: saved, switch_lifecycle: lifecycle }))
+    return saved
+  }
+
+  async function confirmPeerSwitchSettlement(candidateCode, payload) {
+    const saved = await createFundSwitchSettlement(row.id, candidateCode, payload)
+    updatePeerCandidate(candidateCode, (item) => ({ ...item, switch_lifecycle: saved }))
+    return saved
+  }
+
+  function updateLifecycleCase(candidateCode, saved) {
+    updatePeerCandidate(candidateCode, (item) => ({
+      ...item,
+      switch_lifecycle: {
+        ...(item.switch_lifecycle || {}),
+        status: 'available',
+        case: saved,
+        eligible_redemption_transactions: [],
+      },
+    }))
+  }
+
+  async function confirmPeerPurchaseRequote(candidateCode, caseId, payload) {
+    const saved = await createFundSwitchPurchaseRequote(caseId, payload)
+    updateLifecycleCase(candidateCode, saved)
+    return saved
+  }
+
+  async function recordPeerSwitchPurchase(candidateCode, caseId, payload) {
+    const saved = await recordFundSwitchPurchase(caseId, payload)
+    updateLifecycleCase(candidateCode, saved)
+    return saved
+  }
+
+  async function reconcilePeerSwitchCase(candidateCode, caseId) {
+    const saved = await reconcileFundSwitchCase(caseId)
+    updateLifecycleCase(candidateCode, saved)
+    return saved
+  }
+
+  async function refreshPeerSwitchAttribution(candidateCode, caseId) {
+    const saved = await createFundSwitchAttributionSnapshot(caseId)
+    updateLifecycleCase(candidateCode, saved)
     return saved
   }
 
@@ -531,6 +577,11 @@ function HoldingDetail({
               alternativesError={peerAlternativesError}
               onConfirmSwitchQuote={confirmPeerSwitchQuote}
               onReviewSwitchExecution={reviewPeerSwitchExecution}
+              onConfirmSwitchSettlement={confirmPeerSwitchSettlement}
+              onConfirmPurchaseRequote={confirmPeerPurchaseRequote}
+              onRecordSwitchPurchase={recordPeerSwitchPurchase}
+              onReconcileSwitchCase={reconcilePeerSwitchCase}
+              onRefreshSwitchAttribution={refreshPeerSwitchAttribution}
             />
           )}
           {reportFund && (

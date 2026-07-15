@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity,
+  ArrowRightLeft,
   BookOpenCheck,
   CalendarRange,
   ChartNoAxesCombined,
@@ -15,7 +16,10 @@ import {
   Trash2,
   Upload,
 } from 'lucide-react'
+import FundSwitchLifecyclePanel from '../components/FundSwitchLifecyclePanel'
 import {
+  createFundSwitchAttributionSnapshot,
+  createFundSwitchPurchaseRequote,
   createPortfolioSnapshot,
   createPortfolioTransaction,
   deletePortfolioTransaction,
@@ -25,9 +29,12 @@ import {
   fetchPortfolioPerformance,
   fetchPortfolioSnapshots,
   fetchPortfolioTransactions,
+  fetchFundSwitchCases,
   fetchRebalanceReview,
   importPortfolioTransactionCsv,
   previewPortfolioTransactionCsv,
+  reconcileFundSwitchCase,
+  recordFundSwitchPurchase,
 } from '../api/portfolio'
 
 const TRADE_TYPES = [
@@ -95,6 +102,21 @@ function behaviorStatusLabel(value) {
   return '待补流水'
 }
 
+function switchCaseStatusLabel(value) {
+  return {
+    settled_purchase_requote_required: '到账后重报',
+    purchase_requote_blocked: '申购门禁受阻',
+    purchase_requote_expired: '申购报价过期',
+    purchase_requote_superseded: '持仓或政策变化',
+    ready_for_manual_purchase_review: '人工复核申购',
+    purchase_recorded_reconciliation_pending: '等待持仓对账',
+    completed_attribution_pending: '等待历史归因',
+    completed_attribution_available: '历史归因可用',
+    completed_attribution_blocked: '历史归因受阻',
+    integrity_failed: '完整性失败',
+  }[value] || value || '-'
+}
+
 function Metric({ label, value, tone = '' }) {
   return <div className="ledger-metric"><span>{label}</span><b className={tone}>{value}</b></div>
 }
@@ -108,6 +130,8 @@ export default function PortfolioLedgerTab() {
   const [performance, setPerformance] = useState(null)
   const [rebalance, setRebalance] = useState(null)
   const [snapshots, setSnapshots] = useState(null)
+  const [switchCases, setSwitchCases] = useState(null)
+  const [selectedSwitchCaseId, setSelectedSwitchCaseId] = useState('')
   const [importAssetType, setImportAssetType] = useState('fund')
   const [importMarket, setImportMarket] = useState('基金')
   const [importPreview, setImportPreview] = useState(null)
@@ -123,7 +147,7 @@ export default function PortfolioLedgerTab() {
     setLoading(true)
     setError('')
     try {
-      const [transactionData, ledgerData, behaviorData, attributionData, performanceData, rebalanceData, snapshotData] = await Promise.all([
+      const [transactionData, ledgerData, behaviorData, attributionData, performanceData, rebalanceData, snapshotData, switchCaseData] = await Promise.all([
         fetchPortfolioTransactions(),
         fetchPortfolioLedger(),
         fetchPortfolioBehavior(),
@@ -131,6 +155,7 @@ export default function PortfolioLedgerTab() {
         fetchPortfolioPerformance(),
         fetchRebalanceReview(),
         fetchPortfolioSnapshots(),
+        fetchFundSwitchCases(),
       ])
       setTransactions(transactionData)
       setLedger(ledgerData)
@@ -139,6 +164,7 @@ export default function PortfolioLedgerTab() {
       setPerformance(performanceData)
       setRebalance(rebalanceData)
       setSnapshots(snapshotData)
+      setSwitchCases(switchCaseData)
     } catch (requestError) {
       setError(requestError.message || '真实组合账本获取失败')
     } finally {
@@ -208,6 +234,44 @@ export default function PortfolioLedgerTab() {
     }
   }
 
+  function updateSwitchCase(saved) {
+    setSwitchCases((current) => {
+      if (!current) return { status: 'available', items: [saved], summary: {} }
+      const exists = (current.items || []).some((item) => item.case_id === saved.case_id)
+      return {
+        ...current,
+        status: 'available',
+        items: exists
+          ? current.items.map((item) => item.case_id === saved.case_id ? saved : item)
+          : [saved, ...(current.items || [])],
+      }
+    })
+  }
+
+  async function requoteSwitchPurchase(candidateCode, caseId, payload) {
+    const saved = await createFundSwitchPurchaseRequote(caseId, payload)
+    updateSwitchCase(saved)
+    return saved
+  }
+
+  async function recordSwitchPurchase(candidateCode, caseId, payload) {
+    const saved = await recordFundSwitchPurchase(caseId, payload)
+    updateSwitchCase(saved)
+    return saved
+  }
+
+  async function reconcileSwitch(candidateCode, caseId) {
+    const saved = await reconcileFundSwitchCase(caseId)
+    updateSwitchCase(saved)
+    return saved
+  }
+
+  async function refreshSwitchAttribution(candidateCode, caseId) {
+    const saved = await createFundSwitchAttributionSnapshot(caseId)
+    updateSwitchCase(saved)
+    return saved
+  }
+
   function updateImportSettings(nextAssetType) {
     setImportAssetType(nextAssetType)
     setImportMarket((current) => nextAssetType === 'fund' ? '基金' : (current === '基金' ? '' : current))
@@ -268,6 +332,7 @@ export default function PortfolioLedgerTab() {
   const performanceSummary = performance?.summary || {}
   const rebalanceSummary = rebalance?.summary || {}
   const snapshotChange = snapshots?.latest_change
+  const selectedSwitchCase = (switchCases?.items || []).find((item) => item.case_id === selectedSwitchCaseId) || null
 
   return (
     <div className="ledger-workspace">
@@ -297,6 +362,46 @@ export default function PortfolioLedgerTab() {
         <Metric label="已实现收益" value={money(ledgerSummary.realized_profit)} tone={deltaClass(ledgerSummary.realized_profit)} />
         <Metric label="交易费用" value={money(ledgerSummary.total_fee)} />
         <Metric label="份额待对账" value={`${ledgerSummary.share_mismatch_count ?? '-'} 项`} tone={(ledgerSummary.share_mismatch_count || 0) > 0 ? 'delta-neg' : ''} />
+      </section>
+
+      <section className="ledger-section ledger-switch-cases">
+        <div className="ledger-section-head">
+          <div>
+            <span className="eyebrow">基金替换批次</span>
+            <h4>从真实到账追踪到历史归因</h4>
+          </div>
+          <ArrowRightLeft size={19} aria-hidden="true" />
+        </div>
+        <div className="corr-wrap">
+          <table className="compact-table ledger-table ledger-switch-case-table">
+            <thead><tr><th>替换路径</th><th>当前阶段</th><th>赎回到账</th><th>候选成交</th><th>历史相对结果</th><th></th></tr></thead>
+            <tbody>
+              {switchCases?.items?.map((item) => (
+                <tr key={item.case_id}>
+                  <td><b>{item.selected_code} → {item.candidate_code}</b><small>{item.candidate_name || item.candidate_code}</small></td>
+                  <td><span className={`ledger-reconcile ${item.status === 'integrity_failed' ? 'mismatch' : item.decision_gate?.holdings_reconciled ? 'matched' : ''}`}>{switchCaseStatusLabel(item.status)}</span><small>{item.revision || 0} 个不可变事件</small></td>
+                  <td>{item.settlement ? money(item.settlement.actual_received_yuan) : '-'}<small>{item.settlement?.settled_on || '未确认'}</small></td>
+                  <td>{item.purchase ? number(item.purchase.shares, 6) : '-'}<small>{item.purchase?.confirmation_date || '未记录'}</small></td>
+                  <td className={deltaClass(item.attribution?.metrics?.incremental_value_vs_hold_yuan)}>{item.attribution?.status === 'available' ? money(item.attribution.metrics?.incremental_value_vs_hold_yuan) : '-'}<small>{item.attribution?.status === 'available' ? `截至 ${item.attribution.metrics?.as_of || '-'}` : '等待真实同日净值'}</small></td>
+                  <td><button type="button" className="ghost compact" onClick={() => setSelectedSwitchCaseId((current) => current === item.case_id ? '' : item.case_id)}>{selectedSwitchCaseId === item.case_id ? '收起' : '查看批次'}</button></td>
+                </tr>
+              ))}
+              {!switchCases?.items?.length && <tr><td colSpan="6" className="hint">尚无基金替换批次。只有执行前审查通过并绑定真实赎回到账后才会写入。</td></tr>}
+            </tbody>
+          </table>
+        </div>
+        {selectedSwitchCase && (
+          <div className="ledger-switch-case-detail">
+            <FundSwitchLifecyclePanel
+              item={{ code: selectedSwitchCase.candidate_code, switch_lifecycle: { status: 'available', case: selectedSwitchCase } }}
+              onConfirmPurchaseRequote={requoteSwitchPurchase}
+              onRecordPurchase={recordSwitchPurchase}
+              onReconcile={reconcileSwitch}
+              onRefreshAttribution={refreshSwitchAttribution}
+            />
+          </div>
+        )}
+        <p className="ledger-method">批次事件只追加不改写；删除或修改绑定流水会使完整性校验失败。人工复核状态不授权交易，历史归因不代表未来收益。</p>
       </section>
 
       <section className="ledger-section">

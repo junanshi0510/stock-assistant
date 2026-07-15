@@ -13,6 +13,7 @@ import data_fetch
 import decision_center
 import fund_switch_cost_service
 import fund_switch_execution_service
+import fund_switch_lifecycle_service
 import fund_switch_quote_service
 import holding_level_recurrence
 import holding_thesis
@@ -147,6 +148,40 @@ class FundSwitchExecutionReviewRequest(BaseModel):
     expected_quote_event_id: str = Field(min_length=20, max_length=96)
     expected_quote_event_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     acknowledged_holding_thesis: bool
+
+
+class FundSwitchSettlementRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_execution_review_id: str = Field(min_length=20, max_length=96)
+    expected_execution_review_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    redemption_transaction_id: int = Field(gt=0)
+    redemption_submitted_at: datetime
+    settled_on: date
+    actual_received_yuan: float = Field(gt=0, le=100_000_000)
+    acknowledged_quote_variance: bool = False
+
+
+class FundSwitchPurchaseRequoteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    platform_name: str = Field(min_length=2, max_length=80)
+    quoted_at: datetime
+    candidate_order_amount_yuan: float = Field(gt=0, le=100_000_000)
+    candidate_entry_fee_yuan: float = Field(ge=0, le=100_000_000)
+    expected_confirmation_date: date
+    candidate_purchase_available: bool
+    acknowledged_platform_quote: bool
+
+
+class FundSwitchPurchaseRecordRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_purchase_quote_event_id: str = Field(min_length=20, max_length=96)
+    expected_purchase_quote_event_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    purchase_transaction_id: int = Field(gt=0)
+    purchase_submitted_at: datetime
+    acknowledged_order_variance: bool = False
 
 
 class PortfolioActionReportRequest(BaseModel):
@@ -407,6 +442,47 @@ def get_fund_switch_execution_review(
     except fund_switch_execution_service.HoldingNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except fund_switch_execution_service.ExecutionReviewValidationError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.get("/api/holdings/{holding_id}/fund-switch-cases/{candidate_code}")
+def get_fund_switch_candidate_context(
+    holding_id: int,
+    candidate_code: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        return fund_switch_lifecycle_service.get_candidate_context(
+            holding_id,
+            candidate_code,
+            user_id=_subject_id(principal),
+        )
+    except fund_switch_lifecycle_service.LifecycleNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except fund_switch_lifecycle_service.LifecycleValidationError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.post("/api/holdings/{holding_id}/fund-switch-cases/{candidate_code}/settlements")
+def create_fund_switch_settlement(
+    holding_id: int,
+    candidate_code: str,
+    req: FundSwitchSettlementRequest,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        return fund_switch_lifecycle_service.create_redemption_settlement(
+            holding_id,
+            candidate_code,
+            req.model_dump(mode="json"),
+            user_id=_subject_id(principal),
+            actor_id=_actor_id(principal),
+        )
+    except fund_switch_lifecycle_service.LifecycleNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except fund_switch_lifecycle_service.LifecycleConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except fund_switch_lifecycle_service.LifecycleValidationError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
 
@@ -785,6 +861,111 @@ def get_decision_task_audit(
         "count": len(items),
         "verification": verification,
     }
+
+
+@router.get("/api/portfolio/fund-switch-cases")
+def get_fund_switch_cases(
+    limit: int = Query(default=50, ge=1, le=200),
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    return fund_switch_lifecycle_service.list_cases(
+        user_id=_subject_id(principal),
+        limit=limit,
+    )
+
+
+@router.get("/api/portfolio/fund-switch-cases/{case_id}")
+def get_fund_switch_case(
+    case_id: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        return fund_switch_lifecycle_service.decorate_case(
+            case_id,
+            user_id=_subject_id(principal),
+        )
+    except fund_switch_lifecycle_service.LifecycleNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@router.post("/api/portfolio/fund-switch-cases/{case_id}/purchase-requotes")
+def create_fund_switch_purchase_requote(
+    case_id: str,
+    req: FundSwitchPurchaseRequoteRequest,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        return fund_switch_lifecycle_service.create_purchase_requote(
+            case_id,
+            req.model_dump(mode="json"),
+            user_id=_subject_id(principal),
+            actor_id=_actor_id(principal),
+        )
+    except fund_switch_lifecycle_service.LifecycleNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except fund_switch_lifecycle_service.LifecycleConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except fund_switch_lifecycle_service.LifecycleValidationError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.post("/api/portfolio/fund-switch-cases/{case_id}/purchases")
+def record_fund_switch_purchase(
+    case_id: str,
+    req: FundSwitchPurchaseRecordRequest,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        return fund_switch_lifecycle_service.record_purchase(
+            case_id,
+            req.model_dump(mode="json"),
+            user_id=_subject_id(principal),
+            actor_id=_actor_id(principal),
+        )
+    except fund_switch_lifecycle_service.LifecycleNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except fund_switch_lifecycle_service.LifecycleConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except fund_switch_lifecycle_service.LifecycleValidationError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.post("/api/portfolio/fund-switch-cases/{case_id}/reconciliation")
+def reconcile_fund_switch_case(
+    case_id: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        return fund_switch_lifecycle_service.reconcile_holdings(
+            case_id,
+            user_id=_subject_id(principal),
+            actor_id=_actor_id(principal),
+        )
+    except fund_switch_lifecycle_service.LifecycleNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except fund_switch_lifecycle_service.LifecycleConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except fund_switch_lifecycle_service.LifecycleValidationError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.post("/api/portfolio/fund-switch-cases/{case_id}/attribution-snapshots")
+def create_fund_switch_attribution_snapshot(
+    case_id: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        return fund_switch_lifecycle_service.create_attribution_snapshot(
+            case_id,
+            user_id=_subject_id(principal),
+            actor_id=_actor_id(principal),
+        )
+    except fund_switch_lifecycle_service.LifecycleNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except fund_switch_lifecycle_service.LifecycleConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except fund_switch_lifecycle_service.LifecycleValidationError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 @router.get("/api/portfolio/transactions")

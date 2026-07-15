@@ -47,6 +47,8 @@ EXPECTED_OPERATIONS = {
     "/api/holdings/{holding_id}/fund-switch-quotes": {"GET", "POST"},
     "/api/holdings/{holding_id}/fund-switch-quotes/{candidate_code}/audit": {"GET"},
     "/api/holdings/{holding_id}/fund-switch-execution-reviews/{candidate_code}": {"GET", "POST"},
+    "/api/holdings/{holding_id}/fund-switch-cases/{candidate_code}": {"GET"},
+    "/api/holdings/{holding_id}/fund-switch-cases/{candidate_code}/settlements": {"POST"},
     "/api/holdings/exposure": {"GET"},
     "/api/holdings/exposure-snapshots": {"GET", "POST"},
     "/api/holdings/exposure-snapshots/{snapshot_id}": {"GET"},
@@ -70,6 +72,12 @@ EXPECTED_OPERATIONS = {
     "/api/portfolio/behavior": {"GET"},
     "/api/portfolio/attribution": {"GET"},
     "/api/portfolio/rebalance": {"GET"},
+    "/api/portfolio/fund-switch-cases": {"GET"},
+    "/api/portfolio/fund-switch-cases/{case_id}": {"GET"},
+    "/api/portfolio/fund-switch-cases/{case_id}/purchase-requotes": {"POST"},
+    "/api/portfolio/fund-switch-cases/{case_id}/purchases": {"POST"},
+    "/api/portfolio/fund-switch-cases/{case_id}/reconciliation": {"POST"},
+    "/api/portfolio/fund-switch-cases/{case_id}/attribution-snapshots": {"POST"},
     "/api/portfolio/theses": {"GET", "POST"},
     "/api/portfolio/theses/{asset_type}/{code}": {"GET"},
     "/api/portfolio/action-reports": {"GET", "POST"},
@@ -146,6 +154,42 @@ class RouteContractTests(unittest.TestCase):
             "expected_quote_event_id",
             "expected_quote_event_hash",
             "acknowledged_holding_thesis",
+        })
+
+    def test_fund_switch_lifecycle_evidence_bindings_are_required(self):
+        schemas = app.openapi()["components"]["schemas"]
+        settlement_required = set(
+            schemas["FundSwitchSettlementRequest"]["required"]
+        )
+        requote_required = set(
+            schemas["FundSwitchPurchaseRequoteRequest"]["required"]
+        )
+        purchase_required = set(
+            schemas["FundSwitchPurchaseRecordRequest"]["required"]
+        )
+
+        self.assertEqual(settlement_required, {
+            "expected_execution_review_id",
+            "expected_execution_review_hash",
+            "redemption_transaction_id",
+            "redemption_submitted_at",
+            "settled_on",
+            "actual_received_yuan",
+        })
+        self.assertEqual(requote_required, {
+            "platform_name",
+            "quoted_at",
+            "candidate_order_amount_yuan",
+            "candidate_entry_fee_yuan",
+            "expected_confirmation_date",
+            "candidate_purchase_available",
+            "acknowledged_platform_quote",
+        })
+        self.assertEqual(purchase_required, {
+            "expected_purchase_quote_event_id",
+            "expected_purchase_quote_event_hash",
+            "purchase_transaction_id",
+            "purchase_submitted_at",
         })
 
     def test_public_strategy_audit_hides_operator_identity_and_reason(self):

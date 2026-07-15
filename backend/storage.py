@@ -504,6 +504,91 @@ def _get_conn():
         )
         _conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS fund_switch_lifecycle_events (
+                id                        TEXT PRIMARY KEY,
+                case_id                   TEXT NOT NULL,
+                user_id                   TEXT NOT NULL DEFAULT 'default',
+                holding_id                INTEGER NOT NULL,
+                selected_code             TEXT NOT NULL,
+                candidate_code            TEXT NOT NULL,
+                execution_review_id       TEXT NOT NULL,
+                execution_review_hash     TEXT NOT NULL,
+                sequence_no               INTEGER NOT NULL,
+                event_type                TEXT NOT NULL,
+                schema_version            TEXT NOT NULL,
+                status                    TEXT NOT NULL,
+                actor_id                  TEXT NOT NULL,
+                redemption_transaction_id INTEGER,
+                purchase_transaction_id   INTEGER,
+                payload_json              TEXT NOT NULL,
+                payload_sha256            TEXT NOT NULL,
+                evidence_sha256           TEXT NOT NULL,
+                previous_hash             TEXT,
+                event_hash                TEXT NOT NULL,
+                created_at                TEXT NOT NULL,
+                UNIQUE(user_id, case_id, sequence_no),
+                FOREIGN KEY(execution_review_id)
+                    REFERENCES fund_switch_execution_reviews(id)
+            )
+            """
+        )
+        _conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_fund_switch_lifecycle_case
+            ON fund_switch_lifecycle_events(user_id, case_id, sequence_no DESC)
+            """
+        )
+        _conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_fund_switch_lifecycle_candidate
+            ON fund_switch_lifecycle_events(
+                user_id, holding_id, candidate_code, created_at DESC
+            )
+            """
+        )
+        _conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_fund_switch_redemption_once
+            ON fund_switch_lifecycle_events(user_id, redemption_transaction_id)
+            WHERE event_type='redemption_settled'
+              AND redemption_transaction_id IS NOT NULL
+            """
+        )
+        _conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_fund_switch_execution_review_once
+            ON fund_switch_lifecycle_events(user_id, execution_review_id)
+            WHERE event_type='redemption_settled'
+            """
+        )
+        _conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_fund_switch_purchase_once
+            ON fund_switch_lifecycle_events(user_id, purchase_transaction_id)
+            WHERE event_type='purchase_recorded'
+              AND purchase_transaction_id IS NOT NULL
+            """
+        )
+        _conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_fund_switch_lifecycle_no_update
+            BEFORE UPDATE ON fund_switch_lifecycle_events
+            BEGIN
+                SELECT RAISE(ABORT, 'fund switch lifecycle events are immutable');
+            END
+            """
+        )
+        _conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_fund_switch_lifecycle_no_delete
+            BEFORE DELETE ON fund_switch_lifecycle_events
+            BEGIN
+                SELECT RAISE(ABORT, 'fund switch lifecycle events are immutable');
+            END
+            """
+        )
+        _conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS portfolio_action_reports (
                 id                 TEXT PRIMARY KEY,
                 user_id            TEXT NOT NULL DEFAULT 'default',
@@ -1580,6 +1665,24 @@ def list_portfolio_transactions(user_id: str = "default") -> list[dict]:
             (user_id,),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def get_portfolio_transaction(
+    transaction_id: int,
+    user_id: str = "default",
+) -> dict | None:
+    with _lock:
+        row = _get_conn().execute(
+            """
+            SELECT id, user_id, asset_type, market, code, name, trade_type,
+                   trade_date, shares, unit_price, fee, note,
+                   COALESCE(source, 'manual') AS source, created_at
+            FROM portfolio_transactions
+            WHERE id=? AND user_id=?
+            """,
+            (int(transaction_id), user_id),
+        ).fetchone()
+    return dict(row) if row else None
 
 
 def _portfolio_transaction_values(item: dict, user_id: str, now: str) -> tuple:
@@ -2761,6 +2864,405 @@ def verify_fund_switch_execution_audit(
         "failing_sequence": None,
         "chain_head": previous_hash,
         "reason": None if reviews else "execution_reviews_missing",
+    }
+
+
+def _fund_switch_lifecycle_event_from_row(row) -> dict | None:
+    if row is None:
+        return None
+    item = dict(row)
+    payload = _decode_json(item.pop("payload_json", None), None)
+    item["payload"] = payload
+    bindings = payload.get("bindings") if isinstance(payload, dict) else None
+    evidence_payload = dict(payload) if isinstance(payload, dict) else None
+    embedded_evidence = (
+        str(evidence_payload.pop("evidence_sha256") or "")
+        if isinstance(evidence_payload, dict)
+        else ""
+    )
+    try:
+        payload_holding_id = int(payload.get("holding_id") or 0)
+        payload_redemption_id = int(bindings.get("redemption_transaction_id") or 0)
+        payload_purchase_id = int(bindings.get("purchase_transaction_id") or 0)
+    except (TypeError, ValueError, AttributeError):
+        payload_holding_id = 0
+        payload_redemption_id = 0
+        payload_purchase_id = 0
+    item["integrity_verified"] = bool(
+        isinstance(payload, dict)
+        and isinstance(bindings, dict)
+        and payload_sha256(payload) == item.get("payload_sha256")
+        and embedded_evidence == item.get("evidence_sha256")
+        and payload_sha256(evidence_payload) == item.get("evidence_sha256")
+        and str(payload.get("case_id") or "") == str(item.get("case_id") or "")
+        and payload_holding_id == int(item.get("holding_id") or 0)
+        and str(payload.get("selected_code") or "") == str(item.get("selected_code") or "")
+        and str(payload.get("candidate_code") or "") == str(item.get("candidate_code") or "")
+        and str(payload.get("event_type") or "") == str(item.get("event_type") or "")
+        and str(payload.get("schema_version") or "") == str(item.get("schema_version") or "")
+        and str(payload.get("status") or "") == str(item.get("status") or "")
+        and str(bindings.get("execution_review_id") or "")
+        == str(item.get("execution_review_id") or "")
+        and str(bindings.get("execution_review_hash") or "")
+        == str(item.get("execution_review_hash") or "")
+        and payload_redemption_id
+        == int(item.get("redemption_transaction_id") or 0)
+        and payload_purchase_id
+        == int(item.get("purchase_transaction_id") or 0)
+    )
+    return item
+
+
+def _fund_switch_lifecycle_event_reason(item: dict) -> str | None:
+    if not item.get("integrity_verified"):
+        return "lifecycle_event_payload_integrity_failed"
+    review = get_fund_switch_execution_review(
+        str(item.get("execution_review_id") or ""),
+        user_id=str(item.get("user_id") or "default"),
+    )
+    if review is None:
+        return "bound_execution_review_missing"
+    if not review.get("integrity_verified"):
+        return "bound_execution_review_integrity_failed"
+    if str(review.get("review_hash") or "") != str(item.get("execution_review_hash") or ""):
+        return "bound_execution_review_hash_changed"
+    if (
+        int(review.get("holding_id") or 0) != int(item.get("holding_id") or 0)
+        or str(review.get("selected_code") or "") != str(item.get("selected_code") or "")
+        or str(review.get("candidate_code") or "") != str(item.get("candidate_code") or "")
+    ):
+        return "bound_execution_review_identity_mismatch"
+    return None
+
+
+def append_fund_switch_lifecycle_event(
+    payload: dict,
+    *,
+    actor_id: str,
+    user_id: str = "default",
+) -> dict:
+    """Append one immutable lifecycle event after enforcing case transitions."""
+    if not isinstance(payload, dict):
+        raise TypeError("fund switch lifecycle payload must be an object")
+    bindings = payload.get("bindings") or {}
+    case_id = str(payload.get("case_id") or "").strip()
+    event_type = str(payload.get("event_type") or "").strip()
+    schema_version = str(payload.get("schema_version") or "").strip()
+    status = str(payload.get("status") or "").strip()
+    selected_code = str(payload.get("selected_code") or "").strip()
+    candidate_code = str(payload.get("candidate_code") or "").strip()
+    execution_review_id = str(bindings.get("execution_review_id") or "").strip()
+    execution_review_hash = str(bindings.get("execution_review_hash") or "").strip()
+    evidence_sha256 = str(payload.get("evidence_sha256") or "").strip()
+    try:
+        holding_id = int(payload.get("holding_id") or 0)
+        redemption_transaction_id = int(bindings.get("redemption_transaction_id") or 0) or None
+        purchase_transaction_id = int(bindings.get("purchase_transaction_id") or 0) or None
+    except (TypeError, ValueError):
+        holding_id = 0
+        redemption_transaction_id = None
+        purchase_transaction_id = None
+    allowed_events = {
+        "redemption_settled",
+        "purchase_requoted",
+        "purchase_recorded",
+        "holdings_reconciled",
+        "attribution_snapshot",
+    }
+    if (
+        not case_id
+        or event_type not in allowed_events
+        or not schema_version
+        or not status
+        or holding_id <= 0
+        or not selected_code
+        or not candidate_code
+        or not execution_review_id
+        or len(execution_review_hash) != 64
+        or len(evidence_sha256) != 64
+    ):
+        raise ValueError("fund switch lifecycle metadata is incomplete")
+    evidence_payload = dict(payload)
+    evidence_payload.pop("evidence_sha256", None)
+    if payload_sha256(evidence_payload) != evidence_sha256:
+        raise ValueError("fund switch lifecycle evidence hash does not match payload")
+
+    review = get_fund_switch_execution_review(execution_review_id, user_id=user_id)
+    if review is None:
+        raise LookupError("bound fund switch execution review not found")
+    if not review.get("integrity_verified"):
+        raise ValueError("bound fund switch execution review integrity failed")
+    if str(review.get("review_hash") or "") != execution_review_hash:
+        raise ValueError("bound fund switch execution review hash does not match")
+    if (
+        int(review.get("holding_id") or 0) != holding_id
+        or str(review.get("selected_code") or "") != selected_code
+        or str(review.get("candidate_code") or "") != candidate_code
+    ):
+        raise ValueError("bound fund switch execution review identity does not match")
+
+    payload_json = canonical_json(payload)
+    digest = payload_sha256(payload)
+    event_id = f"fund_switch_lifecycle_{uuid.uuid4().hex}"
+    created_at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds")
+    actor = str(actor_id or "system")
+    with _lock:
+        conn = _get_conn()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            prior_rows = conn.execute(
+                """
+                SELECT * FROM fund_switch_lifecycle_events
+                WHERE user_id=? AND case_id=?
+                ORDER BY sequence_no
+                """,
+                (user_id, case_id),
+            ).fetchall()
+            prior = [_fund_switch_lifecycle_event_from_row(row) for row in prior_rows]
+            previous = prior[-1] if prior else None
+            if not prior and event_type != "redemption_settled":
+                raise ValueError("fund switch lifecycle must start with redemption settlement")
+            if prior:
+                if (
+                    int(previous.get("holding_id") or 0) != holding_id
+                    or str(previous.get("selected_code") or "") != selected_code
+                    or str(previous.get("candidate_code") or "") != candidate_code
+                    or str(previous.get("execution_review_id") or "") != execution_review_id
+                    or str(previous.get("execution_review_hash") or "") != execution_review_hash
+                ):
+                    raise ValueError("fund switch lifecycle case identity changed")
+                event_types = [str(item.get("event_type") or "") for item in prior]
+                if event_type == "redemption_settled":
+                    raise ValueError("fund switch lifecycle already has a settlement event")
+                if event_type == "purchase_requoted" and "purchase_recorded" in event_types:
+                    raise ValueError("purchase was already recorded for this lifecycle")
+                if event_type == "purchase_recorded":
+                    if previous.get("event_type") != "purchase_requoted":
+                        raise ValueError("purchase record requires the latest purchase requote")
+                    if "purchase_recorded" in event_types:
+                        raise ValueError("purchase was already recorded for this lifecycle")
+                if event_type == "holdings_reconciled":
+                    if "purchase_recorded" not in event_types:
+                        raise ValueError("holdings reconciliation requires a purchase record")
+                    if "holdings_reconciled" in event_types:
+                        raise ValueError("holdings were already reconciled for this lifecycle")
+                if event_type == "attribution_snapshot" and "holdings_reconciled" not in event_types:
+                    raise ValueError("attribution requires reconciled holdings")
+
+            sequence_no = len(prior) + 1
+            previous_hash = previous.get("event_hash") if previous else None
+            canonical = {
+                "id": event_id,
+                "case_id": case_id,
+                "user_id": user_id,
+                "holding_id": holding_id,
+                "selected_code": selected_code,
+                "candidate_code": candidate_code,
+                "execution_review_id": execution_review_id,
+                "execution_review_hash": execution_review_hash,
+                "sequence_no": sequence_no,
+                "event_type": event_type,
+                "schema_version": schema_version,
+                "status": status,
+                "actor_id": actor,
+                "redemption_transaction_id": redemption_transaction_id,
+                "purchase_transaction_id": purchase_transaction_id,
+                "payload": payload,
+                "payload_sha256": digest,
+                "evidence_sha256": evidence_sha256,
+                "previous_hash": previous_hash,
+                "created_at": created_at,
+            }
+            event_hash = hashlib.sha256(
+                canonical_json(canonical).encode("utf-8")
+            ).hexdigest()
+            conn.execute(
+                """
+                INSERT INTO fund_switch_lifecycle_events (
+                    id, case_id, user_id, holding_id, selected_code,
+                    candidate_code, execution_review_id, execution_review_hash,
+                    sequence_no, event_type, schema_version, status, actor_id,
+                    redemption_transaction_id, purchase_transaction_id,
+                    payload_json, payload_sha256, evidence_sha256, previous_hash,
+                    event_hash, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event_id,
+                    case_id,
+                    user_id,
+                    holding_id,
+                    selected_code,
+                    candidate_code,
+                    execution_review_id,
+                    execution_review_hash,
+                    sequence_no,
+                    event_type,
+                    schema_version,
+                    status,
+                    actor,
+                    redemption_transaction_id,
+                    purchase_transaction_id,
+                    payload_json,
+                    digest,
+                    evidence_sha256,
+                    previous_hash,
+                    event_hash,
+                    created_at,
+                ),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        row = conn.execute(
+            "SELECT * FROM fund_switch_lifecycle_events WHERE id=?",
+            (event_id,),
+        ).fetchone()
+    return _fund_switch_lifecycle_event_from_row(row)
+
+
+def get_fund_switch_lifecycle_event(
+    event_id: str,
+    user_id: str = "default",
+) -> dict | None:
+    with _lock:
+        row = _get_conn().execute(
+            "SELECT * FROM fund_switch_lifecycle_events WHERE id=? AND user_id=?",
+            (str(event_id), user_id),
+        ).fetchone()
+    return _fund_switch_lifecycle_event_from_row(row)
+
+
+def list_fund_switch_lifecycle_events(
+    case_id: str,
+    user_id: str = "default",
+) -> list[dict]:
+    with _lock:
+        rows = _get_conn().execute(
+            """
+            SELECT * FROM fund_switch_lifecycle_events
+            WHERE case_id=? AND user_id=?
+            ORDER BY sequence_no
+            """,
+            (str(case_id), user_id),
+        ).fetchall()
+    return [_fund_switch_lifecycle_event_from_row(row) for row in rows]
+
+
+def list_fund_switch_lifecycle_case_heads(
+    user_id: str = "default",
+    *,
+    holding_id: int | None = None,
+    candidate_code: str | None = None,
+    limit: int = 100,
+) -> list[dict]:
+    where = ["e.user_id=?"]
+    params: list = [user_id]
+    if holding_id is not None:
+        where.append("e.holding_id=?")
+        params.append(int(holding_id))
+    if candidate_code:
+        where.append("e.candidate_code=?")
+        params.append(str(candidate_code))
+    params.append(max(1, min(int(limit), 500)))
+    with _lock:
+        rows = _get_conn().execute(
+            f"""
+            SELECT e.* FROM fund_switch_lifecycle_events e
+            WHERE {' AND '.join(where)}
+              AND e.sequence_no=(
+                  SELECT MAX(e2.sequence_no)
+                  FROM fund_switch_lifecycle_events e2
+                  WHERE e2.user_id=e.user_id AND e2.case_id=e.case_id
+              )
+            ORDER BY e.created_at DESC, e.rowid DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+    return [_fund_switch_lifecycle_event_from_row(row) for row in rows]
+
+
+def fund_switch_lifecycle_transaction_is_bound(
+    transaction_id: int,
+    *,
+    event_type: str,
+    user_id: str = "default",
+) -> bool:
+    column = {
+        "redemption_settled": "redemption_transaction_id",
+        "purchase_recorded": "purchase_transaction_id",
+    }.get(str(event_type))
+    if column is None:
+        raise ValueError("unsupported fund switch lifecycle transaction binding")
+    with _lock:
+        row = _get_conn().execute(
+            f"""
+            SELECT 1 FROM fund_switch_lifecycle_events
+            WHERE user_id=? AND event_type=? AND {column}=?
+            LIMIT 1
+            """,
+            (user_id, str(event_type), int(transaction_id)),
+        ).fetchone()
+    return row is not None
+
+
+def verify_fund_switch_lifecycle_audit(
+    case_id: str,
+    user_id: str = "default",
+) -> dict:
+    events = list_fund_switch_lifecycle_events(case_id, user_id=user_id)
+    previous_hash = None
+    for expected_sequence, item in enumerate(events, start=1):
+        canonical = {
+            "id": item.get("id"),
+            "case_id": item.get("case_id"),
+            "user_id": item.get("user_id"),
+            "holding_id": item.get("holding_id"),
+            "selected_code": item.get("selected_code"),
+            "candidate_code": item.get("candidate_code"),
+            "execution_review_id": item.get("execution_review_id"),
+            "execution_review_hash": item.get("execution_review_hash"),
+            "sequence_no": item.get("sequence_no"),
+            "event_type": item.get("event_type"),
+            "schema_version": item.get("schema_version"),
+            "status": item.get("status"),
+            "actor_id": item.get("actor_id"),
+            "redemption_transaction_id": item.get("redemption_transaction_id"),
+            "purchase_transaction_id": item.get("purchase_transaction_id"),
+            "payload": item.get("payload"),
+            "payload_sha256": item.get("payload_sha256"),
+            "evidence_sha256": item.get("evidence_sha256"),
+            "previous_hash": item.get("previous_hash"),
+            "created_at": item.get("created_at"),
+        }
+        calculated = hashlib.sha256(
+            canonical_json(canonical).encode("utf-8")
+        ).hexdigest()
+        reason = _fund_switch_lifecycle_event_reason(item)
+        if (
+            int(item.get("sequence_no") or 0) != expected_sequence
+            or item.get("previous_hash") != previous_hash
+            or item.get("event_hash") != calculated
+            or reason is not None
+        ):
+            return {
+                "verified": False,
+                "case_id": str(case_id),
+                "event_count": len(events),
+                "failing_sequence": item.get("sequence_no"),
+                "chain_head": previous_hash,
+                "reason": reason or "lifecycle_event_chain_integrity_failed",
+            }
+        previous_hash = item.get("event_hash")
+    return {
+        "verified": bool(events),
+        "case_id": str(case_id),
+        "event_count": len(events),
+        "failing_sequence": None,
+        "chain_head": previous_hash,
+        "reason": None if events else "lifecycle_events_missing",
     }
 
 

@@ -7,6 +7,7 @@ from typing import Any
 
 import storage
 import fund_switch_execution_service
+import fund_switch_lifecycle_service
 import fund_switch_quote_service
 from portfolio_exposure import holdings_sha256
 
@@ -56,6 +57,10 @@ def get_portfolio_context(payload: dict[str, Any]) -> dict[str, Any]:
         target_code=code,
     )
     switch_execution_reviews = fund_switch_execution_service.agent_execution_summary(
+        user_id,
+        target_code=code,
+    )
+    switch_lifecycle = fund_switch_lifecycle_service.agent_lifecycle_summary(
         user_id,
         target_code=code,
     )
@@ -118,6 +123,7 @@ def get_portfolio_context(payload: dict[str, Any]) -> dict[str, Any]:
         },
         "fund_switch_quotes": switch_quotes,
         "fund_switch_execution_reviews": switch_execution_reviews,
+        "fund_switch_lifecycle": switch_lifecycle,
         "holdings": [
             {
                 "asset_type": item.get("asset_type"),
@@ -140,6 +146,7 @@ def get_portfolio_context(payload: dict[str, Any]) -> dict[str, Any]:
             "target_match": "asset_type_fund_and_exact_six_digit_code",
             "switch_quote_scope": "latest_user_confirmed_quote_per_candidate_with_audit_status",
             "switch_execution_scope": "latest_immutable_pretrade_review_with_current_binding_status",
+            "switch_lifecycle_scope": "immutable_actual_settlement_purchase_reconciliation_and_real_nav_attribution_events",
         },
         "policy": "组合上下文只读取用户已确认持仓和已保存约束，不推断现金、负债或未导入资产。",
     }

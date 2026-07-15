@@ -58,6 +58,54 @@ export function fetchFundSwitchExecutionReview(holdingId, candidateCode) {
   return getJson(`/api/holdings/${encodeURIComponent(holdingId)}/fund-switch-execution-reviews/${encodeURIComponent(candidateCode)}`)
 }
 
+export function fetchFundSwitchCandidateContext(holdingId, candidateCode) {
+  return getJson(`/api/holdings/${encodeURIComponent(holdingId)}/fund-switch-cases/${encodeURIComponent(candidateCode)}`)
+}
+
+export function createFundSwitchSettlement(holdingId, candidateCode, payload) {
+  return getJson(`/api/holdings/${encodeURIComponent(holdingId)}/fund-switch-cases/${encodeURIComponent(candidateCode)}/settlements`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export function fetchFundSwitchCases(limit = 50) {
+  return getJson(`/api/portfolio/fund-switch-cases?limit=${encodeURIComponent(limit)}`)
+}
+
+export function fetchFundSwitchCase(caseId) {
+  return getJson(`/api/portfolio/fund-switch-cases/${encodeURIComponent(caseId)}`)
+}
+
+export function createFundSwitchPurchaseRequote(caseId, payload) {
+  return getJson(`/api/portfolio/fund-switch-cases/${encodeURIComponent(caseId)}/purchase-requotes`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export function recordFundSwitchPurchase(caseId, payload) {
+  return getJson(`/api/portfolio/fund-switch-cases/${encodeURIComponent(caseId)}/purchases`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export function reconcileFundSwitchCase(caseId) {
+  return getJson(`/api/portfolio/fund-switch-cases/${encodeURIComponent(caseId)}/reconciliation`, {
+    method: 'POST',
+  })
+}
+
+export function createFundSwitchAttributionSnapshot(caseId) {
+  return getJson(`/api/portfolio/fund-switch-cases/${encodeURIComponent(caseId)}/attribution-snapshots`, {
+    method: 'POST',
+  })
+}
+
 export function fetchHoldingsLevelRecurrence(months = 60) {
   return getJson(`/api/holdings/level-recurrence?months=${encodeURIComponent(months)}`)
 }
