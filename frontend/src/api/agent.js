@@ -72,6 +72,14 @@ export function reconcileAgentBatchPurchaseHoldings(batchId, payload) {
   })
 }
 
+export function createAgentBatchPurchaseAttribution(batchId, payload) {
+  return getJson(`/api/v1/agent/batches/${encodeURIComponent(batchId)}/purchase-attribution`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
 export function fetchAgentModelStatus() {
   return getJson('/api/v1/agent/model/status')
 }

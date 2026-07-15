@@ -11,6 +11,7 @@ import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest.mock import patch
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -19,11 +20,12 @@ if str(BACKEND_ROOT) not in sys.path:
 
 import portfolio_exposure  # noqa: E402
 import storage  # noqa: E402
-from agent import batch_purchase_execution  # noqa: E402
+from agent import batch_purchase_attribution, batch_purchase_execution  # noqa: E402
 from agent.repository import AgentRepository  # noqa: E402
 from investment_policy import payload_sha256  # noqa: E402
 from routers.agent import (  # noqa: E402
     BatchPurchaseExecutionOutcomeRequest,
+    CreateBatchPurchaseAttributionRequest,
     CreateBatchPurchaseExecutionRequest,
 )
 
@@ -35,6 +37,29 @@ EXPIRES_AT = "2026-07-16T01:00:00+00:00"
 
 def _canonical(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _nav_history(code, points):
+    return {
+        "code": code,
+        "source": "真实确认净值测试源",
+        "source_url": f"https://example.test/{code}",
+        "as_of": points[-1][0],
+        "observation_count": len(points),
+        "points": [
+            {"date": date_value, "unit_nav": nav, "acc_nav": nav}
+            for date_value, nav in points
+        ],
+    }
+
+
+def _distributions(code, *, dividends=None, splits=None):
+    return {
+        "code": code,
+        "source": "真实分红拆分测试源",
+        "dividends": dividends or [],
+        "splits": splits or [],
+    }
 
 
 class BatchPurchaseExecutionTests(unittest.TestCase):
@@ -212,6 +237,39 @@ class BatchPurchaseExecutionTests(unittest.TestCase):
             actor_id="actor-one",
             now=NOW,
         )
+
+    def _reconciled_purchase(self):
+        transaction = self._transaction()
+        purchase, _ = self._record(self._request(transaction["id"]))
+        storage.upsert_holding({
+            "asset_type": "fund",
+            "market": "基金",
+            "code": "000001",
+            "name": "基金000001",
+            "amount": 999,
+            "shares": 999,
+            "source": "manual",
+        }, user_id="user-one")
+        reconciliation, _ = batch_purchase_execution.reconcile_batch_purchase_holdings(
+            self.repository,
+            self.repository.get_batch(self.batch["id"]),
+            {
+                "expected_purchase_event_id": purchase["id"],
+                "expected_purchase_event_hash": purchase["event_hash"],
+                "expected_previous_event_hash": purchase["event_hash"],
+            },
+            user_id="user-one",
+            actor_id="actor-one",
+            now=NOW,
+        )
+        return transaction, purchase, reconciliation
+
+    def _attribution_request(self, reconciliation, previous_hash=None):
+        return {
+            "expected_reconciliation_event_id": reconciliation["id"],
+            "expected_reconciliation_event_hash": reconciliation["event_hash"],
+            "expected_previous_snapshot_hash": previous_hash,
+        }
 
     def test_record_binds_real_transaction_and_is_idempotent(self):
         transaction = self._transaction()
@@ -430,6 +488,296 @@ class BatchPurchaseExecutionTests(unittest.TestCase):
                     (transaction["id"],),
                 )
 
+    def test_attribution_uses_real_nav_and_waits_for_observation_window(self):
+        _, _, reconciliation = self._reconciled_purchase()
+        nav = _nav_history("000001", [
+            ("2026-07-15", 1.0),
+            ("2026-08-14", 1.1),
+        ])
+        with (
+            patch.object(
+                batch_purchase_attribution.funds,
+                "get_fund_nav_history",
+                return_value=nav,
+            ),
+            patch.object(
+                batch_purchase_attribution.funds,
+                "get_fund_dividends",
+                return_value=_distributions("000001"),
+            ),
+        ):
+            snapshot, created = (
+                batch_purchase_attribution.create_batch_purchase_attribution_snapshot(
+                    self.repository,
+                    self.repository.get_batch(self.batch["id"]),
+                    self._attribution_request(reconciliation),
+                    user_id="user-one",
+                    actor_id="actor-one",
+                    now=dt.datetime(2026, 8, 15, 2, 0, tzinfo=dt.timezone.utc),
+                )
+            )
+            duplicate, duplicate_created = (
+                batch_purchase_attribution.create_batch_purchase_attribution_snapshot(
+                    self.repository,
+                    self.repository.get_batch(self.batch["id"]),
+                    self._attribution_request(reconciliation),
+                    user_id="user-one",
+                    actor_id="actor-one",
+                    now=dt.datetime(2026, 8, 15, 2, 0, tzinfo=dt.timezone.utc),
+                )
+            )
+
+        self.assertTrue(created)
+        self.assertFalse(duplicate_created)
+        self.assertEqual(duplicate["id"], snapshot["id"])
+        self.assertEqual(snapshot["payload"]["status"], "available")
+        metrics = snapshot["payload"]["items"][0]["metrics"]
+        self.assertEqual(metrics["original_cost_yuan"], 1000.0)
+        self.assertEqual(metrics["current_remaining_value_yuan"], 1098.9)
+        self.assertEqual(metrics["total_profit_yuan"], 98.9)
+        self.assertEqual(metrics["total_return_pct"], 9.89)
+        self.assertEqual(metrics["observation_days"], 30)
+        self.assertTrue(snapshot["payload"]["decision_gate"]["decision_review_eligible"])
+        decorated = batch_purchase_attribution.decorate_batch_purchase_attribution(
+            self.repository,
+            self.repository.get_batch(self.batch["id"]),
+            user_id="user-one",
+        )
+        self.assertTrue(decorated["current_bindings"]["all_current"])
+        self.assertEqual(decorated["snapshot"]["audit_event_count"], 1)
+
+    def test_attribution_tracks_fifo_sales_and_marks_changed_ledger_stale(self):
+        _, _, reconciliation = self._reconciled_purchase()
+        storage.add_portfolio_transaction({
+            "asset_type": "fund",
+            "market": "基金",
+            "code": "000001",
+            "name": "基金000001",
+            "trade_type": "sell",
+            "trade_date": "2026-08-10",
+            "shares": 499,
+            "unit_price": 1.2,
+            "fee": 1,
+            "source": "manual",
+        }, user_id="user-one")
+        storage.upsert_holding({
+            "asset_type": "fund",
+            "market": "基金",
+            "code": "000001",
+            "name": "基金000001",
+            "amount": 575,
+            "shares": 500,
+            "source": "manual",
+        }, user_id="user-one")
+        with (
+            patch.object(
+                batch_purchase_attribution.funds,
+                "get_fund_nav_history",
+                return_value=_nav_history("000001", [
+                    ("2026-07-15", 1.0),
+                    ("2026-08-10", 1.2),
+                    ("2026-08-14", 1.15),
+                ]),
+            ),
+            patch.object(
+                batch_purchase_attribution.funds,
+                "get_fund_dividends",
+                return_value=_distributions("000001"),
+            ),
+        ):
+            snapshot, _ = (
+                batch_purchase_attribution.create_batch_purchase_attribution_snapshot(
+                    self.repository,
+                    self.repository.get_batch(self.batch["id"]),
+                    self._attribution_request(reconciliation),
+                    user_id="user-one",
+                    actor_id="actor-one",
+                    now=dt.datetime(2026, 8, 15, 2, 0, tzinfo=dt.timezone.utc),
+                )
+            )
+        metrics = snapshot["payload"]["items"][0]["metrics"]
+        self.assertEqual(metrics["realized_proceeds_yuan"], 597.8)
+        self.assertEqual(metrics["current_remaining_value_yuan"], 575.0)
+        self.assertEqual(metrics["total_profit_yuan"], 172.8)
+
+        storage.add_portfolio_transaction({
+            "asset_type": "fund",
+            "market": "基金",
+            "code": "000001",
+            "name": "基金000001",
+            "trade_type": "sell",
+            "trade_date": "2026-08-15",
+            "shares": 100,
+            "unit_price": 1.1,
+            "fee": 0,
+            "source": "manual",
+        }, user_id="user-one")
+        storage.upsert_holding({
+            "asset_type": "fund",
+            "market": "基金",
+            "code": "000001",
+            "name": "基金000001",
+            "amount": 440,
+            "shares": 400,
+            "source": "manual",
+        }, user_id="user-one")
+        stale = batch_purchase_attribution.decorate_batch_purchase_attribution(
+            self.repository,
+            self.repository.get_batch(self.batch["id"]),
+            user_id="user-one",
+        )
+        self.assertEqual(stale["status"], "stale_refresh_required")
+        self.assertTrue(stale["refresh_ready"])
+        self.assertFalse(stale["current_bindings"]["ledger_current"])
+
+    def test_attribution_accepts_fully_realized_lot_without_empty_holding(self):
+        _, _, reconciliation = self._reconciled_purchase()
+        holding = storage.list_holdings(user_id="user-one")[0]
+        storage.add_portfolio_transaction({
+            "asset_type": "fund",
+            "market": "基金",
+            "code": "000001",
+            "name": "基金000001",
+            "trade_type": "sell",
+            "trade_date": "2026-08-10",
+            "shares": 999,
+            "unit_price": 1.2,
+            "fee": 1,
+            "source": "manual",
+        }, user_id="user-one")
+        storage.delete_holding(holding["id"], user_id="user-one")
+        with (
+            patch.object(
+                batch_purchase_attribution.funds,
+                "get_fund_nav_history",
+                return_value=_nav_history("000001", [
+                    ("2026-07-15", 1.0),
+                    ("2026-08-10", 1.2),
+                ]),
+            ),
+            patch.object(
+                batch_purchase_attribution.funds,
+                "get_fund_dividends",
+                return_value=_distributions("000001"),
+            ),
+        ):
+            snapshot, _ = (
+                batch_purchase_attribution.create_batch_purchase_attribution_snapshot(
+                    self.repository,
+                    self.repository.get_batch(self.batch["id"]),
+                    self._attribution_request(reconciliation),
+                    user_id="user-one",
+                    actor_id="actor-one",
+                    now=dt.datetime(2026, 8, 15, 2, 0, tzinfo=dt.timezone.utc),
+                )
+            )
+        item = snapshot["payload"]["items"][0]
+        self.assertEqual(item["lot"]["remaining_shares"], 0.0)
+        self.assertEqual(item["metrics"]["current_remaining_value_yuan"], 0.0)
+        self.assertEqual(item["metrics"]["realized_proceeds_yuan"], 1197.8)
+        self.assertEqual(item["metrics"]["total_profit_yuan"], 197.8)
+        self.assertEqual(item["as_of"], "2026-08-10")
+        self.assertTrue(item["holding_reconciliation"]["shares_match"])
+
+    def test_attribution_rejects_holding_mismatch_and_never_calls_provider(self):
+        _, _, reconciliation = self._reconciled_purchase()
+        storage.upsert_holding({
+            "asset_type": "fund",
+            "market": "基金",
+            "code": "000001",
+            "name": "基金000001",
+            "amount": 998,
+            "shares": 998,
+            "source": "manual",
+        }, user_id="user-one")
+        with patch.object(
+            batch_purchase_attribution.funds,
+            "get_fund_nav_history",
+        ) as nav_provider:
+            with self.assertRaises(
+                batch_purchase_attribution.BatchPurchaseAttributionValidationError
+            ):
+                batch_purchase_attribution.create_batch_purchase_attribution_snapshot(
+                    self.repository,
+                    self.repository.get_batch(self.batch["id"]),
+                    self._attribution_request(reconciliation),
+                    user_id="user-one",
+                    actor_id="actor-one",
+                )
+        nav_provider.assert_not_called()
+
+    def test_attribution_persists_blocked_sources_and_is_immutable(self):
+        _, _, reconciliation = self._reconciled_purchase()
+        nav = _nav_history("000001", [
+            ("2026-07-15", 1.0),
+            ("2026-08-14", 1.1),
+        ])
+        with (
+            patch.object(
+                batch_purchase_attribution.funds,
+                "get_fund_nav_history",
+                return_value=nav,
+            ),
+            patch.object(
+                batch_purchase_attribution.funds,
+                "get_fund_dividends",
+                return_value=_distributions("000001", dividends=[{
+                    "ex_dividend_date": "2026-07-20",
+                    "cash_per_share": 0.02,
+                }]),
+            ),
+        ):
+            blocked, _ = (
+                batch_purchase_attribution.create_batch_purchase_attribution_snapshot(
+                    self.repository,
+                    self.repository.get_batch(self.batch["id"]),
+                    self._attribution_request(reconciliation),
+                    user_id="user-one",
+                    actor_id="actor-one",
+                    now=dt.datetime(2026, 8, 15, 2, 0, tzinfo=dt.timezone.utc),
+                )
+            )
+        self.assertEqual(blocked["payload"]["status"], "unavailable")
+        self.assertEqual(blocked["payload"]["aggregate"]["metrics"], {})
+        self.assertTrue(blocked["payload"]["items"][0]["corporate_actions"])
+
+        with (
+            patch.object(
+                batch_purchase_attribution.funds,
+                "get_fund_nav_history",
+                side_effect=RuntimeError("provider timeout"),
+            ),
+            patch.object(
+                batch_purchase_attribution.funds,
+                "get_fund_dividends",
+                return_value=_distributions("000001"),
+            ),
+        ):
+            unavailable, created = (
+                batch_purchase_attribution.create_batch_purchase_attribution_snapshot(
+                    self.repository,
+                    self.repository.get_batch(self.batch["id"]),
+                    self._attribution_request(reconciliation, blocked["event_hash"]),
+                    user_id="user-one",
+                    actor_id="actor-one",
+                    now=dt.datetime(2026, 8, 16, 2, 0, tzinfo=dt.timezone.utc),
+                )
+            )
+        self.assertTrue(created)
+        self.assertEqual(unavailable["sequence_no"], 2)
+        self.assertTrue(unavailable["payload"]["items"][0]["source_errors"])
+        audit = self.repository.verify_batch_purchase_attribution_audit(
+            self.batch["id"], user_id="user-one"
+        )
+        self.assertTrue(audit["verified"])
+        self.assertEqual(audit["event_count"], 2)
+        with self.repository._connect() as connection:
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute(
+                    "UPDATE agent_batch_purchase_attribution_snapshots SET actor_id='changed' WHERE id=?",
+                    (blocked["id"],),
+                )
+
     def test_request_models_require_complete_real_outcomes(self):
         with self.assertRaises(Exception):
             BatchPurchaseExecutionOutcomeRequest(
@@ -454,6 +802,11 @@ class BatchPurchaseExecutionTests(unittest.TestCase):
                     },
                 ],
             )
+        request = CreateBatchPurchaseAttributionRequest(
+            expected_reconciliation_event_id="reconciliation_event",
+            expected_reconciliation_event_hash="a" * 64,
+        )
+        self.assertIsNone(request.expected_previous_snapshot_hash)
 
 
 if __name__ == "__main__":

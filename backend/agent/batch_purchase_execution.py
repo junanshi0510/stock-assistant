@@ -320,7 +320,7 @@ def _purchase_event(events: list[dict[str, Any]]) -> dict[str, Any] | None:
     )
 
 
-def _transaction_integrity(
+def transaction_integrity_snapshot(
     repository: AgentRepository,
     batch_id: str,
     events: list[dict[str, Any]],
@@ -570,7 +570,7 @@ def reconcile_batch_purchase_holdings(
     audit = repository.verify_batch_purchase_execution_audit(
         str(batch.get("id") or ""), user_id=user_id
     )
-    transaction_integrity = _transaction_integrity(
+    transaction_integrity = transaction_integrity_snapshot(
         repository, str(batch.get("id") or ""), events, user_id=user_id
     )
     if not audit.get("verified") or not transaction_integrity.get("verified"):
@@ -662,7 +662,7 @@ def decorate_batch_purchase_execution(
 
     latest = events[-1]
     audit = repository.verify_batch_purchase_execution_audit(batch_id, user_id=user_id)
-    transaction_integrity = _transaction_integrity(
+    transaction_integrity = transaction_integrity_snapshot(
         repository, batch_id, events, user_id=user_id
     )
     if (

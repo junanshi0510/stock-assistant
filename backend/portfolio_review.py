@@ -313,6 +313,155 @@ def remaining_lot_snapshot(
     }
 
 
+def purchase_lot_outcome_snapshots(
+    transaction_ids: list[int],
+    *,
+    user_id: str = "default",
+) -> dict[int, dict]:
+    """Trace specific real purchases through the current FIFO ledger in one pass."""
+    normalized_ids = sorted({int(value) for value in transaction_ids if int(value) > 0})
+    if not normalized_ids:
+        return {}
+
+    rows = storage.list_portfolio_transactions(user_id=user_id)
+    rows_by_id = {int(row.get("id") or 0): row for row in rows}
+    positions, issues, realized_lots = _calculate_fifo(
+        rows,
+        include_realized_lots=True,
+        include_remaining_lots=True,
+    )
+    positions_by_key = {_asset_key(item): item for item in positions}
+    holdings = storage.list_holdings(user_id=user_id)
+    transaction_fields = (
+        "id",
+        "user_id",
+        "asset_type",
+        "market",
+        "code",
+        "name",
+        "trade_type",
+        "trade_date",
+        "shares",
+        "unit_price",
+        "fee",
+        "source",
+        "created_at",
+    )
+    result: dict[int, dict] = {}
+
+    for transaction_id in normalized_ids:
+        transaction = rows_by_id.get(transaction_id)
+        if transaction is None:
+            raise ValueError(f"真实买入流水 #{transaction_id} 不存在或不属于当前用户")
+        if transaction.get("asset_type") != "fund" or transaction.get("trade_type") != "buy":
+            raise ValueError(f"交易流水 #{transaction_id} 不是基金买入流水")
+
+        key = _asset_key(transaction)
+        position = positions_by_key.get(key) or {
+            "asset_type": key[0],
+            "code": key[1],
+            "market": transaction.get("market") or "",
+            "name": transaction.get("name") or key[1],
+            "open_shares": 0.0,
+            "remaining_lots": [],
+            "transaction_count": 0,
+        }
+        scoped_issues = [item for item in issues if _asset_key(item) == key]
+        realized_matches = [
+            item for item in realized_lots
+            if int(item.get("buy_transaction_id") or 0) == transaction_id
+        ]
+        remaining_lots = [
+            item for item in (position.get("remaining_lots") or [])
+            if int(item.get("transaction_id") or 0) == transaction_id
+        ]
+        original_shares = _number(transaction.get("shares")) or 0.0
+        original_cost = original_shares * (_number(transaction.get("unit_price")) or 0.0)
+        original_cost += _number(transaction.get("fee")) or 0.0
+        realized_shares = sum(_number(item.get("shares")) or 0.0 for item in realized_matches)
+        realized_proceeds = sum(_number(item.get("proceeds")) or 0.0 for item in realized_matches)
+        realized_profit = sum(_number(item.get("realized_profit")) or 0.0 for item in realized_matches)
+        remaining_shares = sum(_number(item.get("shares")) or 0.0 for item in remaining_lots)
+        remaining_cost = sum(
+            (_number(item.get("shares")) or 0.0)
+            * (_number(item.get("cost_per_share")) or 0.0)
+            for item in remaining_lots
+        )
+        lot_tolerance = max(_EPSILON, abs(original_shares) * 0.001)
+        lot_share_delta = original_shares - realized_shares - remaining_shares
+        lot_complete = bool(
+            original_shares > _EPSILON
+            and abs(lot_share_delta) <= lot_tolerance
+            and not scoped_issues
+        )
+
+        scoped_holdings = [item for item in holdings if _asset_key(item) == key]
+        holding_values = [_number(item.get("shares")) for item in scoped_holdings]
+        ledger_open_shares = _number(position.get("open_shares")) or 0.0
+        if scoped_holdings and all(value is not None for value in holding_values):
+            confirmed_shares = sum(value or 0.0 for value in holding_values)
+        elif not scoped_holdings and ledger_open_shares <= _EPSILON:
+            confirmed_shares = 0.0
+        else:
+            confirmed_shares = None
+        holding_tolerance = max(
+            _EPSILON,
+            abs(confirmed_shares if confirmed_shares is not None else ledger_open_shares) * 0.001,
+        )
+        holding_shares_match = bool(
+            confirmed_shares is not None
+            and abs(confirmed_shares - ledger_open_shares) <= holding_tolerance
+            and not scoped_issues
+        )
+        relevant_transactions = [
+            {field: row.get(field) for field in transaction_fields}
+            for row in _sort_transactions(rows)
+            if _asset_key(row) == key
+        ]
+        holding_share_rows = sorted(
+            [
+                {
+                    "id": item.get("id"),
+                    "asset_type": item.get("asset_type"),
+                    "market": item.get("market"),
+                    "code": item.get("code"),
+                    "shares": item.get("shares"),
+                }
+                for item in scoped_holdings
+            ],
+            key=lambda item: (str(item.get("market") or ""), int(item.get("id") or 0)),
+        )
+        result[transaction_id] = {
+            "transaction": {field: transaction.get(field) for field in transaction_fields},
+            "lot": {
+                "original_shares": _round(original_shares, 8),
+                "original_cost_yuan": _round(original_cost),
+                "realized_shares": _round(realized_shares, 8),
+                "realized_proceeds_yuan": _round(realized_proceeds),
+                "realized_profit_yuan": _round(realized_profit),
+                "remaining_shares": _round(remaining_shares, 8),
+                "remaining_cost_yuan": _round(remaining_cost),
+                "share_delta": _round(lot_share_delta, 8),
+                "share_tolerance": _round(lot_tolerance, 8),
+                "complete": lot_complete,
+                "remaining_lots": remaining_lots,
+                "realized_matches": realized_matches,
+            },
+            "asset_position": position,
+            "holding_reconciliation": {
+                "holding_record_count": len(scoped_holdings),
+                "confirmed_shares": _round(confirmed_shares, 8),
+                "fifo_open_shares": _round(ledger_open_shares, 8),
+                "share_tolerance": _round(holding_tolerance, 8),
+                "shares_match": holding_shares_match,
+            },
+            "integrity_issues": scoped_issues,
+            "relevant_transactions": relevant_transactions,
+            "holding_share_rows": holding_share_rows,
+        }
+    return result
+
+
 def ledger_overview(*, user_id: str = "default") -> dict:
     rows = storage.list_portfolio_transactions(user_id=user_id)
     positions, integrity_issues = _calculate_fifo(rows)

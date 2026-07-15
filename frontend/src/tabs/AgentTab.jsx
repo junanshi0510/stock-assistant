@@ -22,6 +22,7 @@ import {
 import {
   cancelAgentBatch,
   cancelAgentRun,
+  createAgentBatchPurchaseAttribution,
   createAgentBatchAllocation,
   createAgentBatchPurchasePreflight,
   createFundResearchBatch,
@@ -448,6 +449,7 @@ export default function AgentTab() {
   const [reviewingBatchPurchase, setReviewingBatchPurchase] = useState(false)
   const [recordingBatchPurchase, setRecordingBatchPurchase] = useState(false)
   const [reconcilingBatchPurchase, setReconcilingBatchPurchase] = useState(false)
+  const [refreshingBatchAttribution, setRefreshingBatchAttribution] = useState(false)
   const [loading, setLoading] = useState(false)
   const [history, setHistory] = useState({ items: [], next_cursor: null, has_more: false })
   const [loadingHistory, setLoadingHistory] = useState(false)
@@ -864,6 +866,22 @@ export default function AgentTab() {
     }
   }
 
+  async function refreshBatchPurchaseAttribution(payload) {
+    if (!batch?.id) return false
+    setRefreshingBatchAttribution(true)
+    setError('')
+    try {
+      const data = await createAgentBatchPurchaseAttribution(batch.id, payload)
+      setBatch(data.batch)
+      return true
+    } catch (requestError) {
+      setError(requestError.message || '真实成交绩效归因刷新失败')
+      return false
+    } finally {
+      setRefreshingBatchAttribution(false)
+    }
+  }
+
   async function cancelBatch() {
     if (!batch?.id) return
     setLoadingBatch(true)
@@ -1216,6 +1234,7 @@ export default function AgentTab() {
         reviewingPurchase={reviewingBatchPurchase}
         recordingPurchase={recordingBatchPurchase}
         reconcilingPurchase={reconcilingBatchPurchase}
+        refreshingAttribution={refreshingBatchAttribution}
         selectedRunId={run?.id || ''}
         onRefresh={() => loadBatch(batch?.id)}
         onCancel={cancelBatch}
@@ -1224,6 +1243,7 @@ export default function AgentTab() {
         onReviewPurchase={reviewBatchPurchase}
         onRecordPurchase={recordBatchPurchase}
         onReconcilePurchase={reconcileBatchPurchase}
+        onRefreshAttribution={refreshBatchPurchaseAttribution}
       />
 
       <section className="agent-history-panel" aria-label="Agent 运行历史">

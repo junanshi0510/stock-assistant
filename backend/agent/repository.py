@@ -319,6 +319,47 @@ class AgentRepository:
                         SELECT RAISE(ABORT, 'agent batch purchase transaction bindings are immutable');
                     END;
 
+                    CREATE TABLE IF NOT EXISTS agent_batch_purchase_attribution_snapshots (
+                        id                              TEXT PRIMARY KEY,
+                        batch_id                        TEXT NOT NULL REFERENCES agent_batches(id),
+                        tenant_id                       TEXT NOT NULL,
+                        user_id                         TEXT NOT NULL,
+                        sequence_no                     INTEGER NOT NULL,
+                        schema_version                  TEXT NOT NULL,
+                        strategy_id                     TEXT NOT NULL,
+                        strategy_version                TEXT NOT NULL,
+                        purchase_event_id               TEXT NOT NULL REFERENCES agent_batch_purchase_execution_events(id),
+                        purchase_event_hash             TEXT NOT NULL,
+                        purchase_payload_sha256         TEXT NOT NULL,
+                        reconciliation_event_id         TEXT NOT NULL REFERENCES agent_batch_purchase_execution_events(id),
+                        reconciliation_event_hash       TEXT NOT NULL,
+                        reconciliation_payload_sha256   TEXT NOT NULL,
+                        request_sha256                   TEXT NOT NULL,
+                        payload_json                    TEXT NOT NULL,
+                        payload_sha256                  TEXT NOT NULL,
+                        previous_hash                   TEXT,
+                        event_hash                      TEXT NOT NULL,
+                        actor_id                        TEXT NOT NULL,
+                        created_at                      TEXT NOT NULL,
+                        UNIQUE(batch_id, sequence_no),
+                        UNIQUE(batch_id, request_sha256)
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_agent_batch_purchase_attribution_user
+                    ON agent_batch_purchase_attribution_snapshots(user_id, created_at DESC);
+
+                    CREATE TRIGGER IF NOT EXISTS trg_agent_batch_purchase_attribution_no_update
+                    BEFORE UPDATE ON agent_batch_purchase_attribution_snapshots
+                    BEGIN
+                        SELECT RAISE(ABORT, 'agent batch purchase attribution snapshots are immutable');
+                    END;
+
+                    CREATE TRIGGER IF NOT EXISTS trg_agent_batch_purchase_attribution_no_delete
+                    BEFORE DELETE ON agent_batch_purchase_attribution_snapshots
+                    BEGIN
+                        SELECT RAISE(ABORT, 'agent batch purchase attribution snapshots are immutable');
+                    END;
+
                     CREATE TABLE IF NOT EXISTS agent_steps (
                         id             TEXT PRIMARY KEY,
                         run_id         TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
@@ -846,6 +887,48 @@ class AgentRepository:
         return item
 
     @staticmethod
+    def _batch_purchase_attribution_from_row(
+        row: sqlite3.Row | None,
+    ) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        item = dict(row)
+        payload = _load(item.pop("payload_json", None), {})
+        payload_verified = (
+            hashlib.sha256(_json(payload).encode("utf-8")).hexdigest()
+            == item.get("payload_sha256")
+        )
+        canonical = {
+            "id": item.get("id"),
+            "batch_id": item.get("batch_id"),
+            "tenant_id": item.get("tenant_id"),
+            "user_id": item.get("user_id"),
+            "sequence_no": item.get("sequence_no"),
+            "schema_version": item.get("schema_version"),
+            "strategy_id": item.get("strategy_id"),
+            "strategy_version": item.get("strategy_version"),
+            "purchase_event_id": item.get("purchase_event_id"),
+            "purchase_event_hash": item.get("purchase_event_hash"),
+            "purchase_payload_sha256": item.get("purchase_payload_sha256"),
+            "reconciliation_event_id": item.get("reconciliation_event_id"),
+            "reconciliation_event_hash": item.get("reconciliation_event_hash"),
+            "reconciliation_payload_sha256": item.get("reconciliation_payload_sha256"),
+            "request_sha256": item.get("request_sha256"),
+            "payload": payload,
+            "payload_sha256": item.get("payload_sha256"),
+            "previous_hash": item.get("previous_hash"),
+            "actor_id": item.get("actor_id"),
+            "created_at": item.get("created_at"),
+        }
+        item["payload"] = payload
+        item["integrity_verified"] = bool(
+            payload_verified
+            and hashlib.sha256(_json(canonical).encode("utf-8")).hexdigest()
+            == item.get("event_hash")
+        )
+        return item
+
+    @staticmethod
     def _step_from_row(row: sqlite3.Row) -> dict[str, Any]:
         item = dict(row)
         item["input"] = _load(item.pop("input_json", None), {})
@@ -1093,6 +1176,15 @@ class AgentRepository:
                 """,
                 (batch_id,),
             ).fetchone()
+            purchase_attribution_row = connection.execute(
+                """
+                SELECT * FROM agent_batch_purchase_attribution_snapshots
+                WHERE batch_id=?
+                ORDER BY sequence_no DESC
+                LIMIT 1
+                """,
+                (batch_id,),
+            ).fetchone()
         items = []
         for row in rows:
             run = self._run_from_row(row)
@@ -1106,6 +1198,9 @@ class AgentRepository:
         )
         batch["purchase_execution_event"] = self._batch_purchase_execution_from_row(
             purchase_execution_row
+        )
+        batch["purchase_attribution_snapshot"] = self._batch_purchase_attribution_from_row(
+            purchase_attribution_row
         )
         return batch
 
@@ -1839,6 +1934,284 @@ class AgentRepository:
             "chain_head": previous_hash,
             "failing_sequence": None,
             "reason": None if rows else "purchase_execution_events_missing",
+        }
+
+    def append_batch_purchase_attribution_snapshot(
+        self,
+        batch_id: str,
+        payload: dict[str, Any],
+        *,
+        user_id: str,
+        actor_id: str,
+        expected_previous_event_hash: str | None,
+    ) -> tuple[dict[str, Any], bool]:
+        schema_version = str(payload.get("schema_version") or "")
+        strategy_id = str(payload.get("strategy_id") or "")
+        strategy_version = str(payload.get("strategy_version") or "")
+        bindings = payload.get("bindings") or {}
+        purchase_event_id = str(bindings.get("purchase_event_id") or "")
+        purchase_event_hash = str(bindings.get("purchase_event_hash") or "")
+        purchase_payload_sha256 = str(bindings.get("purchase_payload_sha256") or "")
+        reconciliation_event_id = str(bindings.get("reconciliation_event_id") or "")
+        reconciliation_event_hash = str(bindings.get("reconciliation_event_hash") or "")
+        reconciliation_payload_sha256 = str(
+            bindings.get("reconciliation_payload_sha256") or ""
+        )
+        request_sha256 = str(bindings.get("request_sha256") or "")
+        if (
+            not schema_version
+            or not strategy_id
+            or not strategy_version
+            or not purchase_event_id
+            or not reconciliation_event_id
+            or any(len(value) != 64 for value in (
+                purchase_event_hash,
+                purchase_payload_sha256,
+                reconciliation_event_hash,
+                reconciliation_payload_sha256,
+                request_sha256,
+            ))
+        ):
+            raise ValueError("批次申购绩效快照缺少策略版本或证据哈希绑定")
+
+        payload_json = _json(payload)
+        payload_sha256 = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            batch_row = connection.execute(
+                "SELECT * FROM agent_batches WHERE id=? AND user_id=?",
+                (str(batch_id), str(user_id)),
+            ).fetchone()
+            if batch_row is None:
+                raise KeyError(f"Agent Batch 不存在：{batch_id}")
+            if str(bindings.get("batch_id") or "") != str(batch_id):
+                raise ValueError("批次申购绩效快照绑定了错误的 Batch ID")
+            if str(bindings.get("batch_input_sha256") or "") != str(
+                batch_row["input_hash"] or ""
+            ):
+                raise ValueError("批次申购绩效快照绑定的 Batch 输入哈希已变化")
+
+            purchase_row = connection.execute(
+                """
+                SELECT * FROM agent_batch_purchase_execution_events
+                WHERE id=? AND batch_id=? AND user_id=?
+                """,
+                (purchase_event_id, str(batch_id), str(user_id)),
+            ).fetchone()
+            reconciliation_row = connection.execute(
+                """
+                SELECT * FROM agent_batch_purchase_execution_events
+                WHERE id=? AND batch_id=? AND user_id=?
+                """,
+                (reconciliation_event_id, str(batch_id), str(user_id)),
+            ).fetchone()
+            purchase = self._batch_purchase_execution_from_row(purchase_row)
+            reconciliation = self._batch_purchase_execution_from_row(reconciliation_row)
+            latest_execution = connection.execute(
+                """
+                SELECT id FROM agent_batch_purchase_execution_events
+                WHERE batch_id=? ORDER BY sequence_no DESC LIMIT 1
+                """,
+                (str(batch_id),),
+            ).fetchone()
+            if (
+                purchase is None
+                or reconciliation is None
+                or not purchase.get("integrity_verified")
+                or not reconciliation.get("integrity_verified")
+                or purchase.get("event_type") != "purchases_recorded"
+                or reconciliation.get("event_type") != "holdings_reconciled"
+                or latest_execution is None
+                or str(latest_execution["id"]) != reconciliation_event_id
+            ):
+                raise ValueError("绑定的真实成交或持仓对账事件不是当前完整版本")
+            if (
+                purchase.get("event_hash") != purchase_event_hash
+                or purchase.get("payload_sha256") != purchase_payload_sha256
+                or reconciliation.get("event_hash") != reconciliation_event_hash
+                or reconciliation.get("payload_sha256") != reconciliation_payload_sha256
+            ):
+                raise ValueError("绑定的真实成交或持仓对账事件哈希已变化")
+            reconciliation_bindings = (reconciliation.get("payload") or {}).get("bindings") or {}
+            if (
+                str(reconciliation_bindings.get("purchase_event_id") or "")
+                != purchase_event_id
+                or str(reconciliation_bindings.get("purchase_event_hash") or "")
+                != purchase_event_hash
+            ):
+                raise ValueError("持仓对账事件没有绑定该笔真实成交事件")
+
+            duplicate = connection.execute(
+                """
+                SELECT * FROM agent_batch_purchase_attribution_snapshots
+                WHERE batch_id=? AND request_sha256=?
+                """,
+                (str(batch_id), request_sha256),
+            ).fetchone()
+            if duplicate is not None:
+                parsed_duplicate = self._batch_purchase_attribution_from_row(duplicate)
+                if not parsed_duplicate or not parsed_duplicate.get("integrity_verified"):
+                    raise ValueError("已保存的同请求绩效快照完整性失败")
+                return parsed_duplicate, False
+
+            previous = connection.execute(
+                """
+                SELECT * FROM agent_batch_purchase_attribution_snapshots
+                WHERE batch_id=? ORDER BY sequence_no DESC LIMIT 1
+                """,
+                (str(batch_id),),
+            ).fetchone()
+            previous_hash = str(previous["event_hash"]) if previous else None
+            expected_previous = (
+                str(expected_previous_event_hash) if expected_previous_event_hash else None
+            )
+            if previous_hash != expected_previous:
+                raise ValueError("批次申购绩效快照链已产生新版本，请刷新后重试")
+
+            sequence_no = int(previous["sequence_no"] if previous else 0) + 1
+            event_id = _new_id("batch_purchase_attribution")
+            created_at = _utc_now()
+            canonical = {
+                "id": event_id,
+                "batch_id": str(batch_id),
+                "tenant_id": str(batch_row["tenant_id"]),
+                "user_id": str(user_id),
+                "sequence_no": sequence_no,
+                "schema_version": schema_version,
+                "strategy_id": strategy_id,
+                "strategy_version": strategy_version,
+                "purchase_event_id": purchase_event_id,
+                "purchase_event_hash": purchase_event_hash,
+                "purchase_payload_sha256": purchase_payload_sha256,
+                "reconciliation_event_id": reconciliation_event_id,
+                "reconciliation_event_hash": reconciliation_event_hash,
+                "reconciliation_payload_sha256": reconciliation_payload_sha256,
+                "request_sha256": request_sha256,
+                "payload": payload,
+                "payload_sha256": payload_sha256,
+                "previous_hash": previous_hash,
+                "actor_id": str(actor_id or "anonymous"),
+                "created_at": created_at,
+            }
+            event_hash = hashlib.sha256(_json(canonical).encode("utf-8")).hexdigest()
+            connection.execute(
+                """
+                INSERT INTO agent_batch_purchase_attribution_snapshots (
+                    id, batch_id, tenant_id, user_id, sequence_no,
+                    schema_version, strategy_id, strategy_version,
+                    purchase_event_id, purchase_event_hash, purchase_payload_sha256,
+                    reconciliation_event_id, reconciliation_event_hash,
+                    reconciliation_payload_sha256, request_sha256, payload_json,
+                    payload_sha256, previous_hash, event_hash, actor_id, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event_id,
+                    str(batch_id),
+                    str(batch_row["tenant_id"]),
+                    str(user_id),
+                    sequence_no,
+                    schema_version,
+                    strategy_id,
+                    strategy_version,
+                    purchase_event_id,
+                    purchase_event_hash,
+                    purchase_payload_sha256,
+                    reconciliation_event_id,
+                    reconciliation_event_hash,
+                    reconciliation_payload_sha256,
+                    request_sha256,
+                    payload_json,
+                    payload_sha256,
+                    previous_hash,
+                    event_hash,
+                    str(actor_id or "anonymous"),
+                    created_at,
+                ),
+            )
+            stored = connection.execute(
+                "SELECT * FROM agent_batch_purchase_attribution_snapshots WHERE id=?",
+                (event_id,),
+            ).fetchone()
+        parsed = self._batch_purchase_attribution_from_row(stored)
+        if parsed is None or not parsed.get("integrity_verified"):
+            raise RuntimeError("批次申购绩效快照保存后完整性校验失败")
+        return parsed, True
+
+    def list_batch_purchase_attribution_snapshots(
+        self,
+        batch_id: str,
+        *,
+        user_id: str,
+    ) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM agent_batch_purchase_attribution_snapshots
+                WHERE batch_id=? AND user_id=? ORDER BY sequence_no
+                """,
+                (str(batch_id), str(user_id)),
+            ).fetchall()
+        return [
+            item
+            for row in rows
+            if (item := self._batch_purchase_attribution_from_row(row)) is not None
+        ]
+
+    def verify_batch_purchase_attribution_audit(
+        self,
+        batch_id: str,
+        *,
+        user_id: str,
+    ) -> dict[str, Any]:
+        with self._connect() as connection:
+            owner = connection.execute(
+                "SELECT id FROM agent_batches WHERE id=? AND user_id=?",
+                (str(batch_id), str(user_id)),
+            ).fetchone()
+            rows = connection.execute(
+                """
+                SELECT * FROM agent_batch_purchase_attribution_snapshots
+                WHERE batch_id=? AND user_id=? ORDER BY sequence_no
+                """,
+                (str(batch_id), str(user_id)),
+            ).fetchall()
+        if owner is None:
+            return {
+                "verified": False,
+                "event_count": 0,
+                "chain_head": None,
+                "reason": "batch_not_found",
+            }
+        previous_hash = None
+        for expected_sequence, row in enumerate(rows, start=1):
+            item = self._batch_purchase_attribution_from_row(row)
+            if item is None or not item.get("integrity_verified"):
+                return {
+                    "verified": False,
+                    "event_count": len(rows),
+                    "chain_head": previous_hash,
+                    "failing_sequence": expected_sequence,
+                    "reason": "snapshot_integrity_failed",
+                }
+            if (
+                int(item.get("sequence_no") or 0) != expected_sequence
+                or item.get("previous_hash") != previous_hash
+            ):
+                return {
+                    "verified": False,
+                    "event_count": len(rows),
+                    "chain_head": previous_hash,
+                    "failing_sequence": expected_sequence,
+                    "reason": "snapshot_chain_broken",
+                }
+            previous_hash = item.get("event_hash")
+        return {
+            "verified": bool(rows),
+            "event_count": len(rows),
+            "chain_head": previous_hash,
+            "failing_sequence": None,
+            "reason": None if rows else "purchase_attribution_snapshots_missing",
         }
 
     def get_batch_by_idempotency_key(

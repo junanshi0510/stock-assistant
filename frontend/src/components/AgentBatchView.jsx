@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   ArrowUpRight,
+  ChartNoAxesCombined,
   CheckCircle2,
   CircleAlert,
   Clock3,
@@ -102,6 +103,23 @@ const NOT_PURCHASED_REASON = {
   other: '其他真实原因',
 }
 
+const ATTRIBUTION_STATUS = {
+  awaiting_reconciliation: ['等待持仓对账', 'queued'],
+  ready_for_snapshot: ['可刷新真实收益', 'queued'],
+  ledger_reconciliation_required: ['账本需要核对', 'failed'],
+  available: ['真实绩效可用', 'complete'],
+  partial: ['部分绩效可用', 'partial'],
+  unavailable: ['绩效证据不可用', 'failed'],
+  stale_refresh_required: ['交易事实已变化', 'partial'],
+  integrity_failed: ['绩效审计失败', 'failed'],
+}
+
+const RESULT_CLASS = {
+  positive: '正收益',
+  negative: '负收益',
+  flat: '持平',
+}
+
 function localDateTime(value = new Date()) {
   const parsed = value instanceof Date ? value : new Date(value)
   if (Number.isNaN(parsed.getTime())) return ''
@@ -112,6 +130,13 @@ function localDateTime(value = new Date()) {
 function quantity(value) {
   if (value == null || Number.isNaN(Number(value))) return '-'
   return Number(value).toLocaleString('zh-CN', { maximumFractionDigits: 8 })
+}
+
+function signedMoney(value) {
+  if (value == null || Number.isNaN(Number(value))) return '-'
+  const number = Number(value)
+  const sign = number > 0 ? '+' : number < 0 ? '-' : ''
+  return `${sign}¥${Math.abs(number).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
 function initialPurchaseQuotes(allocation) {
@@ -718,6 +743,138 @@ function BatchPurchaseExecution({
   )
 }
 
+function BatchPurchaseAttribution({ batch, refreshing, onRefresh }) {
+  const attribution = batch.purchase_attribution
+  if (!attribution) return null
+  const [statusLabel, statusTone] = ATTRIBUTION_STATUS[attribution.status]
+    || [attribution.status || '等待绩效证据', 'queued']
+  const snapshot = attribution.snapshot
+  const coverage = attribution.coverage || {}
+  const aggregate = attribution.aggregate || {}
+  const aggregateMetrics = aggregate.metrics || {}
+  const decisionGate = attribution.decision_gate || {}
+  const canRefresh = Boolean(
+    attribution.refresh_ready
+    && attribution.expected_reconciliation_event_id
+    && attribution.expected_reconciliation_event_hash,
+  )
+
+  function refreshAttribution() {
+    if (!canRefresh || refreshing) return
+    onRefresh({
+      expected_reconciliation_event_id: attribution.expected_reconciliation_event_id,
+      expected_reconciliation_event_hash: attribution.expected_reconciliation_event_hash,
+      expected_previous_snapshot_hash: snapshot?.event_hash || null,
+    })
+  }
+
+  return (
+    <section className="agent-purchase-attribution" aria-label="批量基金成交后绩效归因">
+      <div className="agent-section-head">
+        <div>
+          <span className="eyebrow">Post-trade Attribution</span>
+          <h3><ChartNoAxesCombined size={18} aria-hidden="true" />成交后绩效归因</h3>
+          <small>{snapshot ? `快照修订 ${snapshot.revision} · ${timeText(snapshot.created_at)}` : '只追踪本批次已绑定的真实买入流水'}</small>
+        </div>
+        <div className="agent-preflight-head-actions">
+          <span className={`agent-status ${statusTone}`}>{statusLabel}</span>
+          {canRefresh && (
+            <button type="button" className="ghost" onClick={refreshAttribution} disabled={refreshing}>
+              <RefreshCw size={14} className={refreshing ? 'spin-icon' : ''} aria-hidden="true" />
+              {refreshing ? '正在读取真实净值' : snapshot ? '刷新真实收益' : '生成绩效快照'}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {!snapshot && (
+        <div className="agent-attribution-empty">
+          <ChartNoAxesCombined size={18} aria-hidden="true" />
+          <div>
+            <b>{canRefresh ? '真实成交已经具备归因条件' : '绩效归因尚未通过账本门禁'}</b>
+            <p>{canRefresh
+              ? '刷新后按具体买入流水计算 FIFO 已实现回款、剩余份额价值、费用和回撤。'
+              : (attribution.blockers || []).join('；') || '先完成真实成交与当前持仓 FIFO 对账。'}</p>
+          </div>
+        </div>
+      )}
+
+      {snapshot && (
+        <>
+          {aggregate.status === 'available' ? (
+            <div className="agent-attribution-metrics">
+              <div><span>本批实际成本</span><b>{money(aggregateMetrics.original_cost_yuan)}</b></div>
+              <div><span>已实现回款</span><b>{money(aggregateMetrics.realized_proceeds_yuan)}</b></div>
+              <div><span>剩余份额价值</span><b>{money(aggregateMetrics.current_remaining_value_yuan)}</b></div>
+              <div className={Number(aggregateMetrics.total_profit_yuan) >= 0 ? 'positive' : 'negative'}><span>批次实际收益</span><b>{signedMoney(aggregateMetrics.total_profit_yuan)} · {pct(aggregateMetrics.total_return_pct)}</b></div>
+            </div>
+          ) : (
+            <div className="agent-attribution-coverage">
+              <span>真实成交覆盖 <b>{coverage.available_fund_count || 0}/{coverage.purchased_fund_count || 0}</b> 只</span>
+              <span>数据源失败 <b>{coverage.source_error_count || 0}</b> 项</span>
+              <span>不完整基金不进入合计收益</span>
+            </div>
+          )}
+
+          {(attribution.items || []).length > 0 && (
+            <div className="agent-attribution-table" role="table" aria-label="逐只基金真实成交绩效">
+              <div className="agent-attribution-row heading" role="row">
+                <span>基金 / 观察期</span><span>批次份额</span><span>实现 / 未实现</span><span>总结果</span><span>风险与复盘</span>
+              </div>
+              {attribution.items.map((item) => {
+                const metrics = item.metrics || {}
+                const review = item.decision_review || {}
+                const resultClass = metrics.result_class || 'unavailable'
+                return (
+                  <div className={`agent-attribution-row ${item.status} ${resultClass}`} role="row" key={`${item.code}-${item.transaction_id}`}>
+                    <span>
+                      <b>{item.code} {item.name}</b>
+                      <small>{item.as_of ? `截至 ${item.as_of} · ${metrics.observation_days ?? '-'} 天` : '缺少可验证截止日'}</small>
+                      {item.sources?.nav_source_url && <a href={item.sources.nav_source_url} target="_blank" rel="noreferrer">净值来源 <ArrowUpRight size={11} aria-hidden="true" /></a>}
+                    </span>
+                    <span><b>{quantity(item.lot?.remaining_shares)} 份剩余</b><small>{quantity(item.lot?.realized_shares)} 份已卖出 · 流水 #{item.transaction_id}</small></span>
+                    <span><b>{signedMoney(metrics.realized_profit_yuan)}</b><small>未实现 {signedMoney(metrics.unrealized_profit_yuan)}</small></span>
+                    <span><b>{item.status === 'available' ? signedMoney(metrics.total_profit_yuan) : '-'}</b><small>{item.status === 'available' ? `${pct(metrics.total_return_pct)} · ${RESULT_CLASS[resultClass] || resultClass}` : (item.reasons || []).slice(0, 2).join('；')}</small></span>
+                    <span><b>最大回撤 {pct(metrics.max_drawdown_pct)}</b><small>{review.eligible ? '已达到策略复盘窗口' : review.days_until_review != null ? `距离 30 天复盘还差 ${review.days_until_review} 天` : '证据不足，暂不评价策略'}</small></span>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+
+          {(aggregate.blockers || []).length > 0 && (
+            <div className="agent-preflight-blockers">
+              {aggregate.blockers.map((item, index) => <p key={`${item}-${index}`}><CircleAlert size={14} aria-hidden="true" />{item}</p>)}
+            </div>
+          )}
+          {(attribution.blockers || []).length > 0 && (
+            <div className="agent-preflight-blockers">
+              {attribution.blockers.map((item, index) => <p key={`${item}-${index}`}><CircleAlert size={14} aria-hidden="true" />{item}</p>)}
+            </div>
+          )}
+
+          <div className={`agent-attribution-review ${decisionGate.decision_review_eligible ? 'ready' : 'monitoring'}`}>
+            <Scale size={15} aria-hidden="true" />
+            <div>
+              <b>{decisionGate.decision_review_eligible ? '已进入策略有效性复盘窗口' : '当前仅作成交后监控'}</b>
+              <span>{decisionGate.decision_review_eligible
+                ? '可以结合原始决策证据复盘收益与风险，但单个批次不能证明策略长期有效。'
+                : '至少观察 30 天且全部真实证据完整后，才评价这次批量决策。'}</span>
+            </div>
+          </div>
+
+          <div className="agent-preflight-integrity">
+            <ShieldCheck size={15} aria-hidden="true" />
+            <span>{snapshot.integrity_verified && snapshot.audit_chain_verified ? `绩效内容与审计链已验证 · ${snapshot.audit_event_count} 个不可变快照` : '绩效快照完整性未通过'}</span>
+            {attribution.current_bindings && <span>成交 {attribution.current_bindings.execution_current ? '当前' : '已变化'} · 账本 {attribution.current_bindings.ledger_current ? '当前' : '已变化'} · 份额 {attribution.current_bindings.holding_shares_current ? '当前' : '已变化'}</span>}
+          </div>
+        </>
+      )}
+      <p className="agent-batch-policy">{attribution.policy || '只归因本批次已发生的真实成交；未成交基金不生成收益，历史结果不预测未来。'}</p>
+    </section>
+  )
+}
+
 function Distribution({ label, items }) {
   const values = items || []
   return (
@@ -739,6 +896,7 @@ export default function AgentBatchView({
   reviewingPurchase = false,
   recordingPurchase = false,
   reconcilingPurchase = false,
+  refreshingAttribution = false,
   selectedRunId = '',
   onRefresh,
   onCancel,
@@ -747,6 +905,7 @@ export default function AgentBatchView({
   onReviewPurchase,
   onRecordPurchase,
   onReconcilePurchase,
+  onRefreshAttribution,
 }) {
   if (!batch) return null
   const [statusLabel, statusTone] = statusMeta(batch.status)
@@ -897,6 +1056,12 @@ export default function AgentBatchView({
         reconciling={reconcilingPurchase}
         onRecord={onRecordPurchase}
         onReconcile={onReconcilePurchase}
+      />
+
+      <BatchPurchaseAttribution
+        batch={batch}
+        refreshing={refreshingAttribution}
+        onRefresh={onRefreshAttribution}
       />
 
       <p className="agent-batch-policy">{batch.policy}</p>

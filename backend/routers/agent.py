@@ -16,7 +16,12 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 import storage
 from auth import AuthPrincipal, principal_from_request
-from agent import batch_allocations, batch_purchase_execution, batch_purchase_preflight
+from agent import (
+    batch_allocations,
+    batch_purchase_attribution,
+    batch_purchase_execution,
+    batch_purchase_preflight,
+)
 from agent.batches import summarize_batch
 from agent.comparison import compare_run_results
 from agent.outcomes import DecisionOutcomeService, OutcomeEvaluationError
@@ -238,6 +243,15 @@ class CreateBatchPurchaseReconciliationRequest(BaseModel):
     expected_previous_event_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class CreateBatchPurchaseAttributionRequest(BaseModel):
+    expected_reconciliation_event_id: str = Field(min_length=8, max_length=120)
+    expected_reconciliation_event_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_previous_snapshot_hash: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+
+
 class OutcomeScheduleRequest(BaseModel):
     enabled: bool
     interval_hours: int = Field(default=24, ge=12, le=168)
@@ -297,6 +311,14 @@ def _summarize_batch_public(
     )
     summary["purchase_execution"] = (
         batch_purchase_execution.decorate_batch_purchase_execution(
+            repository,
+            batch,
+            user_id=str(batch.get("user_id") or "anonymous"),
+        )
+        if include_execution_details else None
+    )
+    summary["purchase_attribution"] = (
+        batch_purchase_attribution.decorate_batch_purchase_attribution(
             repository,
             batch,
             user_id=str(batch.get("user_id") or "anonymous"),
@@ -704,6 +726,37 @@ def reconcile_agent_batch_purchase_holdings(
     return {
         "created": created,
         "purchase_reconciliation_event_id": event.get("id"),
+        "batch": _summarize_batch_public(refreshed),
+    }
+
+
+@router.post("/batches/{batch_id}/purchase-attribution")
+def create_agent_batch_purchase_attribution(
+    batch_id: str,
+    request: CreateBatchPurchaseAttributionRequest,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    batch = _get_batch_or_404(batch_id, principal)
+    try:
+        snapshot, created = (
+            batch_purchase_attribution.create_batch_purchase_attribution_snapshot(
+                repository,
+                batch,
+                request.model_dump(mode="json"),
+                user_id=str(batch.get("user_id") or "anonymous"),
+                actor_id=_actor_id(principal),
+            )
+        )
+    except batch_purchase_attribution.BatchPurchaseAttributionValidationError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except batch_purchase_attribution.BatchPurchaseAttributionConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    refreshed = repository.get_batch(batch_id)
+    if refreshed is None:
+        raise HTTPException(status_code=404, detail="Agent Batch 不存在")
+    return {
+        "created": created,
+        "purchase_attribution_snapshot_id": snapshot.get("id"),
         "batch": _summarize_batch_public(refreshed),
     }
 
