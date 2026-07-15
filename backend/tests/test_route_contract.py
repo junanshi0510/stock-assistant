@@ -116,6 +116,8 @@ EXPECTED_OPERATIONS = {
     "/api/v1/agent/batches/{batch_id}": {"GET"},
     "/api/v1/agent/batches/{batch_id}/allocation": {"POST"},
     "/api/v1/agent/batches/{batch_id}/purchase-preflight": {"POST"},
+    "/api/v1/agent/batches/{batch_id}/purchase-execution": {"POST"},
+    "/api/v1/agent/batches/{batch_id}/purchase-reconciliation": {"POST"},
     "/api/v1/agent/batches/{batch_id}/cancel": {"POST"},
     "/api/v1/agent/runs": {"GET", "POST"},
     "/api/v1/agent/runs/{run_id}": {"GET"},
@@ -177,6 +179,29 @@ class RouteContractTests(unittest.TestCase):
             "order_amount_yuan",
             "purchase_status",
         }.issubset(quote_required))
+
+    def test_batch_purchase_execution_requires_real_event_bindings(self):
+        schemas = app.openapi()["components"]["schemas"]
+        execution_required = set(
+            schemas["CreateBatchPurchaseExecutionRequest"]["required"]
+        )
+        outcome_required = set(
+            schemas["BatchPurchaseExecutionOutcomeRequest"]["required"]
+        )
+        reconciliation_required = set(
+            schemas["CreateBatchPurchaseReconciliationRequest"]["required"]
+        )
+        self.assertEqual(execution_required, {
+            "expected_preflight_event_id",
+            "expected_preflight_event_hash",
+            "outcomes",
+        })
+        self.assertEqual(outcome_required, {"code", "resolution"})
+        self.assertEqual(reconciliation_required, {
+            "expected_purchase_event_id",
+            "expected_purchase_event_hash",
+            "expected_previous_event_hash",
+        })
 
     def test_fund_switch_lifecycle_evidence_bindings_are_required(self):
         schemas = app.openapi()["components"]["schemas"]

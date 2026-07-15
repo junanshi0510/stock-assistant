@@ -6,6 +6,7 @@ import {
   Clock3,
   Database,
   Layers3,
+  ReceiptText,
   RefreshCw,
   Scale,
   ShieldAlert,
@@ -81,6 +82,36 @@ const PREFLIGHT_STATUS = {
   expired: ['平台报价已过期', 'partial'],
   superseded: ['组合事实已变化', 'partial'],
   integrity_failed: ['审计完整性失败', 'failed'],
+}
+
+const EXECUTION_STATUS = {
+  awaiting_execution_record: ['等待真实成交回填', 'queued'],
+  purchases_recorded_reconciliation_pending: ['真实成交已绑定', 'partial'],
+  completed_no_purchase: ['本批次未成交', 'complete'],
+  completed_reconciled: ['真实持仓已对账', 'complete'],
+  completed_reconciliation_stale: ['对账后事实已变化', 'partial'],
+  integrity_failed: ['执行完整性失败', 'failed'],
+}
+
+const NOT_PURCHASED_REASON = {
+  platform_unavailable: '平台暂停申购',
+  limit_insufficient: '平台限额不足',
+  insufficient_cash: '可用资金不足',
+  risk_reassessment: '风险复核后取消',
+  user_cancelled: '主动取消',
+  other: '其他真实原因',
+}
+
+function localDateTime(value = new Date()) {
+  const parsed = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(parsed.getTime())) return ''
+  const offset = parsed.getTimezoneOffset() * 60_000
+  return new Date(parsed.getTime() - offset).toISOString().slice(0, 16)
+}
+
+function quantity(value) {
+  if (value == null || Number.isNaN(Number(value))) return '-'
+  return Number(value).toLocaleString('zh-CN', { maximumFractionDigits: 8 })
 }
 
 function initialPurchaseQuotes(allocation) {
@@ -418,6 +449,275 @@ function BatchPurchasePreflight({ batch, reviewing, onReview }) {
   )
 }
 
+function initialExecutionOutcomes(preflight, execution) {
+  const saved = execution?.purchase_outcomes || execution?.outcomes || []
+  const savedByCode = new Map(saved.map((item) => [item.code, item]))
+  return (preflight?.quotes || []).map((quote) => {
+    const existing = savedByCode.get(quote.code) || {}
+    return {
+      code: quote.code,
+      name: quote.name,
+      resolution: existing.resolution || '',
+      transaction_id: existing.transaction?.id ? String(existing.transaction.id) : '',
+      purchase_submitted_at: existing.purchase_submitted_at
+        ? localDateTime(existing.purchase_submitted_at)
+        : '',
+      acknowledged_order_variance: Boolean(existing.variance_acknowledged),
+      not_purchased_reason: existing.not_purchased_reason || '',
+      not_purchased_detail: existing.not_purchased_detail || '',
+    }
+  })
+}
+
+function BatchPurchaseExecution({
+  batch,
+  recording,
+  reconciling,
+  onRecord,
+  onReconcile,
+}) {
+  const preflight = batch.purchase_preflight
+  const execution = batch.purchase_execution
+  const executionKey = execution?.snapshot?.event_hash || preflight?.snapshot?.event_hash || ''
+  const initialOutcomes = useMemo(
+    () => initialExecutionOutcomes(preflight, execution),
+    [executionKey],
+  )
+  const [formOpen, setFormOpen] = useState(false)
+  const [outcomes, setOutcomes] = useState(initialOutcomes)
+  const [formError, setFormError] = useState('')
+
+  useEffect(() => {
+    setOutcomes(initialOutcomes)
+    setFormError('')
+    setFormOpen(false)
+  }, [executionKey])
+
+  if (!preflight?.snapshot) {
+    return (
+      <section className="agent-purchase-execution" aria-label="批量基金真实成交与持仓对账">
+        <div className="agent-section-head">
+          <div><span className="eyebrow">Execution Ledger</span><h3><ReceiptText size={18} aria-hidden="true" />真实成交与持仓对账</h3></div>
+        </div>
+        <div className="agent-preflight-empty">
+          <Clock3 size={17} aria-hidden="true" />
+          <div><b>等待申购执行前复核</b><p>成交链只接受已通过复核批次对应的真实买入流水。</p></div>
+        </div>
+      </section>
+    )
+  }
+
+  const [statusLabel, statusTone] = EXECUTION_STATUS[execution?.status] || ['等待真实成交回填', 'queued']
+  const purchaseSummary = execution?.purchase_summary || execution?.summary || {}
+  const savedOutcomes = execution?.purchase_outcomes || execution?.outcomes || []
+  const reconciliation = execution?.current_reconciliation
+    || execution?.reconciliation_preview
+    || execution?.reconciliation
+  const canRevise = execution?.status !== 'integrity_failed'
+    && execution?.snapshot?.event_type !== 'holdings_reconciled'
+  const canReconcile = execution?.snapshot?.event_type === 'purchases_recorded'
+    && Number(purchaseSummary.purchased_count) > 0
+  const eligible = execution?.eligible_transactions_by_code || {}
+
+  function updateOutcome(code, field, value) {
+    setOutcomes((current) => current.map((item) => {
+      if (item.code !== code) return item
+      const next = { ...item, [field]: value }
+      if (field === 'resolution' && value === 'purchased') {
+        next.not_purchased_reason = ''
+        next.not_purchased_detail = ''
+      }
+      if (field === 'resolution' && value === 'not_purchased') {
+        next.transaction_id = ''
+        next.purchase_submitted_at = ''
+        next.acknowledged_order_variance = false
+      }
+      return next
+    }))
+  }
+
+  async function submitExecution(event) {
+    event.preventDefault()
+    const invalid = outcomes.find((item) => (
+      !item.resolution
+      || (item.resolution === 'purchased' && (!item.transaction_id || !item.purchase_submitted_at))
+      || (item.resolution === 'not_purchased' && !item.not_purchased_reason)
+    ))
+    if (invalid) {
+      setFormError(`${invalid.code} 的成交结果、真实流水或未申购原因不完整`)
+      return
+    }
+    const normalized = outcomes.map((item) => (
+      item.resolution === 'purchased'
+        ? {
+            code: item.code,
+            resolution: 'purchased',
+            transaction_id: Number(item.transaction_id),
+            purchase_submitted_at: new Date(item.purchase_submitted_at).toISOString(),
+            acknowledged_order_variance: item.acknowledged_order_variance,
+          }
+        : {
+            code: item.code,
+            resolution: 'not_purchased',
+            not_purchased_reason: item.not_purchased_reason,
+            not_purchased_detail: item.not_purchased_detail.trim(),
+          }
+    ))
+    setFormError('')
+    const succeeded = await onRecord({
+      expected_preflight_event_id: preflight.snapshot.id,
+      expected_preflight_event_hash: preflight.snapshot.event_hash,
+      expected_previous_event_hash: execution?.snapshot?.event_hash || null,
+      outcomes: normalized,
+    })
+    if (succeeded) setFormOpen(false)
+  }
+
+  async function reconcileHoldings() {
+    if (!canReconcile || !reconciliation?.ready) return
+    await onReconcile({
+      expected_purchase_event_id: execution.snapshot.id,
+      expected_purchase_event_hash: execution.snapshot.event_hash,
+      expected_previous_event_hash: execution.snapshot.event_hash,
+    })
+  }
+
+  return (
+    <section className="agent-purchase-execution" aria-label="批量基金真实成交与持仓对账">
+      <div className="agent-section-head">
+        <div>
+          <span className="eyebrow">Execution Ledger</span>
+          <h3><ReceiptText size={18} aria-hidden="true" />真实成交与持仓对账</h3>
+          <small>{execution?.snapshot ? `执行链修订 ${execution.snapshot.revision} · ${timeText(execution.snapshot.created_at)}` : `绑定复核 ${preflight.snapshot.id}`}</small>
+        </div>
+        <div className="agent-preflight-head-actions">
+          <span className={`agent-status ${statusTone}`}>{statusLabel}</span>
+          {canRevise && (
+            <button type="button" className="ghost" onClick={() => setFormOpen((value) => !value)} disabled={recording}>
+              {recording ? <RefreshCw size={14} className="spin-icon" aria-hidden="true" /> : <ReceiptText size={14} aria-hidden="true" />}
+              {execution?.snapshot ? '修订成交绑定' : '回填真实结果'}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {execution?.snapshot && (
+        <>
+          <div className="agent-execution-metrics">
+            <div><span>实际申购</span><b>{purchaseSummary.purchased_count ?? 0} 只</b></div>
+            <div><span>未申购</span><b>{purchaseSummary.not_purchased_count ?? 0} 只</b></div>
+            <div><span>实际占用资金</span><b>{money(purchaseSummary.actual_cash_total_yuan)}</b></div>
+            <div><span>未使用分配</span><b>{money(purchaseSummary.unused_allocated_cash_yuan)}</b></div>
+          </div>
+
+          {savedOutcomes.length > 0 && (
+            <div className="agent-execution-table" role="table" aria-label="逐只基金真实成交结果">
+              <div className="agent-execution-row heading" role="row">
+                <span>基金</span><span>真实结果</span><span>成交金额 / 费用</span><span>确认份额 / 日期</span><span>偏差</span>
+              </div>
+              {savedOutcomes.map((item) => (
+                <div className={`agent-execution-row ${item.resolution}`} role="row" key={item.code}>
+                  <span><b>{item.code} {item.name}</b><small>分配 {money(item.allocated_amount_yuan)}</small></span>
+                  <span><b>{item.resolution === 'purchased' ? `已绑定流水 #${item.transaction?.id}` : '未申购'}</b><small>{item.resolution === 'purchased' ? timeText(item.purchase_submitted_at) : NOT_PURCHASED_REASON[item.not_purchased_reason] || item.not_purchased_reason}</small></span>
+                  <span><b>{money(item.actual_cash_amount_yuan)}</b><small>费用 {money(item.actual_fee_yuan)}</small></span>
+                  <span><b>{quantity(item.transaction?.shares)}</b><small>{item.transaction?.trade_date || '-'}</small></span>
+                  <span><b>{item.material_variance ? '已确认显著偏差' : item.resolution === 'purchased' ? '无显著偏差' : '-'}</b><small>{item.resolution === 'purchased' ? `${money(item.order_variance_yuan)} / ${money(item.fee_variance_yuan)}` : item.not_purchased_detail || '-'}</small></span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {(execution.blockers || []).length > 0 && (
+            <div className="agent-preflight-blockers">
+              {execution.blockers.map((item, index) => <p key={`${item}-${index}`}><CircleAlert size={14} aria-hidden="true" />{item}</p>)}
+            </div>
+          )}
+
+          {reconciliation && Number(purchaseSummary.purchased_count) > 0 && (
+            <div className="agent-reconciliation-panel">
+              <div className="agent-reconciliation-head">
+                <div><b>FIFO 份额对账</b><small>{reconciliation.matched_fund_count || 0}/{reconciliation.purchased_fund_count || 0} 只匹配</small></div>
+                {canReconcile && (
+                  <button type="button" onClick={reconcileHoldings} disabled={!reconciliation.ready || reconciling}>
+                    {reconciling ? <RefreshCw size={14} className="spin-icon" aria-hidden="true" /> : <Scale size={14} aria-hidden="true" />}
+                    {reconciling ? '正在对账' : '确认当前持仓对账'}
+                  </button>
+                )}
+              </div>
+              <div className="agent-reconciliation-table">
+                {(reconciliation.items || []).map((item) => (
+                  <div className={item.shares_match ? 'matched' : 'mismatch'} key={item.code}>
+                    <span><b>{item.code} {item.name}</b><small>{item.fifo_integrity_issue_count ? `${item.fifo_integrity_issue_count} 个账本问题` : 'FIFO 完整'}</small></span>
+                    <span><small>当前确认份额</small><b>{quantity(item.confirmed_shares)}</b></span>
+                    <span><small>FIFO 未平仓份额</small><b>{quantity(item.fifo_open_shares)}</b></span>
+                    <em>{item.shares_match ? '匹配' : '待对账'}</em>
+                    {(item.blockers || []).length > 0 && <p>{item.blockers.join('；')}</p>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="agent-preflight-integrity">
+            <ShieldCheck size={15} aria-hidden="true" />
+            <span>{execution.snapshot?.integrity_verified && execution.snapshot?.audit_chain_verified ? `执行内容与审计链已验证 · ${execution.snapshot.audit_event_count} 个不可变事件` : '执行完整性未通过'}</span>
+            <span>绑定流水 {execution.transaction_integrity?.checked_count ?? 0} 笔</span>
+          </div>
+        </>
+      )}
+
+      {!execution?.snapshot && (
+        <div className="agent-execution-empty">
+          <Database size={17} aria-hidden="true" />
+          <div><b>尚未绑定销售平台真实结果</b><p>可用流水只来自当前用户的交易台账，并排除已被其他批次占用的记录。</p></div>
+        </div>
+      )}
+
+      {formOpen && canRevise && (
+        <form className="agent-execution-form" onSubmit={submitExecution}>
+          <div className="agent-preflight-form-head">
+            <div><b>逐只回填真实结果</b><small>先在交易复盘中录入销售平台确认的买入流水</small></div>
+            <span>{outcomes.length} 只基金</span>
+          </div>
+          <div className="agent-execution-inputs">
+            {outcomes.map((item) => {
+              const options = eligible[item.code] || []
+              return (
+                <fieldset key={item.code}>
+                  <legend>{item.code} {item.name}</legend>
+                  <label><span>实际结果</span><select value={item.resolution} onChange={(event) => updateOutcome(item.code, 'resolution', event.target.value)}><option value="">请选择</option><option value="purchased">已申购并确认流水</option><option value="not_purchased">本次未申购</option></select></label>
+                  {item.resolution === 'purchased' && (
+                    <>
+                      <label className="wide"><span>真实买入流水</span><select value={item.transaction_id} onChange={(event) => updateOutcome(item.code, 'transaction_id', event.target.value)}><option value="">请选择当前用户未占用流水</option>{options.map((option) => <option value={option.id} key={option.id}>#{option.id} · {option.trade_date} · {quantity(option.shares)} 份 · {money(option.cash_amount_yuan)}{option.bound_to_current_batch ? ' · 本批次已绑定' : ''}</option>)}</select><small>{options.length ? `${options.length} 笔可绑定流水` : '没有符合代码、方向和确认日期的可用流水'}</small></label>
+                      <label><span>平台提交时间</span><input type="datetime-local" value={item.purchase_submitted_at} onChange={(event) => updateOutcome(item.code, 'purchase_submitted_at', event.target.value)} /></label>
+                      <label className="check"><input type="checkbox" checked={item.acknowledged_order_variance} onChange={(event) => updateOutcome(item.code, 'acknowledged_order_variance', event.target.checked)} /><span>实际金额或费用有显著偏差时，我已核对平台成交确认</span></label>
+                    </>
+                  )}
+                  {item.resolution === 'not_purchased' && (
+                    <>
+                      <label><span>未申购原因</span><select value={item.not_purchased_reason} onChange={(event) => updateOutcome(item.code, 'not_purchased_reason', event.target.value)}><option value="">请选择</option>{Object.entries(NOT_PURCHASED_REASON).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
+                      <label className="wide"><span>事实备注</span><input value={item.not_purchased_detail} maxLength={200} placeholder="可选，记录平台或人工复核事实" onChange={(event) => updateOutcome(item.code, 'not_purchased_detail', event.target.value)} /></label>
+                    </>
+                  )}
+                </fieldset>
+              )
+            })}
+          </div>
+          {formError && <p className="agent-preflight-form-error"><CircleAlert size={13} aria-hidden="true" />{formError}</p>}
+          <div className="agent-preflight-form-actions">
+            <button type="button" className="ghost" onClick={() => setFormOpen(false)} disabled={recording}>取消</button>
+            <button type="submit" disabled={recording}>
+              {recording ? <RefreshCw size={14} className="spin-icon" aria-hidden="true" /> : <ShieldCheck size={14} aria-hidden="true" />}
+              {recording ? '正在验证真实流水' : '保存不可变成交事件'}
+            </button>
+          </div>
+        </form>
+      )}
+      <p className="agent-batch-policy">执行链只记录已发生的销售平台事实；系统不连接账户、不自动下单。持仓必须与真实交易流水的 FIFO 未平仓份额一致后才会关闭批次。</p>
+    </section>
+  )
+}
+
 function Distribution({ label, items }) {
   const values = items || []
   return (
@@ -437,12 +737,16 @@ export default function AgentBatchView({
   loading = false,
   allocating = false,
   reviewingPurchase = false,
+  recordingPurchase = false,
+  reconcilingPurchase = false,
   selectedRunId = '',
   onRefresh,
   onCancel,
   onSelectRun,
   onCreateAllocation,
   onReviewPurchase,
+  onRecordPurchase,
+  onReconcilePurchase,
 }) {
   if (!batch) return null
   const [statusLabel, statusTone] = statusMeta(batch.status)
@@ -547,19 +851,6 @@ export default function AgentBatchView({
         })}
       </div>
 
-      <PortfolioAllocation
-        batch={batch}
-        active={active}
-        allocating={allocating}
-        onCreate={onCreateAllocation}
-      />
-
-      <BatchPurchasePreflight
-        batch={batch}
-        reviewing={reviewingPurchase}
-        onReview={onReviewPurchase}
-      />
-
       <section className="agent-batch-overlap" aria-label="批次持仓重合分析">
         <div className="agent-section-head">
           <div>
@@ -586,6 +877,27 @@ export default function AgentBatchView({
         )}
         <p className="agent-batch-policy">{overlap.policy || '只使用真实披露持仓，不推断缺失部分。'}</p>
       </section>
+
+      <PortfolioAllocation
+        batch={batch}
+        active={active}
+        allocating={allocating}
+        onCreate={onCreateAllocation}
+      />
+
+      <BatchPurchasePreflight
+        batch={batch}
+        reviewing={reviewingPurchase}
+        onReview={onReviewPurchase}
+      />
+
+      <BatchPurchaseExecution
+        batch={batch}
+        recording={recordingPurchase}
+        reconciling={reconcilingPurchase}
+        onRecord={onRecordPurchase}
+        onReconcile={onReconcilePurchase}
+      />
 
       <p className="agent-batch-policy">{batch.policy}</p>
     </section>

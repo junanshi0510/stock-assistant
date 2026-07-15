@@ -39,6 +39,8 @@ import {
   fetchAgentRuns,
   configureAgentOutcomeSchedule,
   evaluateAgentRun,
+  reconcileAgentBatchPurchaseHoldings,
+  recordAgentBatchPurchaseExecution,
   rerunAgentRun,
 } from '../api/agent'
 import AssetLevelRecurrenceView from '../components/AssetLevelRecurrenceView'
@@ -444,6 +446,8 @@ export default function AgentTab() {
   const [loadingBatch, setLoadingBatch] = useState(false)
   const [allocatingBatch, setAllocatingBatch] = useState(false)
   const [reviewingBatchPurchase, setReviewingBatchPurchase] = useState(false)
+  const [recordingBatchPurchase, setRecordingBatchPurchase] = useState(false)
+  const [reconcilingBatchPurchase, setReconcilingBatchPurchase] = useState(false)
   const [loading, setLoading] = useState(false)
   const [history, setHistory] = useState({ items: [], next_cursor: null, has_more: false })
   const [loadingHistory, setLoadingHistory] = useState(false)
@@ -826,6 +830,40 @@ export default function AgentTab() {
     }
   }
 
+  async function recordBatchPurchase(payload) {
+    if (!batch?.id) return false
+    setRecordingBatchPurchase(true)
+    setError('')
+    try {
+      const data = await recordAgentBatchPurchaseExecution(batch.id, payload)
+      setBatch(data.batch)
+      loadBatchHistory()
+      return true
+    } catch (requestError) {
+      setError(requestError.message || '真实申购成交回填失败')
+      return false
+    } finally {
+      setRecordingBatchPurchase(false)
+    }
+  }
+
+  async function reconcileBatchPurchase(payload) {
+    if (!batch?.id) return false
+    setReconcilingBatchPurchase(true)
+    setError('')
+    try {
+      const data = await reconcileAgentBatchPurchaseHoldings(batch.id, payload)
+      setBatch(data.batch)
+      loadBatchHistory()
+      return true
+    } catch (requestError) {
+      setError(requestError.message || '批次申购持仓对账失败')
+      return false
+    } finally {
+      setReconcilingBatchPurchase(false)
+    }
+  }
+
   async function cancelBatch() {
     if (!batch?.id) return
     setLoadingBatch(true)
@@ -1176,12 +1214,16 @@ export default function AgentTab() {
         loading={loadingBatch}
         allocating={allocatingBatch}
         reviewingPurchase={reviewingBatchPurchase}
+        recordingPurchase={recordingBatchPurchase}
+        reconcilingPurchase={reconcilingBatchPurchase}
         selectedRunId={run?.id || ''}
         onRefresh={() => loadBatch(batch?.id)}
         onCancel={cancelBatch}
         onSelectRun={loadRun}
         onCreateAllocation={allocateBatchBudget}
         onReviewPurchase={reviewBatchPurchase}
+        onRecordPurchase={recordBatchPurchase}
+        onReconcilePurchase={reconcileBatchPurchase}
       />
 
       <section className="agent-history-panel" aria-label="Agent 运行历史">

@@ -255,6 +255,70 @@ class AgentRepository:
                         SELECT RAISE(ABORT, 'agent batch purchase preflight events are immutable');
                     END;
 
+                    CREATE TABLE IF NOT EXISTS agent_batch_purchase_execution_events (
+                        id                         TEXT PRIMARY KEY,
+                        batch_id                   TEXT NOT NULL REFERENCES agent_batches(id),
+                        tenant_id                  TEXT NOT NULL,
+                        user_id                    TEXT NOT NULL,
+                        sequence_no                INTEGER NOT NULL,
+                        event_type                 TEXT NOT NULL,
+                        schema_version             TEXT NOT NULL,
+                        strategy_id                TEXT NOT NULL,
+                        strategy_version           TEXT NOT NULL,
+                        preflight_event_id          TEXT NOT NULL REFERENCES agent_batch_purchase_preflight_events(id),
+                        preflight_event_hash        TEXT NOT NULL,
+                        preflight_payload_sha256    TEXT NOT NULL,
+                        request_sha256              TEXT NOT NULL,
+                        payload_json                TEXT NOT NULL,
+                        payload_sha256              TEXT NOT NULL,
+                        previous_hash               TEXT,
+                        event_hash                  TEXT NOT NULL,
+                        actor_id                    TEXT NOT NULL,
+                        created_at                  TEXT NOT NULL,
+                        UNIQUE(batch_id, sequence_no),
+                        UNIQUE(batch_id, request_sha256)
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_agent_batch_purchase_execution_user
+                    ON agent_batch_purchase_execution_events(user_id, created_at DESC);
+
+                    CREATE TRIGGER IF NOT EXISTS trg_agent_batch_purchase_execution_no_update
+                    BEFORE UPDATE ON agent_batch_purchase_execution_events
+                    BEGIN
+                        SELECT RAISE(ABORT, 'agent batch purchase execution events are immutable');
+                    END;
+
+                    CREATE TRIGGER IF NOT EXISTS trg_agent_batch_purchase_execution_no_delete
+                    BEFORE DELETE ON agent_batch_purchase_execution_events
+                    BEGIN
+                        SELECT RAISE(ABORT, 'agent batch purchase execution events are immutable');
+                    END;
+
+                    CREATE TABLE IF NOT EXISTS agent_batch_purchase_transaction_bindings (
+                        user_id            TEXT NOT NULL,
+                        transaction_id      INTEGER NOT NULL,
+                        batch_id            TEXT NOT NULL REFERENCES agent_batches(id),
+                        first_event_id       TEXT NOT NULL REFERENCES agent_batch_purchase_execution_events(id),
+                        transaction_sha256   TEXT NOT NULL,
+                        created_at           TEXT NOT NULL,
+                        PRIMARY KEY(user_id, transaction_id)
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_agent_batch_purchase_binding_batch
+                    ON agent_batch_purchase_transaction_bindings(batch_id, created_at);
+
+                    CREATE TRIGGER IF NOT EXISTS trg_agent_batch_purchase_binding_no_update
+                    BEFORE UPDATE ON agent_batch_purchase_transaction_bindings
+                    BEGIN
+                        SELECT RAISE(ABORT, 'agent batch purchase transaction bindings are immutable');
+                    END;
+
+                    CREATE TRIGGER IF NOT EXISTS trg_agent_batch_purchase_binding_no_delete
+                    BEFORE DELETE ON agent_batch_purchase_transaction_bindings
+                    BEGIN
+                        SELECT RAISE(ABORT, 'agent batch purchase transaction bindings are immutable');
+                    END;
+
                     CREATE TABLE IF NOT EXISTS agent_steps (
                         id             TEXT PRIMARY KEY,
                         run_id         TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
@@ -742,6 +806,46 @@ class AgentRepository:
         return item
 
     @staticmethod
+    def _batch_purchase_execution_from_row(
+        row: sqlite3.Row | None,
+    ) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        item = dict(row)
+        payload = _load(item.pop("payload_json", None), {})
+        payload_verified = (
+            hashlib.sha256(_json(payload).encode("utf-8")).hexdigest()
+            == item.get("payload_sha256")
+        )
+        canonical = {
+            "id": item.get("id"),
+            "batch_id": item.get("batch_id"),
+            "tenant_id": item.get("tenant_id"),
+            "user_id": item.get("user_id"),
+            "sequence_no": item.get("sequence_no"),
+            "event_type": item.get("event_type"),
+            "schema_version": item.get("schema_version"),
+            "strategy_id": item.get("strategy_id"),
+            "strategy_version": item.get("strategy_version"),
+            "preflight_event_id": item.get("preflight_event_id"),
+            "preflight_event_hash": item.get("preflight_event_hash"),
+            "preflight_payload_sha256": item.get("preflight_payload_sha256"),
+            "request_sha256": item.get("request_sha256"),
+            "payload": payload,
+            "payload_sha256": item.get("payload_sha256"),
+            "previous_hash": item.get("previous_hash"),
+            "actor_id": item.get("actor_id"),
+            "created_at": item.get("created_at"),
+        }
+        item["payload"] = payload
+        item["integrity_verified"] = bool(
+            payload_verified
+            and hashlib.sha256(_json(canonical).encode("utf-8")).hexdigest()
+            == item.get("event_hash")
+        )
+        return item
+
+    @staticmethod
     def _step_from_row(row: sqlite3.Row) -> dict[str, Any]:
         item = dict(row)
         item["input"] = _load(item.pop("input_json", None), {})
@@ -980,6 +1084,15 @@ class AgentRepository:
                 """,
                 (batch_id,),
             ).fetchone()
+            purchase_execution_row = connection.execute(
+                """
+                SELECT * FROM agent_batch_purchase_execution_events
+                WHERE batch_id=?
+                ORDER BY sequence_no DESC
+                LIMIT 1
+                """,
+                (batch_id,),
+            ).fetchone()
         items = []
         for row in rows:
             run = self._run_from_row(row)
@@ -990,6 +1103,9 @@ class AgentRepository:
         batch["allocation_event"] = self._batch_allocation_from_row(allocation_row)
         batch["purchase_preflight_event"] = self._batch_purchase_preflight_from_row(
             purchase_preflight_row
+        )
+        batch["purchase_execution_event"] = self._batch_purchase_execution_from_row(
+            purchase_execution_row
         )
         return batch
 
@@ -1211,6 +1327,17 @@ class AgentRepository:
                     raise ValueError("已保存的同请求申购复核事件完整性失败")
                 return parsed_duplicate, False
 
+            execution_started = connection.execute(
+                """
+                SELECT 1 FROM agent_batch_purchase_execution_events
+                WHERE batch_id=?
+                LIMIT 1
+                """,
+                (str(batch_id),),
+            ).fetchone()
+            if execution_started is not None:
+                raise ValueError("批次已回填真实成交，不能再创建新的执行前复核")
+
             previous = connection.execute(
                 """
                 SELECT * FROM agent_batch_purchase_preflight_events
@@ -1346,6 +1473,372 @@ class AgentRepository:
             "chain_head": previous_hash,
             "failing_sequence": None,
             "reason": None if rows else "purchase_preflight_events_missing",
+        }
+
+    def append_batch_purchase_execution_event(
+        self,
+        batch_id: str,
+        payload: dict[str, Any],
+        *,
+        user_id: str,
+        actor_id: str,
+        expected_previous_event_hash: str | None,
+        transaction_bindings: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any], bool]:
+        schema_version = str(payload.get("schema_version") or "")
+        strategy_id = str(payload.get("strategy_id") or "")
+        strategy_version = str(payload.get("strategy_version") or "")
+        event_type = str(payload.get("event_type") or "")
+        bindings = payload.get("bindings") or {}
+        preflight_event_id = str(bindings.get("preflight_event_id") or "")
+        preflight_event_hash = str(bindings.get("preflight_event_hash") or "")
+        preflight_payload_sha256 = str(bindings.get("preflight_payload_sha256") or "")
+        request_sha256 = str(bindings.get("request_sha256") or "")
+        if (
+            event_type not in {"purchases_recorded", "holdings_reconciled"}
+            or not schema_version
+            or not strategy_id
+            or not strategy_version
+            or not preflight_event_id
+            or len(preflight_event_hash) != 64
+            or len(preflight_payload_sha256) != 64
+            or len(request_sha256) != 64
+        ):
+            raise ValueError("批次申购执行事件缺少策略版本、事件类型或证据哈希绑定")
+
+        normalized_transaction_bindings: list[tuple[int, str]] = []
+        for item in transaction_bindings:
+            transaction_id = int(item.get("transaction_id") or 0)
+            transaction_sha256 = str(item.get("transaction_sha256") or "")
+            if transaction_id <= 0 or len(transaction_sha256) != 64:
+                raise ValueError("批次申购执行事件包含无效的交易流水绑定")
+            normalized_transaction_bindings.append((transaction_id, transaction_sha256))
+        if len({item[0] for item in normalized_transaction_bindings}) != len(
+            normalized_transaction_bindings
+        ):
+            raise ValueError("同一笔交易流水不能在一个执行事件中重复绑定")
+
+        payload_json = _json(payload)
+        payload_sha256 = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            batch_row = connection.execute(
+                "SELECT * FROM agent_batches WHERE id=? AND user_id=?",
+                (str(batch_id), str(user_id)),
+            ).fetchone()
+            if batch_row is None:
+                raise KeyError(f"Agent Batch 不存在：{batch_id}")
+            if str(bindings.get("batch_id") or "") != str(batch_id):
+                raise ValueError("批次申购执行事件绑定了错误的 Batch ID")
+            if str(bindings.get("batch_input_sha256") or "") != str(
+                batch_row["input_hash"] or ""
+            ):
+                raise ValueError("批次申购执行事件绑定的 Batch 输入哈希已变化")
+
+            preflight_row = connection.execute(
+                """
+                SELECT * FROM agent_batch_purchase_preflight_events
+                WHERE id=? AND batch_id=? AND user_id=?
+                """,
+                (preflight_event_id, str(batch_id), str(user_id)),
+            ).fetchone()
+            preflight = self._batch_purchase_preflight_from_row(preflight_row)
+            latest_preflight_row = connection.execute(
+                """
+                SELECT id FROM agent_batch_purchase_preflight_events
+                WHERE batch_id=? ORDER BY sequence_no DESC LIMIT 1
+                """,
+                (str(batch_id),),
+            ).fetchone()
+            if (
+                preflight is None
+                or not preflight.get("integrity_verified")
+                or latest_preflight_row is None
+                or str(latest_preflight_row["id"]) != preflight_event_id
+            ):
+                raise ValueError("绑定的批次申购执行前复核不是当前完整版本")
+            if (
+                preflight.get("event_hash") != preflight_event_hash
+                or preflight.get("payload_sha256") != preflight_payload_sha256
+            ):
+                raise ValueError("绑定的批次申购执行前复核哈希已变化")
+
+            duplicate = connection.execute(
+                """
+                SELECT * FROM agent_batch_purchase_execution_events
+                WHERE batch_id=? AND request_sha256=?
+                """,
+                (str(batch_id), request_sha256),
+            ).fetchone()
+            if duplicate is not None:
+                parsed_duplicate = self._batch_purchase_execution_from_row(duplicate)
+                if not parsed_duplicate or not parsed_duplicate.get("integrity_verified"):
+                    raise ValueError("已保存的同请求批次执行事件完整性失败")
+                return parsed_duplicate, False
+
+            previous = connection.execute(
+                """
+                SELECT * FROM agent_batch_purchase_execution_events
+                WHERE batch_id=? ORDER BY sequence_no DESC LIMIT 1
+                """,
+                (str(batch_id),),
+            ).fetchone()
+            previous_hash = str(previous["event_hash"]) if previous else None
+            expected_previous = (
+                str(expected_previous_event_hash) if expected_previous_event_hash else None
+            )
+            if previous_hash != expected_previous:
+                raise ValueError("批次申购执行链已产生新版本，请刷新后重新核对")
+            previous_type = str(previous["event_type"]) if previous else None
+            if previous_type == "holdings_reconciled":
+                raise ValueError("批次真实持仓已完成对账，执行链不能继续修改")
+            if event_type == "holdings_reconciled":
+                if previous is None or previous_type != "purchases_recorded":
+                    raise ValueError("必须先回填最新一版真实申购成交才能进行持仓对账")
+                if (
+                    str(bindings.get("purchase_event_id") or "") != str(previous["id"])
+                    or str(bindings.get("purchase_event_hash") or "") != previous_hash
+                ):
+                    raise ValueError("持仓对账未绑定最新一版真实申购成交事件")
+
+            table_names = {
+                str(row["name"])
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            if normalized_transaction_bindings and "portfolio_transactions" not in table_names:
+                raise ValueError("真实交易流水表尚未初始化")
+            for transaction_id, expected_transaction_hash in normalized_transaction_bindings:
+                transaction_row = connection.execute(
+                    """
+                    SELECT id, user_id, asset_type, market, code, name, trade_type,
+                           trade_date, shares, unit_price, fee,
+                           COALESCE(source, 'manual') AS source, created_at
+                    FROM portfolio_transactions
+                    WHERE id=? AND user_id=?
+                    """,
+                    (transaction_id, str(user_id)),
+                ).fetchone()
+                if transaction_row is None:
+                    raise ValueError("绑定的真实交易流水不存在或不属于当前用户")
+                actual_transaction_hash = hashlib.sha256(
+                    _json(dict(transaction_row)).encode("utf-8")
+                ).hexdigest()
+                if actual_transaction_hash != expected_transaction_hash:
+                    raise ValueError("绑定的真实交易流水内容哈希已变化")
+                if "fund_switch_lifecycle_events" in table_names:
+                    switch_binding = connection.execute(
+                        """
+                        SELECT 1 FROM fund_switch_lifecycle_events
+                        WHERE user_id=? AND event_type='purchase_recorded'
+                          AND purchase_transaction_id=?
+                        LIMIT 1
+                        """,
+                        (str(user_id), transaction_id),
+                    ).fetchone()
+                    if switch_binding is not None:
+                        raise ValueError("该真实申购流水已绑定基金替换批次")
+                existing_binding = connection.execute(
+                    """
+                    SELECT * FROM agent_batch_purchase_transaction_bindings
+                    WHERE user_id=? AND transaction_id=?
+                    """,
+                    (str(user_id), transaction_id),
+                ).fetchone()
+                if existing_binding is not None and (
+                    str(existing_binding["batch_id"]) != str(batch_id)
+                    or str(existing_binding["transaction_sha256"]) != expected_transaction_hash
+                ):
+                    raise ValueError("该真实申购流水已绑定其他批次或内容哈希冲突")
+
+            sequence_no = int(previous["sequence_no"] if previous else 0) + 1
+            event_id = _new_id("batch_purchase_execution")
+            created_at = _utc_now()
+            canonical = {
+                "id": event_id,
+                "batch_id": str(batch_id),
+                "tenant_id": str(batch_row["tenant_id"]),
+                "user_id": str(user_id),
+                "sequence_no": sequence_no,
+                "event_type": event_type,
+                "schema_version": schema_version,
+                "strategy_id": strategy_id,
+                "strategy_version": strategy_version,
+                "preflight_event_id": preflight_event_id,
+                "preflight_event_hash": preflight_event_hash,
+                "preflight_payload_sha256": preflight_payload_sha256,
+                "request_sha256": request_sha256,
+                "payload": payload,
+                "payload_sha256": payload_sha256,
+                "previous_hash": previous_hash,
+                "actor_id": str(actor_id or "anonymous"),
+                "created_at": created_at,
+            }
+            event_hash = hashlib.sha256(_json(canonical).encode("utf-8")).hexdigest()
+            connection.execute(
+                """
+                INSERT INTO agent_batch_purchase_execution_events (
+                    id, batch_id, tenant_id, user_id, sequence_no, event_type,
+                    schema_version, strategy_id, strategy_version,
+                    preflight_event_id, preflight_event_hash,
+                    preflight_payload_sha256, request_sha256, payload_json,
+                    payload_sha256, previous_hash, event_hash, actor_id, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event_id,
+                    str(batch_id),
+                    str(batch_row["tenant_id"]),
+                    str(user_id),
+                    sequence_no,
+                    event_type,
+                    schema_version,
+                    strategy_id,
+                    strategy_version,
+                    preflight_event_id,
+                    preflight_event_hash,
+                    preflight_payload_sha256,
+                    request_sha256,
+                    payload_json,
+                    payload_sha256,
+                    previous_hash,
+                    event_hash,
+                    str(actor_id or "anonymous"),
+                    created_at,
+                ),
+            )
+            for transaction_id, transaction_sha256 in normalized_transaction_bindings:
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO agent_batch_purchase_transaction_bindings (
+                        user_id, transaction_id, batch_id, first_event_id,
+                        transaction_sha256, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(user_id),
+                        transaction_id,
+                        str(batch_id),
+                        event_id,
+                        transaction_sha256,
+                        created_at,
+                    ),
+                )
+            stored = connection.execute(
+                "SELECT * FROM agent_batch_purchase_execution_events WHERE id=?",
+                (event_id,),
+            ).fetchone()
+        parsed = self._batch_purchase_execution_from_row(stored)
+        if parsed is None or not parsed.get("integrity_verified"):
+            raise RuntimeError("批次申购执行事件保存后完整性校验失败")
+        return parsed, True
+
+    def list_batch_purchase_execution_events(
+        self,
+        batch_id: str,
+        *,
+        user_id: str,
+    ) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM agent_batch_purchase_execution_events
+                WHERE batch_id=? AND user_id=? ORDER BY sequence_no
+                """,
+                (str(batch_id), str(user_id)),
+            ).fetchall()
+        return [
+            item
+            for row in rows
+            if (item := self._batch_purchase_execution_from_row(row)) is not None
+        ]
+
+    def get_batch_purchase_transaction_binding(
+        self,
+        transaction_id: int,
+        *,
+        user_id: str,
+    ) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM agent_batch_purchase_transaction_bindings
+                WHERE user_id=? AND transaction_id=?
+                """,
+                (str(user_id), int(transaction_id)),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_batch_purchase_transaction_bindings(
+        self,
+        *,
+        user_id: str,
+    ) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM agent_batch_purchase_transaction_bindings
+                WHERE user_id=? ORDER BY transaction_id
+                """,
+                (str(user_id),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def verify_batch_purchase_execution_audit(
+        self,
+        batch_id: str,
+        *,
+        user_id: str,
+    ) -> dict[str, Any]:
+        with self._connect() as connection:
+            owner = connection.execute(
+                "SELECT id FROM agent_batches WHERE id=? AND user_id=?",
+                (str(batch_id), str(user_id)),
+            ).fetchone()
+            rows = connection.execute(
+                """
+                SELECT * FROM agent_batch_purchase_execution_events
+                WHERE batch_id=? AND user_id=? ORDER BY sequence_no
+                """,
+                (str(batch_id), str(user_id)),
+            ).fetchall()
+        if owner is None:
+            return {
+                "verified": False,
+                "event_count": 0,
+                "chain_head": None,
+                "reason": "batch_not_found",
+            }
+        previous_hash = None
+        for expected_sequence, row in enumerate(rows, start=1):
+            item = self._batch_purchase_execution_from_row(row)
+            if item is None or not item.get("integrity_verified"):
+                return {
+                    "verified": False,
+                    "event_count": len(rows),
+                    "chain_head": previous_hash,
+                    "failing_sequence": expected_sequence,
+                    "reason": "event_integrity_failed",
+                }
+            if (
+                int(item.get("sequence_no") or 0) != expected_sequence
+                or item.get("previous_hash") != previous_hash
+            ):
+                return {
+                    "verified": False,
+                    "event_count": len(rows),
+                    "chain_head": previous_hash,
+                    "failing_sequence": expected_sequence,
+                    "reason": "event_chain_broken",
+                }
+            previous_hash = item.get("event_hash")
+        return {
+            "verified": bool(rows),
+            "event_count": len(rows),
+            "chain_head": previous_hash,
+            "failing_sequence": None,
+            "reason": None if rows else "purchase_execution_events_missing",
         }
 
     def get_batch_by_idempotency_key(

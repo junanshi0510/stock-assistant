@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 import storage
 from auth import AuthPrincipal, principal_from_request
-from agent import batch_allocations, batch_purchase_preflight
+from agent import batch_allocations, batch_purchase_execution, batch_purchase_preflight
 from agent.batches import summarize_batch
 from agent.comparison import compare_run_results
 from agent.outcomes import DecisionOutcomeService, OutcomeEvaluationError
@@ -172,6 +172,72 @@ class CreateBatchPurchasePreflightRequest(BaseModel):
         return self
 
 
+class BatchPurchaseExecutionOutcomeRequest(BaseModel):
+    code: str = Field(pattern=r"^\d{6}$")
+    resolution: Literal["purchased", "not_purchased"]
+    transaction_id: int | None = Field(default=None, gt=0)
+    purchase_submitted_at: datetime | None = None
+    acknowledged_order_variance: bool = False
+    not_purchased_reason: Literal[
+        "platform_unavailable",
+        "limit_insufficient",
+        "insufficient_cash",
+        "risk_reassessment",
+        "user_cancelled",
+        "other",
+    ] | None = None
+    not_purchased_detail: str = Field(default="", max_length=200)
+
+    @field_validator("purchase_submitted_at")
+    @classmethod
+    def require_submission_timezone(cls, value: datetime | None) -> datetime | None:
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError("申购提交时间必须包含时区")
+        return value
+
+    @model_validator(mode="after")
+    def validate_resolution_fields(self):
+        if self.resolution == "purchased":
+            if self.transaction_id is None or self.purchase_submitted_at is None:
+                raise ValueError("已申购结果必须绑定真实买入流水和包含时区的提交时间")
+            if self.not_purchased_reason is not None:
+                raise ValueError("已申购结果不能填写未申购原因")
+        else:
+            if self.not_purchased_reason is None:
+                raise ValueError("未申购结果必须填写原因")
+            if self.transaction_id is not None or self.purchase_submitted_at is not None:
+                raise ValueError("未申购结果不能绑定交易流水或申购提交时间")
+        return self
+
+
+class CreateBatchPurchaseExecutionRequest(BaseModel):
+    expected_preflight_event_id: str = Field(min_length=8, max_length=120)
+    expected_preflight_event_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_previous_event_hash: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    outcomes: list[BatchPurchaseExecutionOutcomeRequest] = Field(min_length=1, max_length=8)
+
+    @model_validator(mode="after")
+    def validate_outcome_set(self):
+        codes = [item.code for item in self.outcomes]
+        if len(codes) != len(set(codes)):
+            raise ValueError("同一只基金只能提交一条成交结果")
+        transaction_ids = [
+            item.transaction_id for item in self.outcomes if item.transaction_id is not None
+        ]
+        if len(transaction_ids) != len(set(transaction_ids)):
+            raise ValueError("同一笔交易流水不能绑定多只基金")
+        return self
+
+
+class CreateBatchPurchaseReconciliationRequest(BaseModel):
+    expected_purchase_event_id: str = Field(min_length=8, max_length=120)
+    expected_purchase_event_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_previous_event_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class OutcomeScheduleRequest(BaseModel):
     enabled: bool
     interval_hours: int = Field(default=24, ge=12, le=168)
@@ -216,7 +282,11 @@ def _get_batch_or_404(batch_id: str, principal: object) -> dict:
     return batch
 
 
-def _summarize_batch_public(batch: dict) -> dict:
+def _summarize_batch_public(
+    batch: dict,
+    *,
+    include_execution_details: bool = True,
+) -> dict:
     summary = summarize_batch(batch)
     summary["purchase_preflight"] = (
         batch_purchase_preflight.decorate_batch_purchase_preflight(
@@ -224,6 +294,14 @@ def _summarize_batch_public(batch: dict) -> dict:
             batch,
             user_id=str(batch.get("user_id") or "anonymous"),
         )
+    )
+    summary["purchase_execution"] = (
+        batch_purchase_execution.decorate_batch_purchase_execution(
+            repository,
+            batch,
+            user_id=str(batch.get("user_id") or "anonymous"),
+        )
+        if include_execution_details else None
     )
     return summary
 
@@ -496,7 +574,7 @@ def list_agent_batches(
     principal: AuthPrincipal = Depends(principal_from_request),
 ):
     items = [
-        _summarize_batch_public(batch)
+        _summarize_batch_public(batch, include_execution_details=False)
         for batch in repository.list_batches(
             tenant_id="public",
             user_id=_agent_user_id(principal),
@@ -568,6 +646,64 @@ def create_agent_batch_purchase_preflight(
     return {
         "created": created,
         "purchase_preflight_event_id": event.get("id"),
+        "batch": _summarize_batch_public(refreshed),
+    }
+
+
+@router.post("/batches/{batch_id}/purchase-execution")
+def record_agent_batch_purchase_execution(
+    batch_id: str,
+    request: CreateBatchPurchaseExecutionRequest,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    batch = _get_batch_or_404(batch_id, principal)
+    try:
+        event, created = batch_purchase_execution.record_batch_purchase_execution(
+            repository,
+            batch,
+            request.model_dump(mode="json"),
+            user_id=str(batch.get("user_id") or "anonymous"),
+            actor_id=_actor_id(principal),
+        )
+    except batch_purchase_execution.BatchPurchaseExecutionValidationError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except batch_purchase_execution.BatchPurchaseExecutionConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    refreshed = repository.get_batch(batch_id)
+    if refreshed is None:
+        raise HTTPException(status_code=404, detail="Agent Batch 不存在")
+    return {
+        "created": created,
+        "purchase_execution_event_id": event.get("id"),
+        "batch": _summarize_batch_public(refreshed),
+    }
+
+
+@router.post("/batches/{batch_id}/purchase-reconciliation")
+def reconcile_agent_batch_purchase_holdings(
+    batch_id: str,
+    request: CreateBatchPurchaseReconciliationRequest,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    batch = _get_batch_or_404(batch_id, principal)
+    try:
+        event, created = batch_purchase_execution.reconcile_batch_purchase_holdings(
+            repository,
+            batch,
+            request.model_dump(mode="json"),
+            user_id=str(batch.get("user_id") or "anonymous"),
+            actor_id=_actor_id(principal),
+        )
+    except batch_purchase_execution.BatchPurchaseExecutionValidationError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except batch_purchase_execution.BatchPurchaseExecutionConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    refreshed = repository.get_batch(batch_id)
+    if refreshed is None:
+        raise HTTPException(status_code=404, detail="Agent Batch 不存在")
+    return {
+        "created": created,
+        "purchase_reconciliation_event_id": event.get("id"),
         "batch": _summarize_batch_public(refreshed),
     }
 

@@ -3208,6 +3208,22 @@ def fund_switch_lifecycle_transaction_is_bound(
     return row is not None
 
 
+def list_fund_switch_bound_purchase_transaction_ids(
+    user_id: str = "default",
+) -> set[int]:
+    with _lock:
+        rows = _get_conn().execute(
+            """
+            SELECT purchase_transaction_id
+            FROM fund_switch_lifecycle_events
+            WHERE user_id=? AND event_type='purchase_recorded'
+              AND purchase_transaction_id IS NOT NULL
+            """,
+            (user_id,),
+        ).fetchall()
+    return {int(row["purchase_transaction_id"]) for row in rows}
+
+
 def verify_fund_switch_lifecycle_audit(
     case_id: str,
     user_id: str = "default",

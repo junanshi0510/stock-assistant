@@ -56,6 +56,22 @@ export function createAgentBatchPurchasePreflight(batchId, payload) {
   })
 }
 
+export function recordAgentBatchPurchaseExecution(batchId, payload) {
+  return getJson(`/api/v1/agent/batches/${encodeURIComponent(batchId)}/purchase-execution`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export function reconcileAgentBatchPurchaseHoldings(batchId, payload) {
+  return getJson(`/api/v1/agent/batches/${encodeURIComponent(batchId)}/purchase-reconciliation`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
 export function fetchAgentModelStatus() {
   return getJson('/api/v1/agent/model/status')
 }
