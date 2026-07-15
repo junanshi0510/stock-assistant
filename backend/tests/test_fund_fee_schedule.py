@@ -40,8 +40,14 @@ class FundFeeScheduleTests(unittest.TestCase):
         self.assertEqual(result["purchase"]["first_band_source_rate_pct"], 1.5)
         self.assertEqual(result["purchase"]["first_band_current_rate_pct"], 0.15)
         self.assertEqual(result["purchase"]["bands"][1]["fixed_fee_yuan"], 1000.0)
+        self.assertEqual(result["purchase"]["bands"][0]["max_amount_yuan"], 500000.0)
+        self.assertFalse(result["purchase"]["bands"][0]["max_inclusive"])
+        self.assertEqual(result["purchase"]["bands"][1]["min_amount_yuan"], 5000000.0)
         self.assertEqual(result["redemption"]["bands"][0]["rate_pct"], 1.5)
         self.assertEqual(result["redemption"]["bands"][1]["rate_pct"], 0.0)
+        self.assertEqual(result["redemption"]["bands"][0]["max_holding_days"], 7.0)
+        self.assertFalse(result["redemption"]["bands"][0]["max_inclusive"])
+        self.assertEqual(result["redemption"]["bands"][1]["min_holding_days"], 730.0)
         self.assertTrue(result["operating"]["nav_already_net_of_operating_fees"])
 
     def test_zero_purchase_fee_is_preserved_as_real_zero(self):

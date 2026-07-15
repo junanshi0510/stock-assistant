@@ -53,6 +53,7 @@ def _calculate_fifo(
     rows: list[dict],
     *,
     include_realized_lots: bool = False,
+    include_remaining_lots: bool = False,
 ) -> tuple[list[dict], list[dict]] | tuple[list[dict], list[dict], list[dict]]:
     """Return remaining lots, integrity issues, and optional sell-to-lot matches using FIFO."""
     states: dict[tuple[str, str], dict] = {}
@@ -166,7 +167,7 @@ def _calculate_fifo(
     for state in states.values():
         open_shares = sum(lot["shares"] for lot in state["lots"])
         remaining_cost = sum(lot["shares"] * lot["cost_per_share"] for lot in state["lots"])
-        positions.append({
+        position = {
             "asset_type": state["asset_type"],
             "market": state["market"],
             "code": state["code"],
@@ -180,7 +181,18 @@ def _calculate_fifo(
             "sell_proceeds": _round(state["sell_proceeds"]),
             "total_fee": _round(state["total_fee"]),
             "transaction_count": state["transaction_count"],
-        })
+        }
+        if include_remaining_lots:
+            position["remaining_lots"] = [
+                {
+                    **lot,
+                    "shares": _round(lot.get("shares"), 8),
+                    "cost_per_share": _round(lot.get("cost_per_share"), 8),
+                }
+                for lot in state["lots"]
+                if (_number(lot.get("shares")) or 0) > _EPSILON
+            ]
+        positions.append(position)
     positions.sort(key=lambda row: (row["asset_type"], row["code"]))
     if include_realized_lots:
         return positions, issues, realized_lots
@@ -280,6 +292,25 @@ def _holding_map(*, user_id: str = "default") -> dict[tuple[str, str], dict]:
     for row in storage.list_holdings(user_id=user_id):
         result[_asset_key(row)] = row
     return result
+
+
+def remaining_lot_snapshot(
+    asset_type: str,
+    code: str,
+    *,
+    user_id: str = "default",
+) -> dict:
+    key = (str(asset_type or ""), str(code or "").strip())
+    rows = storage.list_portfolio_transactions(user_id=user_id)
+    positions, issues = _calculate_fifo(rows, include_remaining_lots=True)
+    position = next((item for item in positions if _asset_key(item) == key), None)
+    scoped_issues = [item for item in issues if _asset_key(item) == key]
+    return {
+        "position": position,
+        "remaining_lots": (position or {}).get("remaining_lots") or [],
+        "integrity_issues": scoped_issues,
+        "transaction_count": int((position or {}).get("transaction_count") or 0),
+    }
 
 
 def ledger_overview(*, user_id: str = "default") -> dict:

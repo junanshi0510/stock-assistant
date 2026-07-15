@@ -4561,23 +4561,32 @@ tbody tr:hover { background: #f0f8f6; }
 .peer-alternative-head b { margin-top: 2px; color: #263943; font-size: 12px; }
 .peer-alternative-head small { color: var(--faint); font-size: 10px; }
 .peer-durability-summary,
-.peer-due-diligence-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid #dce4e6; }
+.peer-due-diligence-summary,
+.peer-switch-cost-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid #dce4e6; }
 .peer-durability-summary > div span,
 .peer-durability-summary > div b,
 .peer-due-diligence-summary > div span,
-.peer-due-diligence-summary > div b { display: block; }
+.peer-due-diligence-summary > div b,
+.peer-switch-cost-summary > div span,
+.peer-switch-cost-summary > div b { display: block; }
 .peer-durability-summary > div span,
-.peer-due-diligence-summary > div span { color: var(--faint); font-size: 10px; }
+.peer-due-diligence-summary > div span,
+.peer-switch-cost-summary > div span { color: var(--faint); font-size: 10px; }
 .peer-durability-summary > div b,
-.peer-due-diligence-summary > div b { margin-top: 2px; color: #263943; font-size: 12px; }
+.peer-due-diligence-summary > div b,
+.peer-switch-cost-summary > div b { margin-top: 2px; color: #263943; font-size: 12px; }
 .peer-durability-summary dl,
-.peer-due-diligence-summary dl { display: grid; grid-template-columns: repeat(3, minmax(58px, 1fr)); gap: 10px; margin: 0; }
+.peer-due-diligence-summary dl,
+.peer-switch-cost-summary dl { display: grid; grid-template-columns: repeat(3, minmax(58px, 1fr)); gap: 10px; margin: 0; }
 .peer-durability-summary dl div,
-.peer-due-diligence-summary dl div { min-width: 0; }
+.peer-due-diligence-summary dl div,
+.peer-switch-cost-summary dl div { min-width: 0; }
 .peer-durability-summary dt,
-.peer-due-diligence-summary dt { color: var(--faint); font-size: 9px; }
+.peer-due-diligence-summary dt,
+.peer-switch-cost-summary dt { color: var(--faint); font-size: 9px; }
 .peer-durability-summary dd,
-.peer-due-diligence-summary dd { margin: 2px 0 0; color: #263943; font-size: 12px; font-weight: 800; }
+.peer-due-diligence-summary dd,
+.peer-switch-cost-summary dd { margin: 2px 0 0; color: #263943; font-size: 12px; font-weight: 800; }
 .peer-alternative-list { border-top: 1px solid #dce4e6; }
 .peer-alternative-list article { display: grid; grid-template-columns: minmax(105px, .72fr) minmax(0, 1.28fr); gap: 6px 10px; align-items: start; padding: 9px 0; border-bottom: 1px solid #dce4e6; }
 .peer-alternative-name { min-width: 0; }
@@ -4597,6 +4606,22 @@ tbody tr:hover { background: #f0f8f6; }
 .peer-alternative-list dd { margin: 2px 0 0; color: #344952; font-size: 11px; font-weight: 800; }
 .peer-alternative-list p { grid-column: 2; margin: 0; color: #526670; font-size: 10px; line-height: 1.55; }
 .peer-alternative-list p strong { margin-right: 4px; color: #344952; }
+.peer-switch-cost { grid-column: 1 / -1; min-width: 0; margin-top: 3px; padding: 9px 10px; border-left: 3px solid #ad3f4a; background: #f7f9f9; }
+.peer-switch-cost.positive { border-left-color: #087d68; background: #f1f8f6; }
+.peer-switch-cost.warning { border-left-color: #b97b12; background: #fff9ec; }
+.peer-switch-cost-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: flex-start; gap: 10px; }
+.peer-switch-cost-head span,
+.peer-switch-cost-head b { display: block; }
+.peer-switch-cost-head span { color: var(--faint); font-size: 9px; }
+.peer-switch-cost-head b { margin-top: 2px; color: #263943; font-size: 11px; }
+.peer-switch-cost-head em { flex: 0 0 auto; color: #ad3f4a; font-size: 9px; font-style: normal; font-weight: 800; }
+.peer-switch-cost > dl { display: grid; grid-column: auto; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px 10px; margin-top: 8px; }
+.peer-switch-cost > p { grid-column: auto; margin-top: 7px; color: #526670; }
+.peer-switch-cost > small { display: block; margin-top: 7px; color: var(--faint); font-size: 9px; line-height: 1.5; }
+.peer-switch-lots { display: grid; gap: 3px; margin-top: 8px; padding-top: 6px; border-top: 1px solid #d7e2df; }
+.peer-switch-lots > div { display: grid; grid-template-columns: 78px 45px minmax(95px, 1fr) auto; gap: 7px; align-items: center; min-width: 0; color: #526670; font-size: 9px; }
+.peer-switch-lots span { min-width: 0; overflow-wrap: anywhere; }
+.peer-switch-lots b { color: #344952; text-align: right; white-space: nowrap; }
 .peer-alternative-policy,
 .fund-peer-policy { color: var(--faint); font-size: 8.5px; line-height: 1.5; }
 .peer-alternative-policy { margin: 8px 0 0; font-size: 10px; }
@@ -5418,7 +5443,7 @@ button.portfolio-detail-backdrop:hover:not(:disabled) { box-shadow: none; transf
   position: absolute;
   top: 0;
   right: 0;
-  width: min(560px, 92vw);
+  width: min(700px, 94vw);
   height: 100%;
   overflow-y: auto;
   border-left: 1px solid #cbd5db;
@@ -6191,9 +6216,11 @@ button.decision-workflow-stage:hover:not(:disabled) { background: #f4f8f8; box-s
   .fund-peer-review-head,
   .peer-alternative-head { align-items: stretch; grid-template-columns: minmax(0, 1fr); flex-direction: column; }
   .peer-durability-summary,
-  .peer-due-diligence-summary { align-items: stretch; flex-direction: column; }
+  .peer-due-diligence-summary,
+  .peer-switch-cost-summary { align-items: stretch; flex-direction: column; }
   .peer-durability-summary dl,
-  .peer-due-diligence-summary dl { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .peer-due-diligence-summary dl,
+  .peer-switch-cost-summary dl { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .fund-peer-tools { align-self: flex-start; }
   .fund-peer-diagnosis small { text-align: left; white-space: normal; }
   .fund-peer-horizons { grid-template-columns: minmax(0, 1fr); }
@@ -6206,4 +6233,7 @@ button.decision-workflow-stage:hover:not(:disabled) { background: #f4f8f8; box-s
   .peer-alternative-list dl,
   .peer-alternative-list p { grid-column: 1; }
   .peer-alternative-head small { text-align: left; }
+  .peer-switch-cost > dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .peer-switch-lots > div { grid-template-columns: 76px 42px minmax(0, 1fr); }
+  .peer-switch-lots b { grid-column: 1 / -1; text-align: left; }
 }

@@ -21,6 +21,15 @@ export function fetchHoldings() {
   return getJson('/api/holdings')
 }
 
+export function fetchHoldingFundAlternatives(holdingId, sort = '1y', limit = 3, months = 36) {
+  const query = new URLSearchParams({
+    sort,
+    limit: String(limit),
+    months: String(months),
+  })
+  return getJson(`/api/holdings/${encodeURIComponent(holdingId)}/fund-alternatives?${query.toString()}`)
+}
+
 export function fetchHoldingsLevelRecurrence(months = 60) {
   return getJson(`/api/holdings/level-recurrence?months=${encodeURIComponent(months)}`)
 }

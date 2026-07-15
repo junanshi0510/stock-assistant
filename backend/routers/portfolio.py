@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 import analysis
 import data_fetch
 import decision_center
+import fund_switch_cost_service
 import holding_level_recurrence
 import holding_thesis
 import holdings_import
@@ -243,6 +244,30 @@ def get_holdings_insights(
         )
     except Exception as error:
         raise HTTPException(status_code=502, detail=f"真实持仓组合体检失败:{error}")
+
+
+@router.get("/api/holdings/{holding_id}/fund-alternatives")
+def get_holding_fund_alternatives(
+    holding_id: int,
+    sort: str = Query("1y", pattern="^(1y|ytd|6m|3m|1m|1w)$"),
+    limit: int = Query(3, ge=3, le=8),
+    months: int = Query(36, ge=6, le=120),
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        return fund_switch_cost_service.get_holding_fund_alternatives(
+            holding_id,
+            sort=sort,
+            limit=limit,
+            months=months,
+            user_id=_subject_id(principal),
+        )
+    except fund_switch_cost_service.HoldingNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=502, detail=f"真实基金替代成本核算失败:{error}") from error
 
 
 @router.get("/api/holdings/exposure")

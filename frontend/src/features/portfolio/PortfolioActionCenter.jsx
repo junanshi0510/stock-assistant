@@ -16,7 +16,8 @@ import {
 import AssetLevelRecurrenceView from '../../components/AssetLevelRecurrenceView'
 import FundConditionedForwardView from '../../components/FundConditionedForwardView'
 import FundPeerPersistenceView from '../../components/FundPeerPersistenceView'
-import { fetchFundAlternatives, fetchFundPeerPersistence } from '../../api/funds'
+import { fetchFundPeerPersistence } from '../../api/funds'
+import { fetchHoldingFundAlternatives } from '../../api/portfolio'
 
 function money(value) {
   if (value == null || Number.isNaN(Number(value))) return '-'
@@ -389,7 +390,7 @@ function HoldingDetail({
     setPeerAlternativesLoading(true)
     setPeerAlternativesError('')
     try {
-      setPeerAlternatives(await fetchFundAlternatives(row.code, '1y', 3, 36))
+      setPeerAlternatives(await fetchHoldingFundAlternatives(row.id, '1y', 3, 36))
     } catch (requestError) {
       setPeerAlternativesError(requestError?.message || '真实同类替代候选读取失败')
     } finally {

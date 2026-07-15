@@ -33,6 +33,16 @@ function pp(value, signed = true) {
   return `${signed && number > 0 ? '+' : ''}${number.toFixed(2)} 个百分点`
 }
 
+function money(value) {
+  if (value == null || Number.isNaN(Number(value))) return '-'
+  return `${Number(value).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} 元`
+}
+
+function months(value) {
+  if (value == null || Number.isNaN(Number(value))) return '-'
+  return `${Number(value).toFixed(1)} 个月`
+}
+
 function tone(value) {
   if (Number(value) > 0) return 'positive'
   if (Number(value) < 0) return 'negative'
@@ -83,6 +93,12 @@ function dueDiligenceTone(status) {
   return 'unavailable'
 }
 
+function switchCostTone(status) {
+  if (status === 'ready_for_platform_quote') return 'positive'
+  if (['transaction_lots_missing', 'lot_date_unverified', 'confirmed_shares_missing'].includes(status)) return 'warning'
+  return 'negative'
+}
+
 function gateValue(check) {
   if (Array.isArray(check.observed)) return check.observed.map((value) => pp(value)).join(' / ')
   if (check.observed != null) return `${pp(check.observed)}${check.threshold != null ? ` · 阈值 ${pp(check.threshold, false)}` : ''}`
@@ -95,6 +111,8 @@ function AlternativeRows({ alternatives }) {
   const auditSummary = audit.summary || {}
   const dueAudit = alternatives?.due_diligence_audit || {}
   const dueSummary = dueAudit.summary || {}
+  const costAudit = alternatives?.switch_cost_audit || null
+  const costSummary = costAudit?.summary || {}
   if (!rows.length) return null
   return (
     <div className="peer-alternative-results">
@@ -118,6 +136,16 @@ function AlternativeRows({ alternatives }) {
           <div><dt>费率缺口</dt><dd>{dueSummary.incomplete_fee_count ?? 0}</dd></div>
         </dl>
       </div>
+      {costAudit && (
+        <div className={`peer-switch-cost-summary ${costAudit.status || 'unavailable'}`}>
+          <div><span>我的 FIFO 换仓成本</span><b>{costSummary.ready_for_platform_quote_count || 0} 只完成披露成本核算</b></div>
+          <dl>
+            <div><dt>待平台报价</dt><dd>{costSummary.ready_for_platform_quote_count ?? 0}</dd></div>
+            <div><dt>被门禁阻断</dt><dd>{costSummary.blocked_count ?? 0}</dd></div>
+            <div><dt>剩余批次</dt><dd>{costAudit.ledger?.remaining_lot_count ?? 0}</dd></div>
+          </dl>
+        </div>
+      )}
       <div className="peer-alternative-list">
         {rows.slice(0, 3).map((item) => {
           const durability = item.durability || {}
@@ -127,6 +155,11 @@ function AlternativeRows({ alternatives }) {
           const rolling6 = durability.rolling?.['6m'] || {}
           const rolling12 = durability.rolling?.['12m'] || {}
           const commonStocks = (overlap.common_stocks || []).map((row) => row.name).filter(Boolean).slice(0, 3)
+          const switchCost = item.switch_cost_review || null
+          const promotional = switchCost?.cost_snapshots?.page_promotional || null
+          const standard = switchCost?.cost_snapshots?.standard_disclosed || null
+          const hurdle = switchCost?.historical_cost_hurdle || {}
+          const costReady = switchCost?.status === 'ready_for_platform_quote'
           return (
             <article key={item.code}>
               <div className="peer-alternative-name">
@@ -145,12 +178,55 @@ function AlternativeRows({ alternatives }) {
               </dl>
               <p><strong>持续性</strong>{durability.rationale || '真实每日收益复核不可用，不能把榜单领先升级为换仓候选。'}</p>
               <p><strong>替换价值</strong>{dueDiligence.rationale || '真实费率或定期报告持仓不完整，本轮停止换仓尽调。'}</p>
-              <p><strong>{commonStocks.length ? '共同披露持股' : '下一步缺口'}</strong>{commonStocks.length ? commonStocks.join('、') : (dueDiligence.decision_gate?.remaining_requirements?.[0] || '用户逐笔持有天数与销售平台当日赎回报价。')}</p>
+              <p>
+                <strong>{commonStocks.length ? '共同披露持股' : costReady ? '成本核验' : '下一步缺口'}</strong>
+                {commonStocks.length
+                  ? commonStocks.join('、')
+                  : costReady
+                    ? 'FIFO 批次与披露费率已匹配，下一步只确认销售平台当日报价和到账时间。'
+                    : (dueDiligence.decision_gate?.remaining_requirements?.[0] || '用户逐笔持有天数与销售平台当日赎回报价。')}
+              </p>
+              {switchCost && (
+                <div className={`peer-switch-cost ${switchCostTone(switchCost.status)}`}>
+                  <div className="peer-switch-cost-head">
+                    <div><span>我的换仓成本</span><b>{switchCost.label || '成本核算未完成'}</b></div>
+                    <em>{switchCost.decision_gate?.executable_switch_cost_confirmed ? '报价已确认' : '不可执行'}</em>
+                  </div>
+                  {switchCost.status === 'ready_for_platform_quote' ? (
+                    <>
+                      <dl>
+                        <div><dt>FIFO 批次</dt><dd>{switchCost.coverage?.remaining_lot_count ?? '-'}</dd></div>
+                        <div><dt>确认净值</dt><dd>{switchCost.valuation?.unit_nav ?? '-'}</dd></div>
+                        <div><dt>披露赎回费</dt><dd>{money(switchCost.redemption?.disclosed_fee_yuan)}</dd></div>
+                        <div><dt>页面优惠总成本</dt><dd>{money(promotional?.total_switching_cost_yuan)}</dd></div>
+                        <div><dt>标准费率总成本</dt><dd>{money(standard?.total_switching_cost_yuan)}</dd></div>
+                        <div><dt>历史超额覆盖期</dt><dd>{months(hurdle.page_promotional_coverage_months)}</dd></div>
+                      </dl>
+                      <div className="peer-switch-lots">
+                        {(switchCost.redemption?.lot_breakdown || []).map((lot) => (
+                          <div key={`${item.code}-${lot.transaction_id}-${lot.confirmation_date}`}>
+                            <span>{lot.confirmation_date}</span>
+                            <span>{lot.holding_days} 天</span>
+                            <span>{lot.matched_band}</span>
+                            <b>{pct(lot.rate_pct)} · {money(lot.fee_yuan)}</b>
+                          </div>
+                        ))}
+                      </div>
+                      <small>确认净值截至 {switchCost.valuation?.as_of || '-'}；页面优惠费率和历史覆盖期只用于复核，提交前仍以销售平台报价为准。</small>
+                    </>
+                  ) : (
+                    <>
+                      <p>{switchCost.reason || '真实成本证据不完整，本轮停止核算。'}</p>
+                      <small>{switchCost.decision_gate?.remaining_requirements?.[0] || '补齐成本证据后再核算。'}</small>
+                    </>
+                  )}
+                </div>
+              )}
             </article>
           )
         })}
       </div>
-      <p className="peer-alternative-policy">历史胜率不是未来上涨概率，定期报告也不是实时持仓。只有第二阶段门禁通过才继续核对用户逐笔持有天数和平台赎回报价，仍不等于应当换仓。</p>
+      <p className="peer-alternative-policy">历史胜率不是未来上涨概率，定期报告也不是实时持仓。FIFO 披露成本通过后仍必须核对销售平台当日费用和到账时间，不等于应当换仓。</p>
     </div>
   )
 }

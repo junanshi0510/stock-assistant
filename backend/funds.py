@@ -656,6 +656,74 @@ def _alternating_fee_fields(frame: pd.DataFrame) -> dict[str, str]:
     }
 
 
+def _fee_interval(text: str, *, kind: str) -> dict:
+    value = _fee_text(text)
+    if kind == "amount":
+        units = {"亿元": 100_000_000, "万元": 10_000, "元": 1}
+        field = "amount_yuan"
+    elif kind == "holding_days":
+        units = {"天": 1, "日": 1}
+        field = "holding_days"
+    else:
+        raise ValueError(f"unsupported fee interval kind:{kind}")
+
+    empty = {
+        f"min_{field}": None,
+        "min_inclusive": None,
+        f"max_{field}": None,
+        "max_inclusive": None,
+        "interval_status": "unparsed",
+    }
+    if value in {"---", "--", "-", "不限", "全部"}:
+        return {
+            **empty,
+            f"min_{field}": 0,
+            "min_inclusive": True,
+            "interval_status": "parsed",
+        }
+
+    unit_pattern = "|".join(re.escape(unit) for unit in units)
+
+    def bound(pattern: str) -> float | None:
+        match = re.search(pattern + rf"(\d+(?:\.\d+)?)({unit_pattern})", value)
+        if not match:
+            return None
+        return float(match.group(1)) * units[match.group(2)]
+
+    minimum = bound(r"大于等于")
+    min_inclusive = True if minimum is not None else None
+    if minimum is None:
+        minimum = bound(r"大于(?!等于)")
+        min_inclusive = False if minimum is not None else None
+    if minimum is None:
+        match = re.search(rf"(\d+(?:\.\d+)?)({unit_pattern})(?:以上|及以上)", value)
+        if match:
+            minimum = float(match.group(1)) * units[match.group(2)]
+            min_inclusive = True
+
+    maximum = bound(r"小于等于")
+    max_inclusive = True if maximum is not None else None
+    if maximum is None:
+        maximum = bound(r"小于(?!等于)")
+        max_inclusive = False if maximum is not None else None
+    if maximum is None:
+        match = re.search(rf"(\d+(?:\.\d+)?)({unit_pattern})(?:以下|及以下|以内)", value)
+        if match:
+            maximum = float(match.group(1)) * units[match.group(2)]
+            max_inclusive = True
+
+    if minimum is None and maximum is None:
+        return empty
+    return {
+        **empty,
+        f"min_{field}": _round(minimum, 6),
+        "min_inclusive": min_inclusive,
+        f"max_{field}": _round(maximum, 6),
+        "max_inclusive": max_inclusive,
+        "interval_status": "parsed",
+    }
+
+
 def _purchase_fee_bands(frame: pd.DataFrame) -> list[dict]:
     columns = [_fee_column_name(column) for column in frame.columns]
     amount_index = next((index for index, name in enumerate(columns) if "适用金额" in name), None)
@@ -682,6 +750,7 @@ def _purchase_fee_bands(frame: pd.DataFrame) -> list[dict]:
             "source_rate_pct": _round(percentages[0]) if percentages else None,
             "current_rate_pct": _round(percentages[-1]) if percentages else None,
             "fixed_fee_yuan": _round(_num(fixed_match.group(1))) if fixed_match else None,
+            **_fee_interval(amount, kind="amount"),
         })
     return bands
 
@@ -700,6 +769,7 @@ def _redemption_fee_bands(frame: pd.DataFrame) -> list[dict]:
             "holding_period": duration,
             "rate_pct": _round(_declared_rate(source_text)),
             "source_text": source_text,
+            **_fee_interval(duration, kind="holding_days"),
         })
     return rows
 
@@ -1950,6 +2020,7 @@ def get_fund_alternatives(code: str, sort: str = "1y", limit: int = 5, months: i
         "rank": selected_rank,
         "sample_count": len(rank_items),
         "as_of": selected_analysis.get("as_of"),
+        "unit_nav": (selected_analysis.get("latest") or {}).get("unit_nav"),
         "trend_state": selected_analysis.get("trend_state"),
         "timing_score": (selected_analysis.get("timing") or {}).get("score"),
         "timing_label": (selected_analysis.get("timing") or {}).get("label"),
