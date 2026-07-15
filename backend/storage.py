@@ -509,6 +509,83 @@ def _get_conn():
             END
             """
         )
+        _conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS decision_check_schedules (
+                id                    TEXT PRIMARY KEY,
+                user_id               TEXT NOT NULL UNIQUE,
+                status                TEXT NOT NULL
+                                      CHECK(status IN ('active', 'paused')),
+                interval_hours        INTEGER NOT NULL
+                                      CHECK(interval_hours IN (24, 72, 168)),
+                revision              INTEGER NOT NULL DEFAULT 1,
+                next_run_at           TEXT,
+                last_started_at       TEXT,
+                last_finished_at      TEXT,
+                last_success_at       TEXT,
+                last_result_status    TEXT
+                                      CHECK(last_result_status IN ('succeeded', 'partial', 'failed')),
+                last_open_count       INTEGER,
+                last_unavailable_count INTEGER,
+                attempt_count         INTEGER NOT NULL DEFAULT 0,
+                consecutive_failures  INTEGER NOT NULL DEFAULT 0,
+                last_error_code       TEXT,
+                last_error_message    TEXT,
+                lease_owner           TEXT,
+                lease_expires_at      TEXT,
+                created_at            TEXT NOT NULL,
+                updated_at            TEXT NOT NULL
+            )
+            """
+        )
+        _conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_decision_check_schedule_due
+            ON decision_check_schedules(status, next_run_at, lease_expires_at)
+            """
+        )
+        _conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS decision_check_events (
+                id             TEXT PRIMARY KEY,
+                schedule_id    TEXT NOT NULL,
+                user_id        TEXT NOT NULL,
+                sequence_no    INTEGER NOT NULL,
+                event_type     TEXT NOT NULL,
+                actor_id       TEXT NOT NULL,
+                details_json   TEXT NOT NULL,
+                previous_hash  TEXT,
+                event_hash     TEXT NOT NULL,
+                created_at     TEXT NOT NULL,
+                UNIQUE(user_id, sequence_no),
+                FOREIGN KEY(schedule_id) REFERENCES decision_check_schedules(id)
+            )
+            """
+        )
+        _conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_decision_check_events_history
+            ON decision_check_events(user_id, sequence_no)
+            """
+        )
+        _conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_decision_check_events_no_update
+            BEFORE UPDATE ON decision_check_events
+            BEGIN
+                SELECT RAISE(ABORT, 'decision check events are immutable');
+            END
+            """
+        )
+        _conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_decision_check_events_no_delete
+            BEFORE DELETE ON decision_check_events
+            BEGIN
+                SELECT RAISE(ABORT, 'decision check events are immutable');
+            END
+            """
+        )
         _ensure_column(_conn, "holdings", "yesterday_profit", "REAL")
         _ensure_column(_conn, "portfolio_transactions", "source", "TEXT")
         _ensure_column(_conn, "portfolio_action_reports", "theses_sha256", "TEXT")
@@ -2282,6 +2359,7 @@ def sync_decision_tasks(
     *,
     actor_id: str = "decision-engine",
     observed_at: str | None = None,
+    resolve_absent: bool = True,
 ) -> dict:
     """Synchronize deterministic decision conditions into a durable user inbox."""
     now = observed_at or _decision_task_now()
@@ -2404,32 +2482,33 @@ def sync_decision_tasks(
                         created_at=now,
                     )
 
-            for action_key, row in existing.items():
-                if action_key in seen_keys or row["status"] == "resolved":
-                    continue
-                revision = int(row["revision"]) + 1
-                conn.execute(
-                    """
-                    UPDATE decision_tasks
-                    SET status='resolved', revision=?, snoozed_until=NULL, resolved_at=?
-                    WHERE id=? AND user_id=?
-                    """,
-                    (revision, now, row["id"], user_id),
-                )
-                _append_decision_task_event(
-                    conn,
-                    task_id=row["id"],
-                    user_id=user_id,
-                    event_type="task.auto_resolved",
-                    actor_id=actor_id,
-                    details={
-                        "from_status": row["status"],
-                        "to_status": "resolved",
-                        "reason": "trigger_condition_absent",
-                        "revision": revision,
-                    },
-                    created_at=now,
-                )
+            if resolve_absent:
+                for action_key, row in existing.items():
+                    if action_key in seen_keys or row["status"] == "resolved":
+                        continue
+                    revision = int(row["revision"]) + 1
+                    conn.execute(
+                        """
+                        UPDATE decision_tasks
+                        SET status='resolved', revision=?, snoozed_until=NULL, resolved_at=?
+                        WHERE id=? AND user_id=?
+                        """,
+                        (revision, now, row["id"], user_id),
+                    )
+                    _append_decision_task_event(
+                        conn,
+                        task_id=row["id"],
+                        user_id=user_id,
+                        event_type="task.auto_resolved",
+                        actor_id=actor_id,
+                        details={
+                            "from_status": row["status"],
+                            "to_status": "resolved",
+                            "reason": "trigger_condition_absent",
+                            "revision": revision,
+                        },
+                        created_at=now,
+                    )
             conn.commit()
         except Exception:
             conn.rollback()
@@ -2449,6 +2528,7 @@ def sync_decision_tasks(
         "generated_at": now,
         "items": items,
         "summary": summary,
+        "resolution_deferred": not resolve_absent,
     }
 
 
@@ -2652,6 +2732,559 @@ def verify_decision_task_audit(task_id: str, user_id: str = "default") -> dict:
     return {
         "verified": bool(items),
         "task_id": task_id,
+        "event_count": len(items),
+        "failing_sequence": None,
+        "chain_head": previous_hash,
+        "reason": None if items else "audit_events_missing",
+    }
+
+
+def get_decision_task_summary(user_id: str = "default") -> dict:
+    """Return only inbox counters so navigation polling never triggers market I/O."""
+    now = _decision_task_now()
+    with _lock:
+        conn = _get_conn()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            _open_elapsed_snoozes(conn, user_id, now, "decision-task-scheduler")
+            summary = _decision_task_summary(conn, user_id)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    return {**summary, "generated_at": now}
+
+
+# ==================== Scheduled decision checks ====================
+
+DECISION_CHECK_INTERVAL_HOURS = (24, 72, 168)
+_DECISION_CHECK_RESULTS = {"succeeded", "partial"}
+
+
+class DecisionCheckConflictError(RuntimeError):
+    pass
+
+
+class DecisionCheckValidationError(ValueError):
+    pass
+
+
+class DecisionCheckLeaseError(RuntimeError):
+    pass
+
+
+def _decision_check_datetime(value=None) -> datetime.datetime:
+    if value is None:
+        parsed = datetime.datetime.now(datetime.timezone.utc)
+    elif isinstance(value, datetime.datetime):
+        parsed = value
+    else:
+        parsed = datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed.astimezone(datetime.timezone.utc)
+
+
+def _decision_check_iso(value=None) -> str:
+    return _decision_check_datetime(value).isoformat(timespec="milliseconds")
+
+
+def _decision_check_from_row(row, *, now=None) -> dict | None:
+    if row is None:
+        return None
+    item = dict(row)
+    now_text = _decision_check_iso(now)
+    item["enabled"] = item["status"] == "active"
+    item["running"] = bool(
+        item.get("lease_owner")
+        and item.get("lease_expires_at")
+        and item["lease_expires_at"] > now_text
+    )
+    return item
+
+
+def _append_decision_check_event(
+    conn,
+    *,
+    schedule_id: str,
+    user_id: str,
+    event_type: str,
+    actor_id: str,
+    details: dict,
+    created_at: str,
+) -> dict:
+    previous = conn.execute(
+        """
+        SELECT sequence_no, event_hash
+        FROM decision_check_events
+        WHERE user_id=?
+        ORDER BY sequence_no DESC
+        LIMIT 1
+        """,
+        (user_id,),
+    ).fetchone()
+    sequence_no = int(previous["sequence_no"] if previous else 0) + 1
+    previous_hash = previous["event_hash"] if previous else None
+    event_id = f"decision_check_event_{uuid.uuid4().hex}"
+    canonical = {
+        "id": event_id,
+        "schedule_id": schedule_id,
+        "user_id": user_id,
+        "sequence_no": sequence_no,
+        "event_type": event_type,
+        "actor_id": actor_id,
+        "details": details,
+        "previous_hash": previous_hash,
+        "created_at": created_at,
+    }
+    event_hash = hashlib.sha256(canonical_json(canonical).encode("utf-8")).hexdigest()
+    conn.execute(
+        """
+        INSERT INTO decision_check_events (
+            id, schedule_id, user_id, sequence_no, event_type, actor_id,
+            details_json, previous_hash, event_hash, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            event_id,
+            schedule_id,
+            user_id,
+            sequence_no,
+            event_type,
+            actor_id,
+            canonical_json(details),
+            previous_hash,
+            event_hash,
+            created_at,
+        ),
+    )
+    return {**canonical, "event_hash": event_hash}
+
+
+def get_decision_check_schedule(user_id: str = "default", *, now=None) -> dict | None:
+    with _lock:
+        row = _get_conn().execute(
+            "SELECT * FROM decision_check_schedules WHERE user_id=?",
+            (user_id,),
+        ).fetchone()
+    return _decision_check_from_row(row, now=now)
+
+
+def configure_decision_check_schedule(
+    user_id: str,
+    *,
+    enabled: bool,
+    interval_hours: int,
+    run_immediately: bool = False,
+    expected_revision: int | None = None,
+    actor_id: str = "user",
+    now=None,
+) -> tuple[dict, bool]:
+    interval = int(interval_hours)
+    if interval not in DECISION_CHECK_INTERVAL_HOURS:
+        raise DecisionCheckValidationError("自动检查间隔只支持 24、72 或 168 小时")
+    if run_immediately and not enabled:
+        raise DecisionCheckValidationError("停用自动检查时不能提交立即运行")
+    now_dt = _decision_check_datetime(now)
+    now_text = _decision_check_iso(now_dt)
+    desired_status = "active" if enabled else "paused"
+
+    with _lock:
+        conn = _get_conn()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            existing = conn.execute(
+                "SELECT * FROM decision_check_schedules WHERE user_id=?",
+                (user_id,),
+            ).fetchone()
+            if expected_revision is not None:
+                if existing is None or int(existing["revision"]) != int(expected_revision):
+                    raise DecisionCheckConflictError("自动检查设置已更新，请刷新后重试")
+
+            changed = bool(
+                existing is None
+                or existing["status"] != desired_status
+                or int(existing["interval_hours"]) != interval
+                or (enabled and run_immediately)
+            )
+            if existing is None:
+                schedule_id = f"decision_check_{uuid.uuid4().hex}"
+                next_run_at = (
+                    now_text
+                    if enabled and run_immediately
+                    else _decision_check_iso(now_dt + datetime.timedelta(hours=interval))
+                    if enabled
+                    else None
+                )
+                conn.execute(
+                    """
+                    INSERT INTO decision_check_schedules (
+                        id, user_id, status, interval_hours, revision,
+                        next_run_at, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, 1, ?, ?, ?)
+                    """,
+                    (
+                        schedule_id,
+                        user_id,
+                        desired_status,
+                        interval,
+                        next_run_at,
+                        now_text,
+                        now_text,
+                    ),
+                )
+                event_type = "decision_check.schedule.created"
+            else:
+                schedule_id = str(existing["id"])
+                next_run_at = None
+                if enabled:
+                    if run_immediately:
+                        next_run_at = now_text
+                    elif existing["status"] == "active" and int(existing["interval_hours"]) == interval:
+                        next_run_at = existing["next_run_at"]
+                    else:
+                        next_run_at = _decision_check_iso(
+                            now_dt + datetime.timedelta(hours=interval)
+                        )
+                if changed:
+                    resumed = existing["status"] == "paused" and enabled
+                    conn.execute(
+                        """
+                        UPDATE decision_check_schedules
+                        SET status=?, interval_hours=?, revision=revision+1,
+                            next_run_at=?, consecutive_failures=?,
+                            last_error_code=?, last_error_message=?,
+                            lease_owner=?, lease_expires_at=?, updated_at=?
+                        WHERE id=?
+                        """,
+                        (
+                            desired_status,
+                            interval,
+                            next_run_at,
+                            0 if resumed else int(existing["consecutive_failures"]),
+                            None if resumed else existing["last_error_code"],
+                            None if resumed else existing["last_error_message"],
+                            None if not enabled else existing["lease_owner"],
+                            None if not enabled else existing["lease_expires_at"],
+                            now_text,
+                            schedule_id,
+                        ),
+                    )
+                if run_immediately:
+                    event_type = "decision_check.schedule.queued"
+                elif existing["status"] != desired_status:
+                    event_type = (
+                        "decision_check.schedule.enabled"
+                        if enabled
+                        else "decision_check.schedule.disabled"
+                    )
+                else:
+                    event_type = "decision_check.schedule.configured"
+
+            if changed:
+                _append_decision_check_event(
+                    conn,
+                    schedule_id=schedule_id,
+                    user_id=user_id,
+                    event_type=event_type,
+                    actor_id=actor_id,
+                    details={
+                        "status": desired_status,
+                        "interval_hours": interval,
+                        "next_run_at": next_run_at,
+                        "run_immediately": bool(run_immediately),
+                    },
+                    created_at=now_text,
+                )
+            row = conn.execute(
+                "SELECT * FROM decision_check_schedules WHERE id=?",
+                (schedule_id,),
+            ).fetchone()
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    return _decision_check_from_row(row, now=now_dt), changed
+
+
+def claim_due_decision_check(
+    worker_id: str,
+    *,
+    lease_seconds: int = 120,
+    now=None,
+) -> dict | None:
+    now_dt = _decision_check_datetime(now)
+    now_text = _decision_check_iso(now_dt)
+    lease_expires_at = _decision_check_iso(
+        now_dt + datetime.timedelta(seconds=max(60, int(lease_seconds)))
+    )
+    with _lock:
+        conn = _get_conn()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                """
+                SELECT * FROM decision_check_schedules
+                WHERE status='active' AND next_run_at IS NOT NULL AND next_run_at<=?
+                  AND (lease_expires_at IS NULL OR lease_expires_at<=?)
+                ORDER BY next_run_at, id
+                LIMIT 1
+                """,
+                (now_text, now_text),
+            ).fetchone()
+            if row is None:
+                conn.commit()
+                return None
+            changed = conn.execute(
+                """
+                UPDATE decision_check_schedules
+                SET lease_owner=?, lease_expires_at=?, last_started_at=?,
+                    attempt_count=attempt_count+1, updated_at=?
+                WHERE id=? AND status='active'
+                  AND (lease_expires_at IS NULL OR lease_expires_at<=?)
+                """,
+                (worker_id, lease_expires_at, now_text, now_text, row["id"], now_text),
+            ).rowcount
+            if changed != 1:
+                conn.commit()
+                return None
+            _append_decision_check_event(
+                conn,
+                schedule_id=row["id"],
+                user_id=row["user_id"],
+                event_type="decision_check.started",
+                actor_id=worker_id,
+                details={"lease_expires_at": lease_expires_at},
+                created_at=now_text,
+            )
+            claimed = conn.execute(
+                "SELECT * FROM decision_check_schedules WHERE id=?",
+                (row["id"],),
+            ).fetchone()
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    return _decision_check_from_row(claimed, now=now_dt)
+
+
+def complete_decision_check(
+    schedule_id: str,
+    worker_id: str,
+    *,
+    result_status: str,
+    open_count: int,
+    unavailable_count: int,
+    now=None,
+) -> dict:
+    if result_status not in _DECISION_CHECK_RESULTS:
+        raise DecisionCheckValidationError(f"自动检查结果状态无效:{result_status}")
+    now_dt = _decision_check_datetime(now)
+    now_text = _decision_check_iso(now_dt)
+    with _lock:
+        conn = _get_conn()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            schedule = conn.execute(
+                "SELECT * FROM decision_check_schedules WHERE id=?",
+                (schedule_id,),
+            ).fetchone()
+            if schedule is None:
+                raise KeyError(f"自动检查计划不存在:{schedule_id}")
+            next_run_at = _decision_check_iso(
+                now_dt + datetime.timedelta(hours=int(schedule["interval_hours"]))
+            )
+            changed = conn.execute(
+                """
+                UPDATE decision_check_schedules
+                SET next_run_at=?, lease_owner=NULL, lease_expires_at=NULL,
+                    consecutive_failures=0, last_finished_at=?, last_success_at=?,
+                    last_result_status=?, last_open_count=?, last_unavailable_count=?,
+                    last_error_code=NULL, last_error_message=NULL, updated_at=?
+                WHERE id=? AND status='active' AND lease_owner=?
+                """,
+                (
+                    next_run_at,
+                    now_text,
+                    now_text if result_status == "succeeded" else schedule["last_success_at"],
+                    result_status,
+                    max(0, int(open_count)),
+                    max(0, int(unavailable_count)),
+                    now_text,
+                    schedule_id,
+                    worker_id,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise DecisionCheckLeaseError("自动检查租约已失效，拒绝提交完成状态")
+            _append_decision_check_event(
+                conn,
+                schedule_id=schedule_id,
+                user_id=schedule["user_id"],
+                event_type=f"decision_check.{result_status}",
+                actor_id=worker_id,
+                details={
+                    "open_count": max(0, int(open_count)),
+                    "unavailable_count": max(0, int(unavailable_count)),
+                    "next_run_at": next_run_at,
+                },
+                created_at=now_text,
+            )
+            row = conn.execute(
+                "SELECT * FROM decision_check_schedules WHERE id=?",
+                (schedule_id,),
+            ).fetchone()
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    return _decision_check_from_row(row, now=now_dt)
+
+
+def fail_decision_check(
+    schedule_id: str,
+    worker_id: str,
+    *,
+    error_code: str,
+    error_message: str,
+    retryable: bool = True,
+    now=None,
+) -> dict:
+    retry_delays = (900, 3600, 14400, 43200)
+    now_dt = _decision_check_datetime(now)
+    now_text = _decision_check_iso(now_dt)
+    with _lock:
+        conn = _get_conn()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            schedule = conn.execute(
+                "SELECT * FROM decision_check_schedules WHERE id=?",
+                (schedule_id,),
+            ).fetchone()
+            if schedule is None:
+                raise KeyError(f"自动检查计划不存在:{schedule_id}")
+            failure_count = int(schedule["consecutive_failures"]) + 1
+            should_retry = bool(retryable and failure_count <= len(retry_delays))
+            next_run_at = (
+                _decision_check_iso(
+                    now_dt + datetime.timedelta(
+                        seconds=retry_delays[min(failure_count - 1, len(retry_delays) - 1)]
+                    )
+                )
+                if should_retry
+                else None
+            )
+            next_status = "active" if should_retry else "paused"
+            changed = conn.execute(
+                """
+                UPDATE decision_check_schedules
+                SET status=?, revision=revision+?, next_run_at=?,
+                    lease_owner=NULL, lease_expires_at=NULL,
+                    consecutive_failures=?, last_finished_at=?, last_result_status='failed',
+                    last_error_code=?, last_error_message=?, updated_at=?
+                WHERE id=? AND lease_owner=?
+                """,
+                (
+                    next_status,
+                    0 if should_retry else 1,
+                    next_run_at,
+                    failure_count,
+                    now_text,
+                    str(error_code or "DECISION_CHECK_FAILED")[:100],
+                    str(error_message or "")[:500],
+                    now_text,
+                    schedule_id,
+                    worker_id,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise DecisionCheckLeaseError("自动检查租约已失效，拒绝提交失败状态")
+            _append_decision_check_event(
+                conn,
+                schedule_id=schedule_id,
+                user_id=schedule["user_id"],
+                event_type="decision_check.failed",
+                actor_id=worker_id,
+                details={
+                    "error_code": str(error_code or "DECISION_CHECK_FAILED")[:100],
+                    "retryable": bool(retryable),
+                    "retry_exhausted": not should_retry,
+                    "consecutive_failures": failure_count,
+                    "next_run_at": next_run_at,
+                    "status": next_status,
+                },
+                created_at=now_text,
+            )
+            row = conn.execute(
+                "SELECT * FROM decision_check_schedules WHERE id=?",
+                (schedule_id,),
+            ).fetchone()
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    return _decision_check_from_row(row, now=now_dt)
+
+
+def list_decision_check_events(
+    user_id: str = "default",
+    *,
+    limit: int | None = 100,
+) -> list[dict]:
+    bounded_limit = None if limit is None else max(1, min(500, int(limit)))
+    query = """
+        SELECT * FROM decision_check_events
+        WHERE user_id=?
+        ORDER BY sequence_no
+    """
+    params: tuple = (user_id,)
+    if bounded_limit is not None:
+        query += " LIMIT ?"
+        params = (user_id, bounded_limit)
+    with _lock:
+        rows = _get_conn().execute(query, params).fetchall()
+    items = []
+    for row in rows:
+        item = dict(row)
+        item["details"] = _decode_json(item.pop("details_json", None), {})
+        items.append(item)
+    return items
+
+
+def verify_decision_check_audit(user_id: str = "default") -> dict:
+    schedule = get_decision_check_schedule(user_id=user_id)
+    if schedule is None:
+        return {"verified": False, "event_count": 0, "reason": "schedule_not_found"}
+    items = list_decision_check_events(user_id=user_id, limit=None)
+    previous_hash = None
+    for expected_sequence, item in enumerate(items, start=1):
+        canonical = {
+            "id": item["id"],
+            "schedule_id": item["schedule_id"],
+            "user_id": item["user_id"],
+            "sequence_no": item["sequence_no"],
+            "event_type": item["event_type"],
+            "actor_id": item["actor_id"],
+            "details": item["details"],
+            "previous_hash": item["previous_hash"],
+            "created_at": item["created_at"],
+        }
+        calculated = hashlib.sha256(canonical_json(canonical).encode("utf-8")).hexdigest()
+        if (
+            int(item["sequence_no"]) != expected_sequence
+            or item["previous_hash"] != previous_hash
+            or item["event_hash"] != calculated
+        ):
+            return {
+                "verified": False,
+                "event_count": len(items),
+                "failing_sequence": item["sequence_no"],
+                "chain_head": previous_hash,
+                "reason": "audit_chain_invalid",
+            }
+        previous_hash = item["event_hash"]
+    return {
+        "verified": bool(items),
         "event_count": len(items),
         "failing_sequence": None,
         "chain_head": previous_hash,

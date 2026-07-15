@@ -129,6 +129,15 @@ class DecisionTaskUpdateRequest(BaseModel):
     snooze_hours: int | None = Field(default=None, ge=1, le=168)
 
 
+class DecisionCheckScheduleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+    interval_hours: Literal[24, 72, 168]
+    run_immediately: bool = False
+    expected_revision: int | None = Field(default=None, ge=1)
+
+
 class HoldingThesisRequest(BaseModel):
     asset_type: Literal["fund", "stock"]
     market: str = Field(default="", max_length=40)
@@ -449,6 +458,85 @@ def get_decision_tasks(
     return {
         **result,
         "items": [_decision_task_public(item) for item in result["items"]],
+    }
+
+
+@router.get("/api/decision-tasks/summary")
+def get_decision_task_summary(
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    return storage.get_decision_task_summary(user_id=_subject_id(principal))
+
+
+def _decision_check_schedule_public(item: dict | None) -> dict | None:
+    if item is None:
+        return None
+    return {
+        key: item.get(key)
+        for key in (
+            "status",
+            "enabled",
+            "running",
+            "interval_hours",
+            "revision",
+            "next_run_at",
+            "last_started_at",
+            "last_finished_at",
+            "last_success_at",
+            "last_result_status",
+            "last_open_count",
+            "last_unavailable_count",
+            "attempt_count",
+            "consecutive_failures",
+            "last_error_code",
+            "last_error_message",
+            "created_at",
+            "updated_at",
+        )
+    }
+
+
+@router.get("/api/decision-check-schedule")
+def get_decision_check_schedule(
+    verify_audit: bool = Query(default=False),
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    user_id = _subject_id(principal)
+    schedule = storage.get_decision_check_schedule(user_id=user_id)
+    return {
+        "schedule": _decision_check_schedule_public(schedule),
+        "allowed_interval_hours": list(storage.DECISION_CHECK_INTERVAL_HOURS),
+        "audit": (
+            storage.verify_decision_check_audit(user_id=user_id)
+            if schedule is not None and verify_audit
+            else None
+        ),
+    }
+
+
+@router.put("/api/decision-check-schedule")
+def configure_decision_check_schedule(
+    req: DecisionCheckScheduleRequest,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        schedule, changed = storage.configure_decision_check_schedule(
+            _subject_id(principal),
+            enabled=req.enabled,
+            interval_hours=req.interval_hours,
+            run_immediately=req.run_immediately,
+            expected_revision=req.expected_revision,
+            actor_id=_actor_id(principal),
+        )
+    except storage.DecisionCheckConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except storage.DecisionCheckValidationError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return {
+        "schedule": _decision_check_schedule_public(schedule),
+        "changed": changed,
+        "allowed_interval_hours": list(storage.DECISION_CHECK_INTERVAL_HOURS),
+        "audit": storage.verify_decision_check_audit(user_id=_subject_id(principal)),
     }
 
 

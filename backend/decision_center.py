@@ -634,6 +634,18 @@ def _portfolio_actions(profile: dict, portfolio: dict) -> list[dict]:
             "查看重合度",
             "基金定期报告披露持仓",
         ))
+    if portfolio.get("overlap_error"):
+        actions.append(_action(
+            "fund-overlap-unavailable",
+            "normal",
+            "数据可用性",
+            "基金持仓重合度暂不可用",
+            "当前不会把缺失披露或计算失败解释为基金已经分散。",
+            [str(portfolio["overlap_error"])],
+            "portfolio",
+            "检查重合度",
+            "基金定期报告披露持仓",
+        ))
 
     fund_errors = portfolio.get("fund_errors") or []
     if fund_errors:
@@ -766,11 +778,27 @@ def build_decision_center(*, user_id: str = "default") -> dict:
         unavailable.append({"scope": "仓位纪律", "error": portfolio["rebalance_error"]})
     if portfolio.get("performance_error"):
         unavailable.append({"scope": "现金流收益", "error": portfolio["performance_error"]})
+    if portfolio.get("overlap_error"):
+        unavailable.append({"scope": "基金持仓重合度", "error": portfolio["overlap_error"]})
     for failure in market.get("failed") or []:
         unavailable.append({"scope": failure.get("source") or "市场数据源", "error": failure.get("error") or failure.get("message")})
 
+    resolution_evidence_complete = bool(
+        portfolio.get("status") == "available"
+        and market.get("status") == "available"
+        and not (portfolio.get("fund_errors") or [])
+        and not portfolio.get("ledger_error")
+        and not portfolio.get("rebalance_error")
+        and not portfolio.get("performance_error")
+        and not portfolio.get("overlap_error")
+        and not (market.get("failed") or [])
+    )
     try:
-        task_inbox = storage.sync_decision_tasks(actions, user_id=user_id)
+        task_inbox = storage.sync_decision_tasks(
+            actions,
+            user_id=user_id,
+            resolve_absent=resolution_evidence_complete,
+        )
         task_by_action = {
             str(item.get("action_key")): item
             for item in task_inbox.get("items") or []
@@ -781,6 +809,7 @@ def build_decision_center(*, user_id: str = "default") -> dict:
             "status": "available",
             "generated_at": task_inbox.get("generated_at"),
             "summary": task_inbox.get("summary") or {},
+            "resolution_deferred": bool(task_inbox.get("resolution_deferred")),
         }
     except Exception as error:
         task_inbox = {

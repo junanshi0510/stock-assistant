@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useState } from 'react'
 import { Bot, BriefcaseBusiness, Info, LayoutDashboard, Search, Shield, TrendingUp } from 'lucide-react'
 import { fetchAuthSession, logoutAccount } from './api/auth'
 import { fetchMarkets } from './api/market'
+import { fetchDecisionTaskSummary } from './api/portfolio'
 import AccountMenu from './components/AccountMenu'
 import ChangePasswordScreen from './components/ChangePasswordScreen'
 import LoginScreen from './components/LoginScreen'
@@ -33,6 +34,7 @@ export default function App() {
   const [researchDomain, setResearchDomain] = useState('funds')
   const [marketView, setMarketView] = useState('radar')
   const [portfolioView, setPortfolioView] = useState('holdings')
+  const [taskSummary, setTaskSummary] = useState(null)
 
   // 单股分析的共享状态(供扫描页点击跳转使用)
   const [market, setMarket] = useState('A股')
@@ -52,6 +54,7 @@ export default function App() {
       .finally(() => { if (active) setAuthLoading(false) })
     const unauthorized = () => {
       setUser(null)
+      setTaskSummary(null)
       setAuthView('login')
       setAuthNotice('')
       setTab('overview')
@@ -66,6 +69,25 @@ export default function App() {
   useEffect(() => {
     if (!user) return
     fetchMarkets().then((d) => d.markets && setMarkets(d.markets)).catch(() => {})
+  }, [user])
+
+  useEffect(() => {
+    if (!user || user.must_change_password) {
+      setTaskSummary(null)
+      return undefined
+    }
+    let active = true
+    const refreshSummary = () => {
+      fetchDecisionTaskSummary()
+        .then((result) => { if (active) setTaskSummary(result) })
+        .catch(() => {})
+    }
+    refreshSummary()
+    const timer = globalThis.setInterval(refreshSummary, 60000)
+    return () => {
+      active = false
+      globalThis.clearInterval(timer)
+    }
   }, [user])
 
   const requestRun = () => setRunKey((k) => k + 1)
@@ -83,6 +105,7 @@ export default function App() {
   async function logout() {
     try { await logoutAccount() } catch { /* session may already be invalid */ }
     setUser(null)
+    setTaskSummary(null)
     setAuthView('login')
     setAuthNotice('')
     setTab('overview')
@@ -133,6 +156,7 @@ export default function App() {
   const tabs = user.role === 'admin'
     ? [...BASE_TABS, { id: 'admin', label: '系统管理', icon: Shield }]
     : BASE_TABS
+  const openTaskCount = Math.max(0, Number(taskSummary?.open_count) || 0)
 
   return (
     <>
@@ -153,6 +177,11 @@ export default function App() {
                   onClick={() => setTab(t.id)}>
                   <Icon size={16} strokeWidth={2} aria-hidden="true" />
                   <span>{t.label}</span>
+                  {t.id === 'overview' && openTaskCount > 0 && (
+                    <span className="tab-task-badge" aria-label={`${openTaskCount} 项待处理任务`}>
+                      {openTaskCount > 99 ? '99+' : openTaskCount}
+                    </span>
+                  )}
                 </button>
               )
             })}
@@ -177,7 +206,7 @@ export default function App() {
         </div>
 
         <Suspense fallback={<div className="page-loading"><span className="spinner" />正在加载工作区</div>}>
-          {tab === 'overview' && <DashboardTab goPortfolio={goPortfolio} goFunds={goFunds} goMarket={goMarket} goAgent={goAgent} />}
+          {tab === 'overview' && <DashboardTab goPortfolio={goPortfolio} goFunds={goFunds} goMarket={goMarket} goAgent={goAgent} onTaskSummaryChange={setTaskSummary} />}
           {tab === 'agent' && <AgentTab />}
           {tab === 'admin' && user.role === 'admin' && <AdminTab currentUser={user} />}
           {tab === 'portfolio' && <PortfolioTab goAnalyze={goAnalyze} activeView={portfolioView} onViewChange={setPortfolioView} />}

@@ -16,7 +16,7 @@ import decision_center  # noqa: E402
 
 class DecisionCenterTests(unittest.TestCase):
     def setUp(self):
-        def fake_sync(actions, **_kwargs):
+        def fake_sync(actions, **kwargs):
             items = [
                 {
                     "id": f"task-{item['id']}",
@@ -41,6 +41,7 @@ class DecisionCenterTests(unittest.TestCase):
                     "resolved_count": 0,
                     "active_count": len(items),
                 },
+                "resolution_deferred": not kwargs.get("resolve_absent", True),
             }
 
         self.task_sync = patch.object(
@@ -172,6 +173,7 @@ class DecisionCenterTests(unittest.TestCase):
         self.assertEqual(result["portfolio"]["status"], "available")
         self.assertEqual(result["market"]["status"], "available")
         self.assertEqual(result["task_inbox"]["status"], "available")
+        self.assertFalse(result["task_inbox"]["resolution_deferred"])
         self.assertTrue(all(item.get("task") for item in result["actions"]))
 
     def test_unavailable_market_is_explicit_and_not_replaced(self):
@@ -208,6 +210,7 @@ class DecisionCenterTests(unittest.TestCase):
         self.assertEqual(result["market"]["status"], "unavailable")
         self.assertEqual(result["market"]["error"], "provider down")
         self.assertEqual(result["summary"]["unavailable_count"], 1)
+        self.assertTrue(result["task_inbox"]["resolution_deferred"])
 
     def test_ledger_failure_does_not_hide_available_holding_review(self):
         portfolio = {
@@ -267,6 +270,32 @@ class DecisionCenterTests(unittest.TestCase):
 
         action_ids = {item["id"] for item in result["actions"]}
         self.assertIn("complete-cashflow-performance", action_ids)
+
+    def test_overlap_failure_preserves_previous_overlap_risk(self):
+        portfolio = {
+            "source": "confirmed holdings",
+            "summary": {"holding_count": 1, "total_amount": 1000, "top1_ratio": 100, "top3_ratio": 100},
+            "allocation": [{"asset_type": "fund", "code": "000001", "name": "Fund A", "amount": 1000}],
+            "fund_trends": [],
+            "fund_errors": [],
+            "overlap": None,
+            "overlap_error": "overlap provider down",
+            "notes": [],
+        }
+        market = {"as_of": "2026-07-10", "summary": {}, "risks": [], "fund_candidates": [], "failed": [], "method": {}}
+        profile = {"risk": "balanced", "horizon": "mid_long", "max_single_ratio": 100, "configured": True}
+
+        with patch.object(decision_center.storage, "get_investment_profile", return_value=profile), \
+             patch.object(decision_center.holdings_mod, "holdings_insights", return_value=portfolio), \
+             patch.object(decision_center.market_daily_mod, "get_market_daily", return_value=market), \
+             patch.object(decision_center.portfolio_review, "ledger_overview", return_value={"summary": {"transaction_count": 1}, "integrity_issues": []}), \
+             patch.object(decision_center.portfolio_review, "rebalance_review", return_value={"allocations": []}), \
+             patch.object(decision_center.portfolio_review, "cashflow_performance", return_value={"status": "available", "summary": {}, "reasons": []}):
+            result = decision_center.build_decision_center()
+
+        self.assertIn("fund-overlap-unavailable", {item["id"] for item in result["actions"]})
+        self.assertTrue(result["task_inbox"]["resolution_deferred"])
+        self.assertIn("基金持仓重合度", {item["scope"] for item in result["unavailable"]})
 
 
 if __name__ == "__main__":

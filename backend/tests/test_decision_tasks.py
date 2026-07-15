@@ -126,6 +126,25 @@ class DecisionTaskStorageTests(unittest.TestCase):
             "task.changed",
         )
 
+    def test_incomplete_evidence_never_auto_resolves_existing_risk(self):
+        task = storage.sync_decision_tasks([action()], user_id="user-a")["items"][0]
+
+        result = storage.sync_decision_tasks(
+            [],
+            user_id="user-a",
+            resolve_absent=False,
+            observed_at="2026-07-15T03:00:00.000+00:00",
+        )
+
+        current = storage.list_decision_tasks(user_id="user-a")["items"][0]
+        self.assertTrue(result["resolution_deferred"])
+        self.assertEqual(current["id"], task["id"])
+        self.assertEqual(current["status"], "open")
+        self.assertEqual(
+            [item["event_type"] for item in storage.list_decision_task_events(task["id"], user_id="user-a")],
+            ["task.created"],
+        )
+
     def test_snooze_limits_and_elapsed_reopen_are_priority_aware(self):
         task = storage.sync_decision_tasks([action()], user_id="user-a")["items"][0]
         with self.assertRaises(storage.DecisionTaskValidationError):

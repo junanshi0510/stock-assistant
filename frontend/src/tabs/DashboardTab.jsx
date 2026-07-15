@@ -24,7 +24,7 @@ function SummaryMetric({ label, value, tone = '' }) {
   return <div className="overview-metric"><span>{label}</span><b className={tone}>{value}</b></div>
 }
 
-export default function DashboardTab({ goPortfolio, goFunds, goMarket, goAgent }) {
+export default function DashboardTab({ goPortfolio, goFunds, goMarket, goAgent, onTaskSummaryChange }) {
   const [decision, setDecision] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -33,7 +33,9 @@ export default function DashboardTab({ goPortfolio, goFunds, goMarket, goAgent }
     setLoading(true)
     setError('')
     try {
-      setDecision(await fetchDecisionCenter())
+      const result = await fetchDecisionCenter()
+      setDecision(result)
+      onTaskSummaryChange?.(result?.task_inbox?.summary || null)
     } catch (requestError) {
       setError(requestError.message || '真实投资决策数据获取失败')
     } finally {
@@ -63,6 +65,7 @@ export default function DashboardTab({ goPortfolio, goFunds, goMarket, goAgent }
   function taskUpdated(result) {
     const task = result?.task
     if (!task) return
+    onTaskSummaryChange?.(result.summary || null)
     setDecision((current) => current ? {
       ...current,
       task_inbox: {

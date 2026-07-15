@@ -1,8 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   AlertTriangle,
   ArrowUpRight,
   BadgeCheck,
+  CalendarClock,
   ChartNoAxesCombined,
   CheckCheck,
   ChevronDown,
@@ -13,13 +14,19 @@ import {
   History,
   Layers3,
   ReceiptText,
+  Play,
   RefreshCw,
   RotateCcw,
   Settings2,
   ShieldCheck,
   WalletCards,
 } from 'lucide-react'
-import { fetchDecisionTasks, updateDecisionTask } from '../../api/portfolio'
+import {
+  configureDecisionCheckSchedule,
+  fetchDecisionCheckSchedule,
+  fetchDecisionTasks,
+  updateDecisionTask,
+} from '../../api/portfolio'
 
 const PRIORITY_META = {
   high: { label: '优先处理', icon: AlertTriangle },
@@ -32,6 +39,12 @@ const TASK_STATUS_META = {
   snoozed: '稍后处理',
   acknowledged: '已确认',
   resolved: '已解决',
+}
+
+const CHECK_RESULT_META = {
+  succeeded: '完整完成',
+  partial: '部分完成',
+  failed: '执行失败',
 }
 
 function actionIcon(category) {
@@ -59,6 +72,12 @@ export default function DecisionCenter({ data, loading, error, onRefresh, onNavi
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyError, setHistoryError] = useState('')
   const [resolvedHistory, setResolvedHistory] = useState([])
+  const [checkSchedule, setCheckSchedule] = useState(null)
+  const [checkAudit, setCheckAudit] = useState(null)
+  const [checkInterval, setCheckInterval] = useState(24)
+  const [checkLoading, setCheckLoading] = useState(true)
+  const [checkBusy, setCheckBusy] = useState(false)
+  const [checkError, setCheckError] = useState('')
   const profile = data?.profile
   const summary = data?.summary || {}
   const actions = data?.actions || []
@@ -69,6 +88,57 @@ export default function DecisionCenter({ data, loading, error, onRefresh, onNavi
     ? actions.filter((action) => !action.task || action.task.status === 'open')
     : actions
   const visibleActions = showAll ? filteredActions : filteredActions.slice(0, 5)
+
+  useEffect(() => {
+    let active = true
+    async function loadSchedule(verifyAudit = false) {
+      try {
+        const result = await fetchDecisionCheckSchedule(verifyAudit)
+        if (!active) return
+        setCheckSchedule(result.schedule || null)
+        if (result.audit) setCheckAudit(result.audit)
+        setCheckInterval(Number(result.schedule?.interval_hours || 24))
+        setCheckError('')
+      } catch (requestError) {
+        if (active) setCheckError(requestError.message || '自动检查计划读取失败')
+      } finally {
+        if (active) setCheckLoading(false)
+      }
+    }
+    loadSchedule(true)
+    const timer = globalThis.setInterval(() => loadSchedule(false), 30000)
+    return () => {
+      active = false
+      globalThis.clearInterval(timer)
+    }
+  }, [])
+
+  async function saveCheckSchedule(enabled, intervalHours, runImmediately = false) {
+    if (checkBusy) return
+    setCheckBusy(true)
+    setCheckError('')
+    try {
+      const result = await configureDecisionCheckSchedule({
+        enabled,
+        intervalHours,
+        runImmediately,
+        expectedRevision: checkSchedule?.revision ?? null,
+      })
+      setCheckSchedule(result.schedule || null)
+      setCheckAudit(result.audit || null)
+      setCheckInterval(Number(result.schedule?.interval_hours || intervalHours))
+    } catch (requestError) {
+      setCheckError(requestError.message || '自动检查计划更新失败')
+    } finally {
+      setCheckBusy(false)
+    }
+  }
+
+  function changeCheckInterval(event) {
+    const nextInterval = Number(event.target.value)
+    setCheckInterval(nextInterval)
+    if (checkSchedule?.enabled) saveCheckSchedule(true, nextInterval, false)
+  }
 
   async function changeTask(task, status, snoozeHours = null) {
     if (!task?.id || taskBusy) return
@@ -142,6 +212,62 @@ export default function DecisionCenter({ data, loading, error, onRefresh, onNavi
         </div>
       )}
       {inbox.status === 'unavailable' && <div className="warning-line">任务收件箱不可用：{inbox.error}</div>}
+      {inbox.resolution_deferred && (
+        <div className="warning-line">本轮真实来源不完整，旧风险已保留，未执行自动解决。</div>
+      )}
+
+      <div className={`decision-check-schedule ${checkSchedule?.enabled ? 'active' : ''}`}>
+        <div className="decision-check-title">
+          <CalendarClock size={18} aria-hidden="true" />
+          <div>
+            <span>持仓自动检查</span>
+            <b>{checkSchedule?.running
+              ? '检查中'
+              : checkSchedule?.enabled
+                ? '已开启'
+                : '已暂停'}</b>
+          </div>
+        </div>
+        <div className="decision-check-facts" aria-live="polite">
+          <div><span>最近结果</span><b className={checkSchedule?.last_result_status || ''}>{CHECK_RESULT_META[checkSchedule?.last_result_status] || '尚未执行'}</b></div>
+          <div><span>待处理</span><b>{checkSchedule?.last_open_count ?? '-'}</b></div>
+          <div><span>下次检查</span><b>{checkSchedule?.next_run_at ? formatTime(checkSchedule.next_run_at) : '-'}</b></div>
+          <div><span>审计链</span><b>{checkAudit?.verified ? '已验证' : checkSchedule ? '待核验' : '-'}</b></div>
+        </div>
+        <div className="decision-check-controls">
+          <label className="decision-check-toggle">
+            <input
+              type="checkbox"
+              checked={Boolean(checkSchedule?.enabled)}
+              disabled={checkLoading || checkBusy}
+              onChange={(event) => saveCheckSchedule(event.target.checked, checkInterval, event.target.checked)}
+            />
+            <span>自动检查</span>
+          </label>
+          <label className="decision-check-interval">
+            <span>周期</span>
+            <select value={checkInterval} onChange={changeCheckInterval} disabled={checkLoading || checkBusy}>
+              <option value={24}>每日</option>
+              <option value={72}>每 3 日</option>
+              <option value={168}>每周</option>
+            </select>
+          </label>
+          <button
+            type="button"
+            className="ghost"
+            onClick={() => saveCheckSchedule(true, checkInterval, true)}
+            disabled={checkLoading || checkBusy || !checkSchedule?.enabled || checkSchedule?.running}
+            title="立即排队检查真实数据"
+          >
+            {checkBusy ? <RefreshCw size={15} className="spin-icon" aria-hidden="true" /> : <Play size={15} aria-hidden="true" />}
+            <span>立即检查</span>
+          </button>
+        </div>
+      </div>
+      {checkError && <div className="error decision-check-error">{checkError}</div>}
+      {checkSchedule?.last_error_message && (
+        <div className="warning-line">{checkSchedule.last_error_code}：{checkSchedule.last_error_message}</div>
+      )}
 
       <div className={`decision-policy-gate ${profile?.configured ? 'active' : 'inactive'}`}>
         <ShieldCheck size={19} aria-hidden="true" />
@@ -245,7 +371,7 @@ export default function DecisionCenter({ data, loading, error, onRefresh, onNavi
         </details>
       )}
 
-      <div className="decision-footnote">更新于 {formatTime(data?.generated_at)}。确认仅表示用户已知晓；只有触发条件不再出现在真实证据中，任务才会自动解决。</div>
+      <div className="decision-footnote">更新于 {formatTime(data?.generated_at)}。确认仅表示用户已知晓；只有完整真实证据确认触发条件消失，任务才会自动解决。</div>
     </section>
   )
 }

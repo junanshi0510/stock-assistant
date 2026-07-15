@@ -54,6 +54,17 @@ def private_task() -> dict:
 
 
 class DecisionTaskApiTests(unittest.TestCase):
+    def test_summary_uses_subject_scope_without_market_refresh(self):
+        with patch.object(
+            portfolio_router.storage,
+            "get_decision_task_summary",
+            return_value={"open_count": 2, "generated_at": "2026-07-15T01:00:00+00:00"},
+        ) as mocked:
+            result = portfolio_router.get_decision_task_summary(principal=principal())
+
+        mocked.assert_called_once_with(user_id="portfolio-user-a")
+        self.assertEqual(result["open_count"], 2)
+
     def test_list_scopes_to_subject_and_hides_internal_identity_fields(self):
         with patch.object(portfolio_router.storage, "list_decision_tasks", return_value={
             "items": [private_task()],
@@ -164,6 +175,86 @@ class DecisionTaskApiTests(unittest.TestCase):
 
         self.assertEqual([item["actor"] for item in result["items"]], ["system", "user"])
         self.assertTrue(all("actor_id" not in item for item in result["items"]))
+
+    def test_schedule_configuration_binds_subject_actor_and_hides_lease(self):
+        private_schedule = {
+            "id": "decision-check-a",
+            "user_id": "portfolio-user-a",
+            "status": "active",
+            "enabled": True,
+            "running": True,
+            "interval_hours": 24,
+            "revision": 3,
+            "next_run_at": "2026-07-15T02:00:00+00:00",
+            "lease_owner": "internal-worker-id",
+            "lease_expires_at": "2026-07-15T02:02:00+00:00",
+        }
+        request = portfolio_router.DecisionCheckScheduleRequest(
+            enabled=True,
+            interval_hours=24,
+            run_immediately=True,
+            expected_revision=2,
+        )
+        with (
+            patch.object(
+                portfolio_router.storage,
+                "configure_decision_check_schedule",
+                return_value=(private_schedule, True),
+            ) as mocked,
+            patch.object(
+                portfolio_router.storage,
+                "verify_decision_check_audit",
+                return_value={"verified": True},
+            ),
+        ):
+            result = portfolio_router.configure_decision_check_schedule(
+                request,
+                principal=principal(),
+            )
+
+        mocked.assert_called_once_with(
+            "portfolio-user-a",
+            enabled=True,
+            interval_hours=24,
+            run_immediately=True,
+            expected_revision=2,
+            actor_id="auth-user-a",
+        )
+        self.assertTrue(result["schedule"]["running"])
+        self.assertNotIn("id", result["schedule"])
+        self.assertNotIn("user_id", result["schedule"])
+        self.assertNotIn("lease_owner", result["schedule"])
+
+    def test_schedule_poll_skips_full_audit_unless_requested(self):
+        private_schedule = {
+            "id": "decision-check-a",
+            "user_id": "portfolio-user-a",
+            "status": "active",
+            "enabled": True,
+            "running": False,
+            "interval_hours": 24,
+            "revision": 1,
+        }
+        with (
+            patch.object(
+                portfolio_router.storage,
+                "get_decision_check_schedule",
+                return_value=private_schedule,
+            ) as schedule_mock,
+            patch.object(
+                portfolio_router.storage,
+                "verify_decision_check_audit",
+                return_value={"verified": True},
+            ) as audit_mock,
+        ):
+            result = portfolio_router.get_decision_check_schedule(
+                verify_audit=False,
+                principal=principal(),
+            )
+
+        schedule_mock.assert_called_once_with(user_id="portfolio-user-a")
+        audit_mock.assert_not_called()
+        self.assertIsNone(result["audit"])
 
 
 if __name__ == "__main__":

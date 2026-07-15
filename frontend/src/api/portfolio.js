@@ -92,6 +92,33 @@ export function fetchDecisionTasks({ status = '', includeResolved = false, limit
   return getJson(`/api/decision-tasks?${query.toString()}`)
 }
 
+export function fetchDecisionTaskSummary() {
+  return getJson('/api/decision-tasks/summary')
+}
+
+export function fetchDecisionCheckSchedule(verifyAudit = false) {
+  return getJson(`/api/decision-check-schedule?verify_audit=${String(verifyAudit)}`)
+}
+
+export function configureDecisionCheckSchedule({
+  enabled,
+  intervalHours,
+  runImmediately = false,
+  expectedRevision = null,
+}) {
+  const payload = {
+    enabled,
+    interval_hours: intervalHours,
+    run_immediately: runImmediately,
+  }
+  if (expectedRevision != null) payload.expected_revision = expectedRevision
+  return getJson('/api/decision-check-schedule', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
 export function updateDecisionTask(taskId, status, expectedRevision, snoozeHours = null) {
   const payload = { status, expected_revision: expectedRevision }
   if (status === 'snoozed') payload.snooze_hours = snoozeHours

@@ -13,6 +13,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 import monitor
+from decision_check_worker import (
+    start_worker as start_decision_check_worker,
+    stop_worker as stop_decision_check_worker,
+)
 from auth import (
     AuthPrincipal,
     LEGACY_PRINCIPAL,
@@ -119,6 +123,16 @@ app.include_router(market.router)
 app.include_router(funds.router)
 app.include_router(portfolio.router)
 app.include_router(agent.router)
+
+
+@app.on_event("startup")
+def start_decision_check_scheduler():
+    start_decision_check_worker()
+
+
+@app.on_event("shutdown")
+def stop_decision_check_scheduler():
+    stop_decision_check_worker()
 
 # Each process owns one daemon monitor. It only evaluates user-confirmed watchlist data.
 monitor.start_monitor(interval_seconds=3600)
