@@ -23,6 +23,7 @@ import {
   cancelAgentBatch,
   cancelAgentRun,
   createAgentBatchAllocation,
+  createAgentBatchPurchasePreflight,
   createFundResearchBatch,
   createFundResearchRun,
   fetchAgentBatch,
@@ -442,6 +443,7 @@ export default function AgentTab() {
   const [batchHistory, setBatchHistory] = useState([])
   const [loadingBatch, setLoadingBatch] = useState(false)
   const [allocatingBatch, setAllocatingBatch] = useState(false)
+  const [reviewingBatchPurchase, setReviewingBatchPurchase] = useState(false)
   const [loading, setLoading] = useState(false)
   const [history, setHistory] = useState({ items: [], next_cursor: null, has_more: false })
   const [loadingHistory, setLoadingHistory] = useState(false)
@@ -807,6 +809,23 @@ export default function AgentTab() {
     }
   }
 
+  async function reviewBatchPurchase(payload) {
+    if (!batch?.id) return false
+    setReviewingBatchPurchase(true)
+    setError('')
+    try {
+      const data = await createAgentBatchPurchasePreflight(batch.id, payload)
+      setBatch(data.batch)
+      loadBatchHistory()
+      return true
+    } catch (requestError) {
+      setError(requestError.message || '批量基金申购执行前复核失败')
+      return false
+    } finally {
+      setReviewingBatchPurchase(false)
+    }
+  }
+
   async function cancelBatch() {
     if (!batch?.id) return
     setLoadingBatch(true)
@@ -1156,11 +1175,13 @@ export default function AgentTab() {
         batch={batch}
         loading={loadingBatch}
         allocating={allocatingBatch}
+        reviewingPurchase={reviewingBatchPurchase}
         selectedRunId={run?.id || ''}
         onRefresh={() => loadBatch(batch?.id)}
         onCancel={cancelBatch}
         onSelectRun={loadRun}
         onCreateAllocation={allocateBatchBudget}
+        onReviewPurchase={reviewBatchPurchase}
       />
 
       <section className="agent-history-panel" aria-label="Agent 运行历史">

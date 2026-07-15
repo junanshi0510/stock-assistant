@@ -115,6 +115,7 @@ EXPECTED_OPERATIONS = {
     "/api/v1/agent/batches": {"GET", "POST"},
     "/api/v1/agent/batches/{batch_id}": {"GET"},
     "/api/v1/agent/batches/{batch_id}/allocation": {"POST"},
+    "/api/v1/agent/batches/{batch_id}/purchase-preflight": {"POST"},
     "/api/v1/agent/batches/{batch_id}/cancel": {"POST"},
     "/api/v1/agent/runs": {"GET", "POST"},
     "/api/v1/agent/runs/{run_id}": {"GET"},
@@ -156,6 +157,26 @@ class RouteContractTests(unittest.TestCase):
             "expected_quote_event_hash",
             "acknowledged_holding_thesis",
         })
+
+    def test_batch_purchase_preflight_requires_snapshot_and_platform_facts(self):
+        schemas = app.openapi()["components"]["schemas"]
+        request_required = set(
+            schemas["CreateBatchPurchasePreflightRequest"]["required"]
+        )
+        quote_required = set(schemas["BatchPurchaseQuoteRequest"]["required"])
+        self.assertEqual(request_required, {
+            "expected_allocation_event_id",
+            "expected_allocation_event_hash",
+            "acknowledged_platform_quotes",
+            "quotes",
+        })
+        self.assertTrue({
+            "code",
+            "platform_name",
+            "quoted_at",
+            "order_amount_yuan",
+            "purchase_status",
+        }.issubset(quote_required))
 
     def test_fund_switch_lifecycle_evidence_bindings_are_required(self):
         schemas = app.openapi()["components"]["schemas"]

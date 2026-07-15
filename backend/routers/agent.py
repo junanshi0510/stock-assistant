@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+from datetime import date, datetime
 import json
 import os
 import re
@@ -15,7 +16,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 import storage
 from auth import AuthPrincipal, principal_from_request
-from agent import batch_allocations
+from agent import batch_allocations, batch_purchase_preflight
 from agent.batches import summarize_batch
 from agent.comparison import compare_run_results
 from agent.outcomes import DecisionOutcomeService, OutcomeEvaluationError
@@ -127,6 +128,50 @@ class CreateBatchAllocationRequest(BaseModel):
     expected_batch_input_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class BatchPurchaseQuoteRequest(BaseModel):
+    code: str = Field(pattern=r"^\d{6}$")
+    platform_name: str = Field(min_length=2, max_length=80)
+    quoted_at: datetime
+    currency: Literal["CNY"] = "CNY"
+    order_amount_yuan: float = Field(gt=0, le=100_000_000)
+    entry_fee_yuan: float | None = Field(default=None, ge=0, le=10_000_000)
+    purchase_status: Literal["available", "limited", "unavailable", "unknown"]
+    purchase_limit_yuan: float | None = Field(default=None, gt=0, le=100_000_000)
+    expected_confirmation_date: date | None = None
+
+    @field_validator("platform_name")
+    @classmethod
+    def normalize_platform_name(cls, value: str) -> str:
+        return re.sub(r"\s+", " ", value).strip()
+
+    @field_validator("quoted_at")
+    @classmethod
+    def require_quote_timezone(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("平台报价时间必须包含时区")
+        return value
+
+
+class CreateBatchPurchasePreflightRequest(BaseModel):
+    expected_allocation_event_id: str = Field(min_length=8, max_length=120)
+    expected_allocation_event_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_previous_event_hash: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    acknowledged_platform_quotes: bool
+    quotes: list[BatchPurchaseQuoteRequest] = Field(min_length=1, max_length=8)
+
+    @model_validator(mode="after")
+    def validate_quote_set(self):
+        codes = [quote.code for quote in self.quotes]
+        if len(codes) != len(set(codes)):
+            raise ValueError("同一基金只能提交一条本次平台报价")
+        if not self.acknowledged_platform_quotes:
+            raise ValueError("必须确认全部信息来自销售平台本次申购页")
+        return self
+
+
 class OutcomeScheduleRequest(BaseModel):
     enabled: bool
     interval_hours: int = Field(default=24, ge=12, le=168)
@@ -169,6 +214,18 @@ def _get_batch_or_404(batch_id: str, principal: object) -> dict:
     if batch is None or not _can_access(str(batch.get("user_id") or ""), principal):
         raise HTTPException(status_code=404, detail="Agent Batch 不存在")
     return batch
+
+
+def _summarize_batch_public(batch: dict) -> dict:
+    summary = summarize_batch(batch)
+    summary["purchase_preflight"] = (
+        batch_purchase_preflight.decorate_batch_purchase_preflight(
+            repository,
+            batch,
+            user_id=str(batch.get("user_id") or "anonymous"),
+        )
+    )
+    return summary
 
 
 def _encode_cursor(run: dict) -> str:
@@ -393,7 +450,7 @@ def create_agent_batch(
     if idempotency_key:
         existing = repository.get_batch_by_idempotency_key(user_id, idempotency_key)
         if existing is not None:
-            return {"created": False, "batch": summarize_batch(existing)}
+            return {"created": False, "batch": _summarize_batch_public(existing)}
 
     max_batch_size = max(2, min(8, int(os.getenv("AGENT_MAX_BATCH_SIZE", "6"))))
     if len(request.codes) > max_batch_size:
@@ -430,7 +487,7 @@ def create_agent_batch(
             ),
         ) from error
     start_worker()
-    return {"created": created, "batch": summarize_batch(batch)}
+    return {"created": created, "batch": _summarize_batch_public(batch)}
 
 
 @router.get("/batches")
@@ -439,7 +496,7 @@ def list_agent_batches(
     principal: AuthPrincipal = Depends(principal_from_request),
 ):
     items = [
-        summarize_batch(batch)
+        _summarize_batch_public(batch)
         for batch in repository.list_batches(
             tenant_id="public",
             user_id=_agent_user_id(principal),
@@ -454,7 +511,7 @@ def get_agent_batch(
     batch_id: str,
     principal: AuthPrincipal = Depends(principal_from_request),
 ):
-    return summarize_batch(_get_batch_or_404(batch_id, principal))
+    return _summarize_batch_public(_get_batch_or_404(batch_id, principal))
 
 
 @router.post("/batches/{batch_id}/allocation")
@@ -482,7 +539,36 @@ def create_agent_batch_allocation(
     return {
         "created": created,
         "allocation_event_id": event.get("id"),
-        "batch": summarize_batch(refreshed),
+        "batch": _summarize_batch_public(refreshed),
+    }
+
+
+@router.post("/batches/{batch_id}/purchase-preflight")
+def create_agent_batch_purchase_preflight(
+    batch_id: str,
+    request: CreateBatchPurchasePreflightRequest,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    batch = _get_batch_or_404(batch_id, principal)
+    try:
+        event, created = batch_purchase_preflight.create_batch_purchase_preflight(
+            repository,
+            batch,
+            request.model_dump(mode="json"),
+            user_id=str(batch.get("user_id") or "anonymous"),
+            actor_id=_actor_id(principal),
+        )
+    except batch_purchase_preflight.BatchPurchasePreflightValidationError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except batch_purchase_preflight.BatchPurchasePreflightConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    refreshed = repository.get_batch(batch_id)
+    if refreshed is None:
+        raise HTTPException(status_code=404, detail="Agent Batch 不存在")
+    return {
+        "created": created,
+        "purchase_preflight_event_id": event.get("id"),
+        "batch": _summarize_batch_public(refreshed),
     }
 
 
@@ -502,7 +588,7 @@ def cancel_agent_batch(
     refreshed = repository.get_batch(batch_id)
     return {
         "cancel_requested_count": requested,
-        "batch": summarize_batch(refreshed or batch),
+        "batch": _summarize_batch_public(refreshed or batch),
     }
 
 

@@ -48,6 +48,14 @@ export function createAgentBatchAllocation(batchId, expectedBatchInputHash) {
   })
 }
 
+export function createAgentBatchPurchasePreflight(batchId, payload) {
+  return getJson(`/api/v1/agent/batches/${encodeURIComponent(batchId)}/purchase-preflight`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
 export function fetchAgentModelStatus() {
   return getJson('/api/v1/agent/model/status')
 }
