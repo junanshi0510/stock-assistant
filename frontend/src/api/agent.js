@@ -40,6 +40,14 @@ export function cancelAgentBatch(batchId) {
   return getJson(`/api/v1/agent/batches/${encodeURIComponent(batchId)}/cancel`, { method: 'POST' })
 }
 
+export function createAgentBatchAllocation(batchId, expectedBatchInputHash) {
+  return getJson(`/api/v1/agent/batches/${encodeURIComponent(batchId)}/allocation`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expected_batch_input_hash: expectedBatchInputHash }),
+  })
+}
+
 export function fetchAgentModelStatus() {
   return getJson('/api/v1/agent/model/status')
 }

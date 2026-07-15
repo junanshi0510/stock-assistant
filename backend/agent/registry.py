@@ -200,8 +200,8 @@ def build_default_registry(
     ))
     registry.register(ToolDefinition(
         name="fund.personalized_decision.evaluate",
-        version="1.3.0",
-        description="把已发布策略、基金研究 Evidence 与用户组合 Evidence 代入版本化风险门禁和金额策略。",
+        version="1.4.0",
+        description="把已发布策略、基金研究 Evidence 与用户组合 Evidence 代入版本化风险门禁；批量模式只输出容量，不复制总预算。",
         risk_level="R1",
         timeout_seconds=5,
         handler=lambda payload: {
@@ -212,6 +212,7 @@ def build_default_registry(
                 payload.get("exposure"),
                 payload.get("strategy_governance"),
                 planned_amount=payload.get("planned_amount"),
+                allocation_scope=payload.get("allocation_scope") or "single_fund",
             ),
             "input_evidence_ids": payload.get("input_evidence_ids") or [],
         },

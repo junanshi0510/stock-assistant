@@ -114,6 +114,7 @@ EXPECTED_OPERATIONS = {
     "/api/v1/agent/strategies/{strategy_id}/{strategy_version}/shadow-outcomes": {"GET"},
     "/api/v1/agent/batches": {"GET", "POST"},
     "/api/v1/agent/batches/{batch_id}": {"GET"},
+    "/api/v1/agent/batches/{batch_id}/allocation": {"POST"},
     "/api/v1/agent/batches/{batch_id}/cancel": {"POST"},
     "/api/v1/agent/runs": {"GET", "POST"},
     "/api/v1/agent/runs/{run_id}": {"GET"},

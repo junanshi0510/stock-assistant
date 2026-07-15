@@ -11,10 +11,11 @@ import re
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 import storage
 from auth import AuthPrincipal, principal_from_request
+from agent import batch_allocations
 from agent.batches import summarize_batch
 from agent.comparison import compare_run_results
 from agent.outcomes import DecisionOutcomeService, OutcomeEvaluationError
@@ -79,6 +80,8 @@ class CreateAgentBatchRequest(BaseModel):
     include_market_intelligence: bool = True
     include_ai_synthesis: bool = True
     include_portfolio_context: bool = True
+    planned_amount: float | None = Field(default=None, gt=0, le=100_000_000)
+    acknowledged_available_cash: bool = False
     question: str = Field(
         default="比较这些基金未来 3-12 个月的市场证据、底层持仓、风险和组合重合度，我应该如何逐只管理？",
         min_length=8,
@@ -106,6 +109,22 @@ class CreateAgentBatchRequest(BaseModel):
         if len(question) < 8:
             raise ValueError("研究目标至少需要 8 个字符")
         return question
+
+    @model_validator(mode="after")
+    def validate_batch_budget(self):
+        if self.planned_amount is not None and not self.acknowledged_available_cash:
+            raise ValueError("填写批次总预算时，必须确认资金尚未投入且不占用应急资金")
+        if self.acknowledged_available_cash and self.planned_amount is None:
+            raise ValueError("确认可用资金前必须填写本批次唯一总预算")
+        if self.planned_amount is not None and not self.include_portfolio_context:
+            raise ValueError("批次资金分配必须启用真实持仓与投资政策")
+        if self.planned_amount is not None and not self.include_market_intelligence:
+            raise ValueError("批次资金分配必须启用真实披露持仓情报以核验基金重合度")
+        return self
+
+
+class CreateBatchAllocationRequest(BaseModel):
+    expected_batch_input_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class OutcomeScheduleRequest(BaseModel):
@@ -436,6 +455,35 @@ def get_agent_batch(
     principal: AuthPrincipal = Depends(principal_from_request),
 ):
     return summarize_batch(_get_batch_or_404(batch_id, principal))
+
+
+@router.post("/batches/{batch_id}/allocation")
+def create_agent_batch_allocation(
+    batch_id: str,
+    request: CreateBatchAllocationRequest,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    batch = _get_batch_or_404(batch_id, principal)
+    try:
+        event, created = batch_allocations.create_batch_allocation(
+            repository,
+            batch,
+            expected_batch_input_hash=request.expected_batch_input_hash,
+            user_id=_agent_user_id(principal),
+            actor_id=_actor_id(principal),
+        )
+    except batch_allocations.BatchAllocationValidationError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except batch_allocations.BatchAllocationConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    refreshed = repository.get_batch(batch_id)
+    if refreshed is None:
+        raise HTTPException(status_code=404, detail="Agent Batch 不存在")
+    return {
+        "created": created,
+        "allocation_event_id": event.get("id"),
+        "batch": summarize_batch(refreshed),
+    }
 
 
 @router.post("/batches/{batch_id}/cancel")

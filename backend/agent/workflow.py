@@ -886,11 +886,12 @@ class AgentWorkflowRunner:
             decision_step = WorkflowStep(
                 key="personalized_decision",
                 tool_name="fund.personalized_decision.evaluate",
-                tool_version="1.3.0",
+                tool_version="1.4.0",
                 required=True,
                 input_payload={
                     "code": code,
                     "planned_amount": payload.get("planned_amount"),
+                    "allocation_scope": payload.get("allocation_scope") or "single_fund",
                     "input_evidence_ids": source_evidence_ids,
                 },
                 runtime_input_payload={
@@ -900,6 +901,7 @@ class AgentWorkflowRunner:
                     "exposure": outputs["portfolio_exposure"],
                     "strategy_governance": outputs["strategy_governance"],
                     "planned_amount": payload.get("planned_amount"),
+                    "allocation_scope": payload.get("allocation_scope") or "single_fund",
                     "input_evidence_ids": source_evidence_ids,
                 },
             )

@@ -356,6 +356,7 @@ def _personalized_decision(payload):
         payload["exposure"],
         payload["strategy_governance"],
         planned_amount=payload.get("planned_amount"),
+        allocation_scope=payload.get("allocation_scope", "single_fund"),
     )
     result["input_evidence_ids"] = payload.get("input_evidence_ids") or []
     return result
@@ -436,7 +437,7 @@ def _registry(
     ))
     registry.register(ToolDefinition(
         name="fund.personalized_decision.evaluate",
-        version="1.3.0",
+        version="1.4.0",
         description="fund.personalized_decision.evaluate",
         risk_level="R1",
         timeout_seconds=5,

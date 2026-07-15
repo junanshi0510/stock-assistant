@@ -211,6 +211,27 @@ class PersonalizedFundDecisionTests(unittest.TestCase):
         self.assertEqual(result["budget"]["first_tranche_amount"], 250)
         self.assertEqual(result["portfolio"]["projected_ratio_after_full_amount"], 18.18)
 
+    def test_batch_child_exposes_capacity_but_never_copies_the_total_budget(self):
+        result = evaluate_personalized_fund_decision(
+            _analysis(),
+            _context(),
+            _market(),
+            _exposure(),
+            _governance(),
+            planned_amount=1_000,
+            allocation_scope="portfolio_batch",
+        )
+
+        self.assertEqual(result["decision"]["action"], "batch_allocation_pending")
+        self.assertIsNone(result["budget"]["allowed_full_amount"])
+        self.assertIsNone(result["budget"]["first_tranche_amount"])
+        self.assertTrue(result["batch_allocation"]["eligible"])
+        self.assertEqual(result["batch_allocation"]["maximum_candidate_amount"], 1_000)
+        self.assertEqual(
+            result["batch_allocation"]["basis"]["portfolio_holdings_sha256"],
+            "b" * 64,
+        )
+
     def test_shadow_strategy_is_preserved_as_research_but_cannot_return_money(self):
         result = evaluate_personalized_fund_decision(
             _analysis(),
@@ -278,7 +299,7 @@ class PersonalizedFundDecisionTests(unittest.TestCase):
             _analysis(max_drawdown=-22), context, _market(), _exposure(), _governance(), planned_amount=1000
         )
 
-        self.assertEqual(result["strategy_version"], "1.3.0")
+        self.assertEqual(result["strategy_version"], "1.4.0")
         self.assertEqual(result["decision"]["action"], "do_not_add")
         gate = next(item for item in result["gates"] if item["code"] == "drawdown_capacity")
         self.assertEqual(gate["status"], "block")

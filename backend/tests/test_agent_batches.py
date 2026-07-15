@@ -126,6 +126,10 @@ class AgentBatchTests(unittest.TestCase):
         self.assertEqual(batch["id"], repeated["id"])
         self.assertEqual([item["code"] for item in batch["items"]], ["013403", "014089"])
         self.assertTrue(all(item["run"]["input"]["batch_id"] == batch["id"] for item in batch["items"]))
+        self.assertTrue(all(
+            item["run"]["input"]["allocation_scope"] == "portfolio_batch"
+            for item in batch["items"]
+        ))
         self.assertEqual(self.repository.count_active_runs(), 2)
         for item in batch["items"]:
             events = self.repository.list_audit_events(item["run"]["id"])
@@ -180,6 +184,40 @@ class AgentBatchTests(unittest.TestCase):
     def test_batch_request_rejects_duplicates(self):
         with self.assertRaises(ValidationError):
             agent_router.CreateAgentBatchRequest(codes=["013403", "013403"])
+
+    def test_batch_budget_requires_two_way_available_cash_acknowledgement(self):
+        with self.assertRaises(ValidationError):
+            agent_router.CreateAgentBatchRequest(
+                codes=["013403", "014089"],
+                planned_amount=5_000,
+            )
+        with self.assertRaises(ValidationError):
+            agent_router.CreateAgentBatchRequest(
+                codes=["013403", "014089"],
+                acknowledged_available_cash=True,
+            )
+        with self.assertRaises(ValidationError):
+            agent_router.CreateAgentBatchRequest(
+                codes=["013403", "014089"],
+                planned_amount=5_000,
+                acknowledged_available_cash=True,
+                include_portfolio_context=False,
+            )
+        with self.assertRaises(ValidationError):
+            agent_router.CreateAgentBatchRequest(
+                codes=["013403", "014089"],
+                planned_amount=5_000,
+                acknowledged_available_cash=True,
+                include_market_intelligence=False,
+            )
+
+        request = agent_router.CreateAgentBatchRequest(
+            codes=["013403", "014089"],
+            planned_amount=5_000,
+            acknowledged_available_cash=True,
+        )
+        self.assertEqual(request.planned_amount, 5_000)
+        self.assertTrue(request.acknowledged_available_cash)
 
     def test_batch_api_pins_profile_and_returns_aggregate(self):
         profile = {"configured": True, "profile_version_id": "ips_batch_v1"}

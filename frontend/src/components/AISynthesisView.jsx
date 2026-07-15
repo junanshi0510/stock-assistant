@@ -13,6 +13,7 @@ import {
 
 const ACTION_LABELS = {
   consider_tranche: '满足条件后考虑分批',
+  batch_allocation_pending: '等待组合级资金分配',
   hold_review: '持有并定期复核',
   hold_no_add: '持有但暂不加仓',
   wait: '等待条件改善',

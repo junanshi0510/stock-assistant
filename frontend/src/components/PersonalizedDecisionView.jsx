@@ -12,6 +12,7 @@ function pct(value) {
 
 const ACTION_TONE = {
   consider_tranche: 'positive',
+  batch_allocation_pending: 'mixed',
   hold_review: 'mixed',
   research_only: 'mixed',
   wait: 'negative',
@@ -72,7 +73,7 @@ export default function PersonalizedDecisionView({ decision, onOpenEvidence }) {
       <div className="agent-personal-metrics">
         <div><span>当前仓位</span><b>{pct(portfolio.current_ratio)}</b><small>{portfolio.target_exists ? money(portfolio.target_amount) : '-'}</small></div>
         <div><span>你的单品上限</span><b>{pct(portfolio.max_single_ratio)}</b><small>按确认组合金额计算</small></div>
-        <div><span>上限内可用总额</span><b>{money(unverifiedPositiveAction ? null : budget.allowed_full_amount)}</b><small>{unverifiedPositiveAction ? '策略发布状态不可验证' : '不等于必须投入'}</small></div>
+        <div><span>上限内可用总额</span><b>{money(unverifiedPositiveAction ? null : budget.allowed_full_amount)}</b><small>{unverifiedPositiveAction ? '策略发布状态不可验证' : action.action === 'batch_allocation_pending' ? '金额由批次统一分配' : '不等于必须投入'}</small></div>
         <div>
           <span>{action.action === 'reduce_exposure' ? '建议复核减仓额' : '首批观察金额'}</span>
           <b>{money(unverifiedPositiveAction ? null : action.action === 'reduce_exposure' ? budget.suggested_reduction_amount : budget.first_tranche_amount)}</b>

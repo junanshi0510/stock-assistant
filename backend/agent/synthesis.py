@@ -16,11 +16,12 @@ from .llm_gateway import LLMGateway, ModelInvocationError, ModelUnavailableError
 
 
 PROMPT_TEMPLATE_ID = "fund_decision_synthesis"
-PROMPT_TEMPLATE_VERSION = "2.0.0"
+PROMPT_TEMPLATE_VERSION = "2.1.0"
 OUTPUT_SCHEMA_VERSION = "fund_ai_synthesis.v1"
 
 DecisionAction = Literal[
     "consider_tranche",
+    "batch_allocation_pending",
     "hold_review",
     "hold_no_add",
     "wait",
@@ -95,6 +96,7 @@ _INJECTION_PATTERNS = (
     re.compile(r"系统提示词|开发者消息|调用工具|执行命令"),
 )
 _BLOCKING_ACTIONS = {
+    "batch_allocation_pending",
     "setup_required",
     "strategy_not_released",
     "market_data_required",
@@ -721,7 +723,8 @@ _SYSTEM_PROMPT = """你是金融投资助手中的证据合成模型。你的任
 8. 不得承诺盈利、使用确定性涨跌措辞、输出自动交易命令或暴露隐式思维链。confidence 最高只能是 medium。
 9. 如果关键数据不足，status 必须为 insufficient，并把缺口写入 unknowns；不要编造替代数据。
 10. 只返回符合给定 JSON Schema 的 JSON 对象，不要返回 Markdown 或额外说明。
-11. 保持输出紧凑：risks 最多 3 项；catalysts、counter_evidence、unknowns 各最多 2 项；每类 action conditions 最多 2 项。证据不足的可选数组返回空数组，不要为了填满上限重复内容。"""
+11. 保持输出紧凑：risks 最多 3 项；catalysts、counter_evidence、unknowns 各最多 2 项；每类 action conditions 最多 2 项。证据不足的可选数组返回空数组，不要为了填满上限重复内容。
+12. allowed_action 为 batch_allocation_pending 时，status 必须为 insufficient 且 confidence 必须为 low；只能解释该基金为何进入批次组合复核，不得建议该基金投入金额、资金比例或下单动作，最终金额只能由确定性的组合级分配快照生成。"""
 
 
 class InvestmentSynthesisService:

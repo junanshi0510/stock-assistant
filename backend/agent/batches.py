@@ -180,6 +180,7 @@ def _holding_overlap(items: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "status": "available" if len(prepared) >= 2 else "unavailable",
         "covered_fund_count": len(prepared),
+        "covered_codes": [str(item[0]["code"]) for item in prepared],
         "total_fund_count": len(items),
         "pairs": pairs[:15],
         "policy": (
@@ -208,6 +209,37 @@ def summarize_batch(batch: dict[str, Any]) -> dict[str, Any]:
     )
     model_available = sum((row.get("coverage") or {}).get("model") == "available" for row in rows)
 
+    allocation_event = batch.get("allocation_event")
+    allocation = None
+    if allocation_event is not None:
+        if allocation_event.get("integrity_verified"):
+            allocation = {
+                **(allocation_event.get("payload") or {}),
+                "snapshot": {
+                    "id": allocation_event.get("id"),
+                    "event_hash": allocation_event.get("event_hash"),
+                    "payload_sha256": allocation_event.get("payload_sha256"),
+                    "created_at": allocation_event.get("created_at"),
+                    "integrity_verified": True,
+                },
+            }
+        else:
+            allocation = {
+                "status": "integrity_failed",
+                "blockers": ["已保存的组合资金分配事件未通过内容哈希或事件哈希校验"],
+                "snapshot": {
+                    "id": allocation_event.get("id"),
+                    "created_at": allocation_event.get("created_at"),
+                    "integrity_verified": False,
+                },
+            }
+    allocation_by_code = {
+        str(item.get("code") or ""): item
+        for item in (((allocation or {}).get("allocation") or {}).get("items") or [])
+    }
+    for row in rows:
+        row["portfolio_allocation"] = allocation_by_code.get(row["code"])
+
     warnings = []
     if failed_count:
         warnings.append(f"{failed_count} 只基金未形成必需 Evidence，需要逐只查看失败原因。")
@@ -215,6 +247,8 @@ def summarize_batch(batch: dict[str, Any]) -> dict[str, Any]:
         warnings.append("部分终态基金没有形成市场/持仓情报，跨基金重合度覆盖不完整。")
     if terminal_count and model_available < terminal_count:
         warnings.append("部分终态基金没有通过真实模型研判；批次不会用模板补齐。")
+    if allocation and allocation.get("status") == "integrity_failed":
+        warnings.append("组合资金分配快照完整性失败，全部金额已停止展示。")
 
     status = _batch_status(statuses)
     return {
@@ -250,6 +284,7 @@ def summarize_batch(batch: dict[str, Any]) -> dict[str, Any]:
             "warnings": warnings,
         },
         "holding_overlap": _holding_overlap(items),
+        "allocation": allocation,
         "items": rows,
         "policy": (
             "批次只编排并聚合相互独立的单基金 Evidence Run；每一行可进入原始 Run 查看证据和审计。"

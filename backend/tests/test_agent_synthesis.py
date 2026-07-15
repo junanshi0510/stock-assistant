@@ -500,6 +500,29 @@ class InvestmentSynthesisTests(unittest.TestCase):
             result["quality"]["errors"],
         )
 
+    def test_batch_pending_model_can_explain_but_cannot_be_decision_ready(self):
+        output = _model_output()
+        output["status"] = "insufficient"
+        output["confidence"] = "low"
+        output["action"] = "batch_allocation_pending"
+        output["action_plan"]["current_action"] = "batch_allocation_pending"
+        gateway = _Gateway(output, private_context_enabled=True)
+        service = InvestmentSynthesisService(gateway)
+        context = _context()
+        context["allowed_action"] = "batch_allocation_pending"
+
+        result = service.synthesize({
+            "context": context,
+            "context_sha256": __import__("hashlib").sha256(
+                json.dumps(context, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest(),
+        })
+
+        self.assertEqual(result["status"], "available")
+        self.assertEqual(result["synthesis"]["action"], "batch_allocation_pending")
+        self.assertEqual(result["synthesis"]["status"], "insufficient")
+        self.assertTrue(result["quality"]["action_gate_valid"])
+
     def test_profit_promise_is_blocked(self):
         output = _model_output()
         output["answer"] = "该基金保证盈利，可以继续研究。"

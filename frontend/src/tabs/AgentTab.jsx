@@ -22,6 +22,7 @@ import {
 import {
   cancelAgentBatch,
   cancelAgentRun,
+  createAgentBatchAllocation,
   createFundResearchBatch,
   createFundResearchRun,
   fetchAgentBatch,
@@ -434,10 +435,13 @@ export default function AgentTab() {
   const [includePortfolioContext, setIncludePortfolioContext] = useState(true)
   const [question, setQuestion] = useState('结合未来 3-12 个月的市场、底层持仓、新闻和我的组合约束，我现在应该如何管理这只基金？')
   const [plannedAmount, setPlannedAmount] = useState('')
+  const [batchPlannedAmount, setBatchPlannedAmount] = useState('')
+  const [batchCashAcknowledged, setBatchCashAcknowledged] = useState(false)
   const [run, setRun] = useState(null)
   const [batch, setBatch] = useState(null)
   const [batchHistory, setBatchHistory] = useState([])
   const [loadingBatch, setLoadingBatch] = useState(false)
+  const [allocatingBatch, setAllocatingBatch] = useState(false)
   const [loading, setLoading] = useState(false)
   const [history, setHistory] = useState({ items: [], next_cursor: null, has_more: false })
   const [loadingHistory, setLoadingHistory] = useState(false)
@@ -461,6 +465,19 @@ export default function AgentTab() {
   const [loadingOutcomeSchedule, setLoadingOutcomeSchedule] = useState(false)
   const [strategyShadowOutcome, setStrategyShadowOutcome] = useState(null)
   const batchCodeState = useMemo(() => parseBatchCodes(batchCodes), [batchCodes])
+  const batchBudgetState = useMemo(() => {
+    const configured = String(batchPlannedAmount).trim() !== ''
+    const amount = configured ? Number(batchPlannedAmount) : null
+    const amountValid = !configured || (Number.isFinite(amount) && amount > 0)
+    const acknowledgementMatches = configured === batchCashAcknowledged
+    return {
+      configured,
+      amount,
+      valid: amountValid && acknowledgementMatches,
+      amountValid,
+      acknowledgementMatches,
+    }
+  }, [batchPlannedAmount, batchCashAcknowledged])
 
   async function loadModelStatus() {
     setLoadingModelStatus(true)
@@ -724,6 +741,20 @@ export default function AgentTab() {
       setError('请用至少 8 个字符说明本次要解决的投资问题。')
       return
     }
+    if (!batchBudgetState.amountValid) {
+      setError('本批次总计划投入必须大于 0。')
+      return
+    }
+    if (!batchBudgetState.acknowledgementMatches) {
+      setError(batchBudgetState.configured
+        ? '填写批次总预算后，必须确认这笔资金尚未投入且不占用应急资金。'
+        : '请先填写本批次唯一总预算，再确认可用资金。')
+      return
+    }
+    if (batchBudgetState.configured && (!includePortfolioContext || !includeMarketIntelligence)) {
+      setError('组合资金分配必须同时启用真实持仓与约束、市场与披露持仓情报。')
+      return
+    }
     setLoadingBatch(true)
     setError('')
     setBatch(null)
@@ -745,6 +776,8 @@ export default function AgentTab() {
         include_market_intelligence: includeMarketIntelligence,
         include_ai_synthesis: includeAiSynthesis,
         include_portfolio_context: includePortfolioContext,
+        planned_amount: batchBudgetState.amount,
+        acknowledged_available_cash: batchCashAcknowledged,
         question: cleanQuestion,
         alternative_limit: 5,
       })
@@ -756,6 +789,21 @@ export default function AgentTab() {
       setError(requestError.message || '批量基金研究任务创建失败')
     } finally {
       setLoadingBatch(false)
+    }
+  }
+
+  async function allocateBatchBudget() {
+    if (!batch?.id || !batch?.input_hash) return
+    setAllocatingBatch(true)
+    setError('')
+    try {
+      const data = await createAgentBatchAllocation(batch.id, batch.input_hash)
+      setBatch(data.batch)
+      loadBatchHistory()
+    } catch (requestError) {
+      setError(requestError.message || '组合资金分配快照生成失败')
+    } finally {
+      setAllocatingBatch(false)
     }
   }
 
@@ -997,9 +1045,23 @@ export default function AgentTab() {
                   <option value={60}>60 个月</option>
                 </select>
               </label>
+              <label className="field agent-batch-budget-field">
+                <span>本批次唯一总预算</span>
+                <input
+                  value={batchPlannedAmount}
+                  type="number"
+                  min="0"
+                  step="100"
+                  placeholder="可留空，仅研究"
+                  onChange={(event) => {
+                    setBatchPlannedAmount(event.target.value)
+                    if (event.target.value === '') setBatchCashAcknowledged(false)
+                  }}
+                />
+              </label>
               <div className="agent-batch-budget-policy">
                 <ShieldCheck size={16} aria-hidden="true" />
-                <span><b>批次不复制单笔金额</b><small>逐只研究后再由组合风险门禁决定金额</small></span>
+                <span><b>一笔预算，只分配一次</b><small>每只基金只输出容量，由组合风险门禁统一分配</small></span>
               </div>
               <button
                 onClick={startBatchResearch}
@@ -1009,6 +1071,8 @@ export default function AgentTab() {
                   || batchCodeState.codes.length < 2
                   || batchCodeState.codes.length > 6
                   || batchCodeState.invalid.length > 0
+                  || !batchBudgetState.valid
+                  || (batchBudgetState.configured && (!includePortfolioContext || !includeMarketIntelligence))
                 }
               >
                 <Play size={16} aria-hidden="true" />
@@ -1019,6 +1083,18 @@ export default function AgentTab() {
                     : `研究 ${batchCodeState.codes.length} 只基金`}</span>
               </button>
             </div>
+            <label className={`agent-batch-cash-check ${batchBudgetState.configured ? '' : 'disabled'}`}>
+              <input
+                type="checkbox"
+                checked={batchCashAcknowledged}
+                disabled={!batchBudgetState.configured}
+                onChange={(event) => setBatchCashAcknowledged(event.target.checked)}
+              />
+              <span>
+                <b>确认预算是尚未投入的真实可用资金</b>
+                <small>不占用应急资金，不包含已提交或待确认的申购；资金分配还要求启用真实组合约束和披露持仓情报。</small>
+              </span>
+            </label>
           </div>
         )}
         <label className="agent-question-field">
@@ -1079,10 +1155,12 @@ export default function AgentTab() {
       <AgentBatchView
         batch={batch}
         loading={loadingBatch}
+        allocating={allocatingBatch}
         selectedRunId={run?.id || ''}
         onRefresh={() => loadBatch(batch?.id)}
         onCancel={cancelBatch}
         onSelectRun={loadRun}
+        onCreateAllocation={allocateBatchBudget}
       />
 
       <section className="agent-history-panel" aria-label="Agent 运行历史">

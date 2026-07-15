@@ -8,7 +8,7 @@ from typing import Any
 
 
 STRATEGY_ID = "personalized_fund_decision"
-STRATEGY_VERSION = "1.3.0"
+STRATEGY_VERSION = "1.4.0"
 
 
 def _number(value: Any) -> float | None:
@@ -74,6 +74,7 @@ def evaluate_personalized_fund_decision(
     strategy_governance: dict[str, Any] | None = None,
     *,
     planned_amount: float | None = None,
+    allocation_scope: str = "single_fund",
 ) -> dict[str, Any]:
     profile = context.get("profile") or {}
     portfolio = context.get("portfolio") or {}
@@ -85,6 +86,11 @@ def evaluate_personalized_fund_decision(
     market = market_profile.get("market") or {}
     metrics = analysis.get("metrics") or {}
     timing = analysis.get("timing") or {}
+    allocation_scope = (
+        "portfolio_batch"
+        if str(allocation_scope or "").strip() == "portfolio_batch"
+        else "single_fund"
+    )
 
     configured = bool(profile.get("configured"))
     amount_complete = bool(portfolio.get("amount_complete"))
@@ -350,6 +356,9 @@ def evaluate_personalized_fund_decision(
         and current_industry_max_lower <= max_industry_ratio < current_industry_max_upper
     )
     industry_capacity = None
+    current_by_name: dict[str, float] = {}
+    target_by_name: dict[str, float] = {}
+    target_unknown = 0.0
     if (
         exposure_eligible
         and total is not None
@@ -506,6 +515,18 @@ def evaluate_personalized_fund_decision(
         label = "可考虑小额分批"
         rationale = "历史条件偏正面且未触发个人风险门禁，但历史统计不等于未来收益。"
 
+    pre_allocation_action = action
+    batch_allocation_eligible = bool(
+        allocation_scope == "portfolio_batch" and action == "consider_tranche"
+    )
+    if batch_allocation_eligible:
+        action = "batch_allocation_pending"
+        label = "等待组合级资金分配"
+        rationale = (
+            "单基金适用性与容量门禁已通过，但本次金额属于整个基金批次；"
+            "必须与其他候选联合检查预算、波动、重合和组合暴露后再分配。"
+        )
+
     allowed_amount = candidate_amount if action == "consider_tranche" else None
     tranche_count = 5 if confidence != "medium" else 4
     first_tranche = (
@@ -564,6 +585,42 @@ def evaluate_personalized_fund_decision(
             "tranche_count": tranche_count if first_tranche is not None else None,
             "first_tranche_amount": _money(first_tranche),
             "suggested_reduction_amount": _money(reduction),
+        },
+        "batch_allocation": {
+            "scope": allocation_scope,
+            "eligible": batch_allocation_eligible,
+            "pre_allocation_action": pre_allocation_action,
+            "maximum_candidate_amount": _money(candidate_amount),
+            "tranche_count": tranche_count if batch_allocation_eligible else None,
+            "basis": {
+                "target_code": str(analysis.get("code") or ""),
+                "portfolio_total_amount": _money(total),
+                "portfolio_holdings_sha256": context_holdings_hash or None,
+                "profile_version_id": profile.get("profile_version_id") if configured else None,
+                "profile_payload_sha256": profile.get("profile_payload_sha256") if configured else None,
+                "exposure_snapshot_id": exposure_snapshot.get("id"),
+                "exposure_snapshot_sha256": exposure_snapshot.get("payload_sha256"),
+                "single_fund_capacity_yuan": _money(single_capacity),
+                "aggregate_candidate_capacity_yuan": _money(aggregate_capacity),
+                "equity": {
+                    "current_upper_amount_yuan": _money(current_equity_upper_amount),
+                    "target_upper_ratio_pct": target_equity_upper,
+                    "limit_ratio_pct": max_equity_ratio,
+                },
+                "industry": {
+                    "current_known_lower_amounts_yuan": {
+                        name: _money(amount)
+                        for name, amount in sorted(current_by_name.items())
+                    },
+                    "current_unknown_equity_amount_yuan": _money(current_industry_unknown),
+                    "target_known_lower_ratios_pct": {
+                        name: round(ratio, 6)
+                        for name, ratio in sorted(target_by_name.items())
+                    },
+                    "target_unknown_ratio_pct": round(target_unknown, 6),
+                    "limit_ratio_pct": max_industry_ratio,
+                },
+            },
         },
         "suitability": {
             "user_risk": user_risk or None,
@@ -650,6 +707,7 @@ def evaluate_personalized_fund_decision(
             "drawdown_capacity": "historical_fund_max_drawdown_must_not_exceed_user_confirmed_ips_limit",
             "portfolio_exposure": "new_money_is_allowed_only_when_an_immutable_fresh_snapshot_proves_equity_and_industry_limits",
             "strategy_release": "unregistered_shadow_paused_retired_or_unverified_strategy_versions_cannot_influence_money",
+            "batch_allocation": "batch_children_only_emit_eligibility_and_capacity_then_one_portfolio_allocator_assigns_the_shared_budget",
         },
-        "policy": "这是基于已确认持仓、真实基金市场画像、不可变组合穿透快照、用户约束和精确策略版本的决策检查，不保证收益，不自动下单；未注册、Shadow、Paused、Retired、清单哈希或审计失败、发布检查未通过的策略均不得生成投入金额。未披露仓位按最坏上界处理，跨境市场或组合约束无法验证时同样拒绝。当前持仓存储仍是单用户迁移账本，多用户开放前必须完成登录、授权与数据隔离。",
+        "policy": "这是基于已确认持仓、真实基金市场画像、不可变组合穿透快照、用户约束和精确策略版本的决策检查，不保证收益，不自动下单；未注册、Shadow、Paused、Retired、清单哈希或审计失败、发布检查未通过的策略均不得生成投入金额。未披露仓位按最坏上界处理，跨境市场或组合约束无法验证时同样拒绝。批量研究中的单基金结果只输出适用性和容量，禁止复制整笔批次预算；最终金额必须由组合级分配快照统一生成。",
     }
