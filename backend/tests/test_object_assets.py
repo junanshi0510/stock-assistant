@@ -141,6 +141,56 @@ class ObjectAssetTests(unittest.TestCase):
         client.put_bucket_acl.assert_called_once()
         client.put_bucket_public_access_block.assert_called_once()
 
+    def test_bucket_provisioning_unwraps_sdk_operation_error_for_missing_bucket(self):
+        settings = ObjectStorageSettings(
+            region="cn-wuhan-lr",
+            bucket="private-stock-assistant-new",
+            endpoint=None,
+            access_key_id="test-id",
+            access_key_secret="test-secret",
+            security_token=None,
+            key_pepper="p" * 64,
+            encryption_mode="AES256",
+            kms_key_id=None,
+            use_internal_endpoint=True,
+        )
+        storage = AliyunObjectStorage(settings)
+        oss = storage._oss
+        missing = oss.exceptions.ServiceError(
+            status_code=404,
+            code="NoSuchBucket",
+            request_id="request-test",
+            message="missing",
+            ec="0015-00000101",
+            timestamp="2026-07-17T00:00:00Z",
+            request_target="https://example.invalid",
+        )
+        wrapped = oss.exceptions.OperationError(name="GetBucketInfo", error=missing)
+        client = Mock()
+        client.get_bucket_info.side_effect = [wrapped, SimpleNamespace()]
+        lifecycle_state = {}
+
+        def save_lifecycle(request):
+            lifecycle_state["configuration"] = request.lifecycle_configuration
+
+        client.put_bucket_lifecycle.side_effect = save_lifecycle
+        client.get_bucket_acl.return_value = SimpleNamespace(acl="private")
+        client.get_bucket_public_access_block.return_value = SimpleNamespace(
+            public_access_block_configuration=SimpleNamespace(
+                block_public_access=True
+            )
+        )
+        client.get_bucket_lifecycle.side_effect = lambda _request: SimpleNamespace(
+            lifecycle_configuration=lifecycle_state["configuration"]
+        )
+        storage._client = client
+
+        result = provision_bucket(storage)
+
+        self.assertTrue(result["created"])
+        self.assertEqual(result["region"], "cn-wuhan-lr")
+        client.put_bucket.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

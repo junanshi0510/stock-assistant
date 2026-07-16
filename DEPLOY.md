@@ -100,7 +100,8 @@ TASK_QUEUE_MODE=celery
 AUTH_AUDIT_PEPPER=至少32字节随机值
 AUTH_COOKIE_SECURE=false
 
-OSS_REGION=cn-hangzhou
+# The internal endpoint region must match the server; production is cn-wuhan-lr.
+OSS_REGION=cn-wuhan-lr
 OSS_BUCKET=全局唯一私有Bucket名
 OSS_USE_INTERNAL_ENDPOINT=true
 OSS_SSE_MODE=AES256

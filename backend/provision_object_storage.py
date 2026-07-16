@@ -10,8 +10,16 @@ from object_storage import AliyunObjectStorage
 
 
 def _service_error_code(error: Exception) -> tuple[int | None, str]:
-    status = getattr(error, "status_code", None)
-    code = str(getattr(error, "code", "") or "")
+    current = error
+    seen: set[int] = set()
+    while callable(getattr(current, "unwrap", None)) and id(current) not in seen:
+        seen.add(id(current))
+        unwrapped = current.unwrap()
+        if not isinstance(unwrapped, Exception) or unwrapped is current:
+            break
+        current = unwrapped
+    status = getattr(current, "status_code", None)
+    code = str(getattr(current, "code", "") or "")
     try:
         return int(status) if status is not None else None, code
     except (TypeError, ValueError):
@@ -25,7 +33,7 @@ def provision_bucket(storage: AliyunObjectStorage | None = None) -> dict[str, An
     created = False
     try:
         client.get_bucket_info(oss.GetBucketInfoRequest(bucket=storage.bucket))
-    except oss.exceptions.ServiceError as error:
+    except (oss.exceptions.ServiceError, oss.exceptions.OperationError) as error:
         status, code = _service_error_code(error)
         if status != 404 and code not in {"NoSuchBucket", "NoSuchBucketInfo"}:
             raise
