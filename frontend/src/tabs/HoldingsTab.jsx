@@ -13,6 +13,7 @@ import {
   saveHoldings,
   saveHoldingThesis,
   uploadHoldingScreenshot,
+  fetchHoldingOcrJob,
 } from '../api/portfolio'
 
 const blankCandidate = {
@@ -38,6 +39,8 @@ const NUMBER_FIELDS = new Set([
   'profit_rate',
   'shares',
 ])
+
+const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
 
 export default function HoldingsTab() {
   const [data, setData] = useState(null)
@@ -150,7 +153,21 @@ export default function HoldingsTab() {
     setError('')
     setWarnings([])
     try {
-      const result = await uploadHoldingScreenshot(file)
+      const queued = await uploadHoldingScreenshot(file)
+      let job = null
+      for (let attempt = 0; attempt < 150; attempt += 1) {
+        job = await fetchHoldingOcrJob(queued.job_id)
+        if (['succeeded', 'partial', 'failed', 'cancelled'].includes(job.status)) break
+        await wait(1000)
+      }
+      if (!job || !['succeeded', 'partial'].includes(job.status)) {
+        if (job?.status === 'failed') {
+          throw new Error(job.error?.message || '真实 OCR 识别失败')
+        }
+        if (job?.status === 'cancelled') throw new Error('OCR 任务已取消')
+        throw new Error('OCR 任务仍在后台执行，请稍后重新查看')
+      }
+      const result = job.result || {}
       setText(result.raw_text || '')
       setParsed(result.candidates || [])
       setWarnings(result.warnings || [])

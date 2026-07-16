@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 import funds as funds_mod
+from market_data_gateway import MarketDataGatewayError, execute_market_operation
 
 
 router = APIRouter(tags=["基金"])
@@ -15,10 +16,16 @@ class FundCompareRequest(BaseModel):
     months: int = 36
 
 
-def _call_fund_service(error_prefix: str, operation, *args, **kwargs):
+def _call_fund_service(error_prefix: str, operation_name: str, **kwargs):
     """Map service failures consistently while preserving public API semantics."""
     try:
-        return operation(*args, **kwargs)
+        return execute_market_operation(operation_name, kwargs)
+    except MarketDataGatewayError as error:
+        suffix = f" [job_id={error.job_id}]" if error.job_id else ""
+        raise HTTPException(
+            status_code=error.status_code,
+            detail=f"{error_prefix}:{error}{suffix}",
+        ) from error
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except Exception as error:
@@ -34,7 +41,7 @@ def get_hot_funds(
 ):
     return _call_fund_service(
         "真实基金排行数据获取失败",
-        funds_mod.get_hot_funds,
+        "fund.hot",
         category=category,
         limit=limit,
         sort=sort,
@@ -44,7 +51,7 @@ def get_hot_funds(
 
 @router.get("/api/funds/categories")
 def get_fund_categories():
-    return _call_fund_service("真实基金分类热度数据获取失败", funds_mod.get_fund_categories)
+    return _call_fund_service("真实基金分类热度数据获取失败", "fund.categories")
 
 
 @router.get("/api/funds/opportunities")
@@ -54,7 +61,7 @@ def fund_opportunities(
 ):
     return _call_fund_service(
         "真实基金机会数据获取失败",
-        funds_mod.get_fund_opportunities,
+        "fund.opportunities",
         risk=risk,
         limit=limit,
     )
@@ -67,7 +74,7 @@ def search_funds(
 ):
     return _call_fund_service(
         "真实基金搜索数据获取失败",
-        funds_mod.search_funds,
+        "fund.search",
         keyword=keyword,
         limit=limit,
     )
@@ -80,7 +87,7 @@ def analyze_fund(
 ):
     return _call_fund_service(
         "真实基金净值数据获取失败",
-        funds_mod.analyze_fund,
+        "fund.analyze",
         code=code,
         months=months,
     )
@@ -93,7 +100,7 @@ def fund_portfolio(
 ):
     return _call_fund_service(
         "真实基金持仓数据获取失败",
-        funds_mod.get_fund_portfolio,
+        "fund.portfolio",
         code=code,
         year=year or None,
     )
@@ -103,7 +110,7 @@ def fund_portfolio(
 def fund_estimate(code: str = Query(..., min_length=6, max_length=6)):
     return _call_fund_service(
         "真实基金估值数据获取失败",
-        funds_mod.get_fund_estimate,
+        "fund.estimate",
         code=code,
     )
 
@@ -115,7 +122,7 @@ def fund_disclosure_changes(
 ):
     return _call_fund_service(
         "真实基金披露变化数据获取失败",
-        funds_mod.get_fund_disclosure_changes,
+        "fund.disclosure_changes",
         code=code,
         year=year or None,
     )
@@ -129,7 +136,7 @@ def fund_peers(
 ):
     return _call_fund_service(
         "真实基金同类排行数据获取失败",
-        funds_mod.get_fund_peers,
+        "fund.peers",
         code=code,
         sort=sort,
         limit=limit,
@@ -140,7 +147,7 @@ def fund_peers(
 def fund_peer_persistence(code: str = Query(..., min_length=6, max_length=6)):
     return _call_fund_service(
         "真实基金同类持续性数据获取失败",
-        funds_mod.get_fund_peer_persistence,
+        "fund.peer_persistence",
         code=code,
     )
 
@@ -154,7 +161,7 @@ def fund_alternatives(
 ):
     return _call_fund_service(
         "真实基金替代品数据获取失败",
-        funds_mod.get_fund_alternatives,
+        "fund.alternatives",
         code=code,
         sort=sort,
         limit=limit,
@@ -164,14 +171,14 @@ def fund_alternatives(
 
 @router.get("/api/funds/dividends")
 def fund_dividends(code: str = Query(..., min_length=6, max_length=6)):
-    return _call_fund_service("真实基金分红数据获取失败", funds_mod.get_fund_dividends, code=code)
+    return _call_fund_service("真实基金分红数据获取失败", "fund.dividends", code=code)
 
 
 @router.post("/api/funds/compare")
 def fund_compare(req: FundCompareRequest):
     return _call_fund_service(
         "真实基金对比数据获取失败",
-        funds_mod.compare_funds,
+        "fund.compare",
         codes=req.codes,
         months=req.months,
     )
@@ -181,6 +188,6 @@ def fund_compare(req: FundCompareRequest):
 def fund_overlap(req: FundCompareRequest):
     return _call_fund_service(
         "真实基金持仓重合度数据获取失败",
-        funds_mod.analyze_fund_overlap,
+        "fund.overlap",
         codes=req.codes,
     )

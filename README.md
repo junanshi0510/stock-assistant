@@ -8,6 +8,15 @@
 
 ## 最近更新
 
+### 2026-07-17：PostgreSQL、Redis/Celery、私有 OSS 与生产可恢复性
+
+- 新增 SQLite 到 PostgreSQL 的离线事务迁移器，覆盖 45 张既有业务表；迁移前创建一致性快照，迁移后逐表比较行数和规范化内容 SHA-256，并拒绝覆盖非空目标库或迁移期间发生写入的 SQLite。
+- Agent Run、真实数据抓取、DeepSeek 合成和 OCR 分别进入 `agent`、`market-data`、`llm`、`ocr` 队列；scheduler 负责租约恢复和持久任务重派发。Redis 消息只保存任务 ID，输入、结果、重试、租约和事件链全部保存在 PostgreSQL。
+- 基金、股票、板块、新闻、行情和批量对比接口在生产模式统一交给 market-data Worker；Redis/Worker 不可用时明确失败，不在 API 进程内回退抓取。
+- OCR 上传改为异步私有对象链路：图片解码、方向纠正、元数据剥离和尺寸限制后写入阿里云 OSS，再由 OCR Worker 读取；没有 OSS 配置时不回退本地磁盘。
+- 新增 OSS 幂等初始化、Bucket 私有访问阻断、生命周期规则、JSON 日志脱敏、Prometheus 指标、完整依赖 readiness、两分钟 systemd 健康探针、每日 PostgreSQL 加密异地备份和每周隔离恢复演练。
+- 本地 PostgreSQL 16/Redis 真实集成已验证 45 表迁移、真实基金数据任务、输入/结果哈希和审计链；备份已完整恢复到临时库并核对 50 张表和平台迁移标记。
+
 ### 2026-07-15：批量基金真实成交后绩效归因
 
 - 批量基金主链从“成交并对账”继续推进到“真实结果复盘”。新策略 `portfolio_batch_purchase_attribution@1.0.0` 只追踪执行事件中绑定的实际基金买入流水，按 FIFO 拆分后续已实现回款和当前剩余份额，不给未成交基金生成假设收益。
@@ -297,7 +306,7 @@
 ### 投资 Agent 当前阶段
 
 - 当前支持固定意图 `fund_deep_research`，读取公募基金真实数据，并可选择把用户已确认组合和投资约束纳入确定性风险门禁。
-- Agent Run、工具步骤、证据、结论引用和审计事件持久化到 SQLite，进程重启后可恢复未完成任务并复用已完成证据。
+- 生产环境将 Agent Run、工具步骤、证据、结论引用、任务租约和审计事件持久化到 PostgreSQL；进程或 Worker 重启后可恢复未完成任务并复用已完成证据。本地隔离测试仍可使用 SQLite。
 - 运行历史支持服务端游标分页、状态筛选、基金代码筛选和完整任务回看。
 - 工具通过版本化白名单注册，当前开放 R0 公共只读工具和 R1 个人数据只读/确定性计算工具；每个工具都有实际生效的执行时限。
 - 请求支持幂等键、活动队列限制、运行中取消、可选盘中估值、披露变化和同类替代品研究。
@@ -312,7 +321,7 @@
 - 每条数值 Claim 绑定 Evidence，Evidence 保存来源、有效时间、质量状态和 SHA-256 摘要。
 - 真实来源失败时 Run 进入 `partial` 或 `failed`，不会生成替代数据。
 
-当前阶段没有开放式自主规划、交易工具或自动下单。LLM 仅是受约束的最终合成节点，不拥有工具权限。登录、RBAC 和 SQLite 用户级隔离已经完成，但当前仍是单实例 SQLite 与单进程 Worker；它不等同于最终的 PostgreSQL 行级安全、集中式身份服务和 Temporal 分布式工作流。私人组合发送给外部模型仍默认关闭。
+当前阶段没有开放式自主规划、交易工具或自动下单。LLM 仅是受约束的最终合成节点，不拥有工具权限。生产运行时已经使用 PostgreSQL、Redis/Celery 和独立 Worker，但尚未实现 PostgreSQL 行级安全、集中式身份服务、MFA 或 Temporal 级工作流编排。私人组合发送给外部模型仍默认关闭。
 
 ### 组合与交易复盘
 
@@ -403,8 +412,13 @@ npm run dev
 | `ALIBABA_CLOUD_ACCESS_KEY_SECRET` | 阿里云 OCR |
 | `ALIYUN_OCR_ENDPOINT` | 阿里云 OCR Endpoint |
 | `ALLOWED_ORIGINS` | FastAPI CORS 允许来源 |
-| `STOCK_ASSISTANT_DB_PATH` | 认证、个人组合和 Agent 共用的 SQLite 文件；生产推荐 `/var/lib/stock-assistant/stock_assistant.db` |
-| `AGENT_DB_PATH` | 兼容的 Agent 数据库路径；未设置统一路径时默认复用 `backend/stock_assistant.db` |
+| `DATABASE_URL` | 生产权威 PostgreSQL 连接；配置后数据库失败会直接报错，不回退 SQLite |
+| `POSTGRES_ADMIN_URL` | 仅供隔离恢复演练使用的 `CREATEDB` 角色连接，不使用超级用户 |
+| `REDIS_URL` | Celery Broker；Redis 只传任务 ID，不保存权威业务状态 |
+| `TASK_QUEUE_MODE` | 生产必须为 `celery`；本地 SQLite 开发可使用 `embedded` |
+| `DB_POOL_MIN_SIZE` / `DB_POOL_MAX_SIZE` | 每个 API/Worker 进程的 PostgreSQL 连接池范围 |
+| `STOCK_ASSISTANT_DB_PATH` | 仅用于本地开发、测试和迁移输入的 SQLite 文件 |
+| `AGENT_DB_PATH` | 兼容旧本地开发配置；生产由 `DATABASE_URL` 覆盖 |
 | `AUTH_REQUIRED` | 是否强制所有业务 API 登录；生产必须为 `true` |
 | `AUTH_AUDIT_PEPPER` | 登录标识哈希的服务端随机 Pepper，至少 32 个字符，不得提交到 Git |
 | `AUTH_COOKIE_SECURE` | HTTPS 部署设为 `true`；纯 HTTP 调试暂设为 `false` |
@@ -418,12 +432,17 @@ npm run dev
 | `AUTH_REGISTRATION_WINDOW_MINUTES` | 自助注册限流窗口，默认 60 分钟 |
 | `AGENT_MAX_PENDING_RUNS` | Agent 排队和运行任务总上限；默认 `20` |
 | `AGENT_MAX_BATCH_SIZE` | 单个基金研究批次上限；默认 `6`，代码硬上限 `8` |
-| `AGENT_WORKER_ENABLED` | 是否启动内置持久化 Worker；默认开启 |
+| `AGENT_WORKER_ENABLED` | 是否启动本地内置 Worker；生产固定关闭并使用 Celery Agent Worker |
 | `AGENT_WORKER_POLL_SECONDS` | 内置 Worker 轮询间隔；默认 `0.75` 秒 |
 | `AGENT_WORKER_CONCURRENCY` | 单进程 Run Worker 并发数；默认 `2`，代码硬上限 `4` |
 | `DECISION_CHECK_WORKER_ENABLED` | 是否启动用户主动开启的定时持仓检查 Worker；默认开启 |
 | `DECISION_CHECK_POLL_SECONDS` | 定时持仓检查计划轮询间隔；默认 `30` 秒 |
 | `DECISION_CHECK_LEASE_SECONDS` | 单次检查租约时长；默认 `120` 秒，需大于真实数据检查截止时间 |
+| `OSS_REGION` / `OSS_BUCKET` | 阿里云私有对象存储区域与专用 Bucket |
+| `OBJECT_KEY_PEPPER` | 用户对象 Key 的 HMAC Pepper，至少 32 个字符 |
+| `OSS_SSE_MODE` | `AES256` 或 `KMS` 服务端加密；没有本地存储兜底 |
+| `REQUIRE_OBJECT_STORAGE` | 生产为 `true`；OSS 不可用时 readiness 失败 |
+| `MARKET_DATA_API_WAIT_SECONDS` | 同步兼容接口等待 market-data Worker 的上限 |
 | `FUND_HTTP_TRUST_ENV` | 基金请求是否使用环境代理；设为 `0`/`direct` 时强制直连 |
 | `LLM_PROVIDER` | `openai`、`dashscope`、`deepseek` 或 `openai_compatible`；不配置时禁用模型合成 |
 | `LLM_MODEL` | 明确批准的模型 ID，不提供隐式默认值 |
@@ -468,7 +487,8 @@ backend/
     repository.py          Run、Step、Evidence、Claim 与 Audit 持久化
     synthesis.py           证据上下文、结构化模型协议与质量门禁
     workflow.py            确定性基金研究工作流、超时与取消
-    worker.py              可恢复、受控并发的迁移期单进程 Worker
+    worker.py              Agent 执行器与本地开发 Worker
+    queued_tools.py        Agent 工具到 market-data/llm 队列的受控路由
   holding_thesis.py        持有逻辑版本、计划边界与真实证据复核
   fund_switch_quote_service.py     销售平台 v2 真实现金流报价与审计链
   fund_switch_execution_service.py 换仓后组合穿透和执行前门禁编排
@@ -496,7 +516,15 @@ backend/
   data_fetch.py            A 股/港股/美股历史数据
   market_daily.py          市场机会日报
   sectors.py               行业、概念和热门股分析
-  storage.py               当前 SQLite 持久化
+  database.py              PostgreSQL 连接池与 SQLite 测试兼容层
+  background_jobs.py       持久任务、租约、重试与不可变事件链
+  background_tasks.py      Agent、数据、LLM、OCR 与调度 Celery 任务
+  market_data_gateway.py   API 到真实数据 Worker 的持久任务网关
+  object_storage.py        无本地兜底的阿里云 OSS 私有对象适配器
+  observability.py         JSON 日志脱敏、关联 ID 与 Prometheus 指标
+  health.py                数据库、Redis、OSS 与 Worker readiness
+  migrations/              SQLite 到 PostgreSQL 事务迁移与审计触发器
+  storage.py               组合业务持久化（生产 PostgreSQL、本地 SQLite）
   tests/                   后端回归与契约测试
 frontend/
   src/App.jsx              顶层工作区导航
@@ -539,7 +567,7 @@ npm run build
 
 项目已经完成工业级 Agent 的产品和架构设计，实施范围包括：
 
-- 已完成服务端登录、RBAC 和当前 SQLite 用户隔离；下一阶段迁移 PostgreSQL 行级安全与集中式身份治理。
+- 已完成服务端登录、RBAC、PostgreSQL 生产迁移和应用层用户隔离；下一阶段推进 PostgreSQL 行级安全与集中式身份治理。
 - 可恢复的 Agent Run 状态机和异步工作流。
 - 统一工具协议、Provider Gateway 和真实数据治理。
 - Evidence 证据账本、Claim 引用和追加式审计链。
@@ -550,7 +578,7 @@ npm run build
 
 **[金融投资助手工业级 Agent 升级方案设计书（PRD）](docs/industrial-agent-prd.md)**
 
-第一条“基金深度研究”垂直链路已经落地持久化 Run、工具协议、Evidence、Claim、审计链、真实登录和用户级数据隔离。当前实现与目标架构之间仍有明确差距：尚未迁移 PostgreSQL、集中式身份服务、MFA、Temporal 分布式工作流、动态规划与完整模型治理，也不提供自动交易。README 和 UI 中不得把规划中的能力描述为已经上线。
+第一条“基金深度研究”垂直链路已经落地 PostgreSQL 持久化 Run、Redis/Celery 工具协议、Evidence、Claim、审计链、真实登录和用户级数据隔离。当前实现与目标架构之间仍有明确差距：尚未完成集中式身份服务、MFA、PostgreSQL RLS、Temporal 级分布式工作流、动态规划与完整模型治理，也不提供自动交易。README 和 UI 中不得把规划中的能力描述为已经上线。
 
 ## 相关文档
 

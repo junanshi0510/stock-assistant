@@ -1,10 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Durable SQLite repository for the first agent workflow slice.
+"""Durable repository for Agent runs, evidence, decisions, and outcomes.
 
-The schema mirrors the target PostgreSQL entities from the PRD. SQLite remains
-the current deployment store; the repository boundary keeps the runtime logic
-independent so the next migration can replace persistence without changing the
-tool or workflow contracts.
+PostgreSQL is authoritative in production. SQLite remains available only for
+isolated local development and test execution through the shared DB adapter.
 """
 
 from __future__ import annotations
@@ -14,11 +12,19 @@ import hashlib
 import json
 import os
 import re
-import sqlite3
 import threading
 import uuid
 from pathlib import Path
 from typing import Any
+
+from database import (
+    configured_database_target,
+    connect_database,
+    database_dialect,
+    json_text_expression,
+    list_database_tables,
+    require_database_schema,
+)
 
 
 RUN_TERMINAL_STATUSES = {"completed", "partial", "failed", "cancelled", "abstained"}
@@ -34,16 +40,6 @@ class AgentQueueCapacityError(RuntimeError):
         super().__init__(
             f"活动任务 {self.active} + 本次 {self.requested} 超过队列上限 {self.maximum}"
         )
-
-
-class _ClosingConnection(sqlite3.Connection):
-    """Commit or roll back like sqlite's context manager, then always close."""
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        try:
-            return super().__exit__(exc_type, exc_value, traceback)
-        finally:
-            self.close()
 
 
 def _utc_now() -> str:
@@ -84,10 +80,9 @@ def _new_id(prefix: str) -> str:
 
 
 def _default_db_path() -> str:
-    configured = os.getenv("AGENT_DB_PATH") or os.getenv("STOCK_ASSISTANT_DB_PATH")
-    if configured:
-        return configured
-    return str(Path(__file__).resolve().parents[1] / "stock_assistant.db")
+    return configured_database_target(
+        str(Path(__file__).resolve().parents[1] / "stock_assistant.db")
+    )
 
 
 class AgentRepository:
@@ -97,23 +92,35 @@ class AgentRepository:
         self._schema_ready = False
         self.ensure_schema()
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(
-            self.db_path,
-            timeout=30,
-            check_same_thread=False,
-            factory=_ClosingConnection,
-        )
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute("PRAGMA busy_timeout=30000")
-        return connection
+    def _connect(self):
+        return connect_database(self.db_path, close_on_exit=True)
 
     def ensure_schema(self) -> None:
         if self._schema_ready:
             return
         with self._schema_lock:
             if self._schema_ready:
+                return
+            if database_dialect(self.db_path) == "postgresql":
+                with self._connect() as connection:
+                    require_database_schema(
+                        connection,
+                        {
+                            "agent_runs",
+                            "agent_steps",
+                            "agent_evidence",
+                            "agent_claims",
+                            "agent_audit_events",
+                            "agent_batches",
+                            "agent_batch_items",
+                            "agent_outcome_schedules",
+                            "agent_strategy_versions",
+                            "agent_strategy_audit_events",
+                            "agent_strategy_shadow_enrollments",
+                            "agent_strategy_shadow_cohorts",
+                        },
+                    )
+                self._schema_ready = True
                 return
             path = Path(self.db_path)
             if self.db_path != ":memory:":
@@ -136,6 +143,9 @@ class AgentRepository:
                         error_code        TEXT,
                         error_message     TEXT,
                         worker_id         TEXT,
+                        lease_expires_at  TEXT,
+                        attempt_count     INTEGER NOT NULL DEFAULT 0,
+                        celery_task_id    TEXT,
                         created_at        TEXT NOT NULL,
                         updated_at        TEXT NOT NULL,
                         started_at        TEXT,
@@ -631,11 +641,23 @@ class AgentRepository:
                     connection.execute(
                         "ALTER TABLE agent_runs ADD COLUMN exposure_snapshot_id TEXT"
                     )
+                if "lease_expires_at" not in run_columns:
+                    connection.execute(
+                        "ALTER TABLE agent_runs ADD COLUMN lease_expires_at TEXT"
+                    )
+                if "attempt_count" not in run_columns:
+                    connection.execute(
+                        "ALTER TABLE agent_runs ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0"
+                    )
+                if "celery_task_id" not in run_columns:
+                    connection.execute(
+                        "ALTER TABLE agent_runs ADD COLUMN celery_task_id TEXT"
+                    )
             self._schema_ready = True
 
     def _append_audit(
         self,
-        connection: sqlite3.Connection,
+        connection: Any,
         run_id: str,
         event_type: str,
         details: dict[str, Any] | None = None,
@@ -693,7 +715,7 @@ class AgentRepository:
 
     def _append_strategy_audit(
         self,
-        connection: sqlite3.Connection,
+        connection: Any,
         strategy_id: str,
         strategy_version: str,
         event_type: str,
@@ -753,7 +775,7 @@ class AgentRepository:
         return {**canonical, "event_hash": event_hash}
 
     @staticmethod
-    def _run_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    def _run_from_row(row: Any | None) -> dict[str, Any] | None:
         if row is None:
             return None
         item = dict(row)
@@ -763,7 +785,7 @@ class AgentRepository:
         return item
 
     @staticmethod
-    def _batch_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    def _batch_from_row(row: Any | None) -> dict[str, Any] | None:
         if row is None:
             return None
         item = dict(row)
@@ -771,7 +793,7 @@ class AgentRepository:
         return item
 
     @staticmethod
-    def _batch_allocation_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    def _batch_allocation_from_row(row: Any | None) -> dict[str, Any] | None:
         if row is None:
             return None
         item = dict(row)
@@ -808,7 +830,7 @@ class AgentRepository:
 
     @staticmethod
     def _batch_purchase_preflight_from_row(
-        row: sqlite3.Row | None,
+        row: Any | None,
     ) -> dict[str, Any] | None:
         if row is None:
             return None
@@ -848,7 +870,7 @@ class AgentRepository:
 
     @staticmethod
     def _batch_purchase_execution_from_row(
-        row: sqlite3.Row | None,
+        row: Any | None,
     ) -> dict[str, Any] | None:
         if row is None:
             return None
@@ -888,7 +910,7 @@ class AgentRepository:
 
     @staticmethod
     def _batch_purchase_attribution_from_row(
-        row: sqlite3.Row | None,
+        row: Any | None,
     ) -> dict[str, Any] | None:
         if row is None:
             return None
@@ -929,7 +951,7 @@ class AgentRepository:
         return item
 
     @staticmethod
-    def _step_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    def _step_from_row(row: Any) -> dict[str, Any]:
         item = dict(row)
         item["input"] = _load(item.pop("input_json", None), {})
         item["output"] = _load(item.pop("output_json", None), None)
@@ -937,7 +959,7 @@ class AgentRepository:
         return item
 
     @staticmethod
-    def _evidence_from_row(row: sqlite3.Row, *, include_payload: bool = False) -> dict[str, Any]:
+    def _evidence_from_row(row: Any, *, include_payload: bool = False) -> dict[str, Any]:
         item = dict(row)
         raw_payload = item.pop("payload_json", None)
         if include_payload:
@@ -950,17 +972,17 @@ class AgentRepository:
         return item
 
     @staticmethod
-    def _claim_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    def _claim_from_row(row: Any) -> dict[str, Any]:
         item = dict(row)
         item["value"] = _load(item.pop("value_json", None), None)
         return item
 
     @staticmethod
-    def _outcome_schedule_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    def _outcome_schedule_from_row(row: Any | None) -> dict[str, Any] | None:
         return dict(row) if row is not None else None
 
     @staticmethod
-    def _strategy_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    def _strategy_from_row(row: Any | None) -> dict[str, Any] | None:
         if row is None:
             return None
         item = dict(row)
@@ -973,13 +995,13 @@ class AgentRepository:
         return item
 
     @staticmethod
-    def _strategy_audit_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    def _strategy_audit_from_row(row: Any) -> dict[str, Any]:
         item = dict(row)
         item["details"] = _load(item.pop("details_json", None), {})
         return item
 
     @staticmethod
-    def _strategy_shadow_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    def _strategy_shadow_from_row(row: Any | None) -> dict[str, Any] | None:
         if row is None:
             return None
         item = dict(row)
@@ -992,7 +1014,7 @@ class AgentRepository:
         return item
 
     @staticmethod
-    def _strategy_shadow_cohort_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    def _strategy_shadow_cohort_from_row(row: Any | None) -> dict[str, Any] | None:
         if row is None:
             return None
         item = dict(row)
@@ -1696,12 +1718,7 @@ class AgentRepository:
                 ):
                     raise ValueError("持仓对账未绑定最新一版真实申购成交事件")
 
-            table_names = {
-                str(row["name"])
-                for row in connection.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
-                ).fetchall()
-            }
+            table_names = list_database_tables(connection)
             if normalized_transaction_bindings and "portfolio_transactions" not in table_names:
                 raise ValueError("真实交易流水表尚未初始化")
             for transaction_id, expected_transaction_hash in normalized_transaction_bindings:
@@ -1806,10 +1823,11 @@ class AgentRepository:
             for transaction_id, transaction_sha256 in normalized_transaction_bindings:
                 connection.execute(
                     """
-                    INSERT OR IGNORE INTO agent_batch_purchase_transaction_bindings (
+                    INSERT INTO agent_batch_purchase_transaction_bindings (
                         user_id, transaction_id, batch_id, first_event_id,
                         transaction_sha256, created_at
                     ) VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT DO NOTHING
                     """,
                     (
                         str(user_id),
@@ -2418,7 +2436,9 @@ class AgentRepository:
             conditions.append("status=?")
             parameters.append(status)
         if code:
-            conditions.append("json_extract(input_json, '$.code')=?")
+            conditions.append(
+                f"{json_text_expression(self.db_path, 'input_json', 'code')}=?"
+            )
             parameters.append(code)
         parameters.append(page_size + 1)
         with self._connect() as connection:
@@ -2441,6 +2461,167 @@ class AgentRepository:
             ).fetchone()
         return int(row["count"] if row else 0)
 
+    def list_queued_run_ids(self, limit: int = 100) -> list[str]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id FROM agent_runs
+                WHERE status='queued' AND cancel_requested=0
+                ORDER BY created_at, id
+                LIMIT ?
+                """,
+                (max(1, min(1000, int(limit))),),
+            ).fetchall()
+        return [str(row["id"]) for row in rows]
+
+    def bind_celery_task(self, run_id: str, task_id: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE agent_runs SET celery_task_id=?, updated_at=?
+                WHERE id=? AND status IN ('queued', 'running')
+                """,
+                (str(task_id), _utc_now(), run_id),
+            )
+
+    def claim_run(
+        self,
+        run_id: str,
+        worker_id: str,
+        *,
+        lease_seconds: int = 7200,
+    ) -> dict[str, Any] | None:
+        now_dt = _as_utc_datetime()
+        now = _utc_iso(now_dt)
+        lease_expires_at = _utc_iso(
+            now_dt + dt.timedelta(seconds=max(300, int(lease_seconds)))
+        )
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM agent_runs WHERE id=?", (run_id,)
+            ).fetchone()
+            if row is None or row["status"] in RUN_TERMINAL_STATUSES:
+                return None
+            if bool(row["cancel_requested"]):
+                connection.execute(
+                    """
+                    UPDATE agent_runs SET status='cancelled', worker_id=NULL,
+                        lease_expires_at=NULL, updated_at=?, completed_at=?
+                    WHERE id=?
+                    """,
+                    (now, now, run_id),
+                )
+                self._append_audit(
+                    connection,
+                    run_id,
+                    "run.cancelled",
+                    {"status": "cancelled", "reason": "cancel_requested_before_claim"},
+                    actor_id=worker_id,
+                )
+                return None
+            is_queued = row["status"] == "queued"
+            is_same_worker = row["status"] == "running" and row["worker_id"] == worker_id
+            is_expired = row["status"] == "running" and str(
+                row["lease_expires_at"] or ""
+            ) < now
+            if not (is_queued or is_same_worker or is_expired):
+                return None
+            changed = connection.execute(
+                """
+                UPDATE agent_runs
+                SET status='running', worker_id=?, lease_expires_at=?,
+                    attempt_count=attempt_count+?,
+                    started_at=COALESCE(started_at, ?), updated_at=?
+                WHERE id=?
+                """,
+                (
+                    worker_id,
+                    lease_expires_at,
+                    0 if is_same_worker else 1,
+                    now,
+                    now,
+                    run_id,
+                ),
+            ).rowcount
+            if changed != 1:
+                return None
+            self._append_audit(
+                connection,
+                run_id,
+                "run.lease_renewed" if is_same_worker else "run.reclaimed" if is_expired else "run.started",
+                {
+                    "worker_id": worker_id,
+                    "status": "running",
+                    "lease_expires_at": lease_expires_at,
+                },
+                actor_id=worker_id,
+            )
+            claimed = connection.execute(
+                "SELECT * FROM agent_runs WHERE id=?", (run_id,)
+            ).fetchone()
+        return self._run_from_row(claimed)
+
+    def renew_run_lease(
+        self, run_id: str, worker_id: str, *, lease_seconds: int = 7200
+    ) -> bool:
+        now_dt = _as_utc_datetime()
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE agent_runs SET lease_expires_at=?, updated_at=?
+                WHERE id=? AND status='running' AND worker_id=?
+                """,
+                (
+                    _utc_iso(now_dt + dt.timedelta(seconds=max(300, int(lease_seconds)))),
+                    _utc_iso(now_dt),
+                    run_id,
+                    worker_id,
+                ),
+            )
+        return cursor.rowcount == 1
+
+    def recover_expired_run_leases(self, limit: int = 100) -> int:
+        now = _utc_now()
+        recovered = 0
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                """
+                SELECT id FROM agent_runs
+                WHERE status='running' AND lease_expires_at IS NOT NULL
+                  AND lease_expires_at<?
+                ORDER BY lease_expires_at, id LIMIT ?
+                """,
+                (now, max(1, min(1000, int(limit)))),
+            ).fetchall()
+            for row in rows:
+                run_id = str(row["id"])
+                connection.execute(
+                    """
+                    UPDATE agent_runs SET status='queued', worker_id=NULL,
+                        lease_expires_at=NULL, updated_at=?
+                    WHERE id=? AND status='running'
+                    """,
+                    (now, run_id),
+                )
+                connection.execute(
+                    """
+                    UPDATE agent_steps SET status='queued', started_at=NULL
+                    WHERE run_id=? AND status='running'
+                    """,
+                    (run_id,),
+                )
+                self._append_audit(
+                    connection,
+                    run_id,
+                    "run.lease_expired",
+                    {"previous_status": "running", "new_status": "queued"},
+                    actor_id="scheduler",
+                )
+                recovered += 1
+        return recovered
+
     def recover_interrupted_runs(self) -> int:
         now = _utc_now()
         with self._connect() as connection:
@@ -2455,7 +2636,8 @@ class AgentRepository:
                 connection.execute(
                     """
                     UPDATE agent_runs
-                    SET status=?, worker_id=NULL, updated_at=?, completed_at=?
+                    SET status=?, worker_id=NULL, lease_expires_at=NULL,
+                        updated_at=?, completed_at=?
                     WHERE id=? AND status='running'
                     """,
                     (next_status, now, now if cancelled else None, run_id),
@@ -2477,7 +2659,9 @@ class AgentRepository:
         return len(rows)
 
     def claim_next_run(self, worker_id: str) -> dict[str, Any] | None:
-        now = _utc_now()
+        now_dt = _as_utc_datetime()
+        now = _utc_iso(now_dt)
+        lease_expires_at = _utc_iso(now_dt + dt.timedelta(hours=2))
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
@@ -2494,10 +2678,12 @@ class AgentRepository:
             changed = connection.execute(
                 """
                 UPDATE agent_runs
-                SET status='running', worker_id=?, started_at=COALESCE(started_at, ?), updated_at=?
+                SET status='running', worker_id=?, lease_expires_at=?,
+                    attempt_count=attempt_count+1,
+                    started_at=COALESCE(started_at, ?), updated_at=?
                 WHERE id=? AND status='queued' AND cancel_requested=0
                 """,
-                (worker_id, now, now, run_id),
+                (worker_id, lease_expires_at, now, now, run_id),
             ).rowcount
             if changed != 1:
                 return None
@@ -2822,6 +3008,13 @@ class AgentRepository:
             return []
         placeholders = ",".join("?" for _ in actions)
         with self._connect() as connection:
+            decision_action = json_text_expression(
+                self.db_path,
+                "runs.result_json",
+                "personalized_decision",
+                "decision",
+                "action",
+            )
             rows = connection.execute(
                 f"""
                 SELECT runs.*
@@ -2831,10 +3024,7 @@ class AgentRepository:
                   AND runs.intent='fund_deep_research'
                   AND runs.status IN ('completed', 'partial')
                   AND runs.result_json IS NOT NULL
-                  AND json_extract(
-                      runs.result_json,
-                      '$.personalized_decision.decision.action'
-                  ) IN ({placeholders})
+                  AND {decision_action} IN ({placeholders})
                 ORDER BY runs.completed_at DESC, runs.id DESC
                 LIMIT ?
                 """,
@@ -3356,7 +3546,7 @@ class AgentRepository:
                 """
                 UPDATE agent_runs
                 SET status=?, result_json=?, error_code=?, error_message=?,
-                    worker_id=NULL, updated_at=?, completed_at=?
+                    worker_id=NULL, lease_expires_at=NULL, updated_at=?, completed_at=?
                 WHERE id=?
                 """,
                 (
@@ -3810,8 +4000,18 @@ class AgentRepository:
     ) -> list[dict[str, Any]]:
         """Return governance-aware runs in chronological order for unbiased backfill."""
         with self._connect() as connection:
+            schema_version = json_text_expression(
+                self.db_path, "runs.result_json", "schema_version"
+            )
+            signal_direction = json_text_expression(
+                self.db_path,
+                "runs.result_json",
+                "strategy",
+                "signal",
+                "direction",
+            )
             rows = connection.execute(
-                """
+                f"""
                 SELECT runs.*
                 FROM agent_runs AS runs
                 LEFT JOIN agent_strategy_shadow_enrollments AS enrollments
@@ -3820,9 +4020,9 @@ class AgentRepository:
                   AND runs.intent='fund_deep_research'
                   AND runs.status IN ('completed', 'partial')
                   AND runs.result_json IS NOT NULL
-                  AND json_extract(runs.result_json, '$.schema_version')
+                  AND {schema_version}
                       IN ('fund_deep_research.v4', 'fund_deep_research.v5', 'fund_deep_research.v6')
-                  AND json_extract(runs.result_json, '$.strategy.signal.direction')
+                  AND {signal_direction}
                       IN ('positive', 'negative')
                   AND (
                       ? IS NULL

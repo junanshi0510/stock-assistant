@@ -8,10 +8,16 @@ background jobs easy to audit without mixing them with business endpoints.
 
 import os
 
+from observability import configure_logging
+
+configure_logging()
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from prometheus_client import make_asgi_app
 
+import health
 import monitor
 from decision_check_worker import (
     start_worker as start_decision_check_worker,
@@ -25,9 +31,11 @@ from auth import (
 )
 from agent.worker import start_worker
 from routers import agent, auth, funds, market, portfolio
+from task_queue import uses_celery_queue
+from observability import observe_http_request
 
 
-app = FastAPI(title="金融投资助手 API", version="2.2")
+app = FastAPI(title="金融投资助手 API", version="3.0")
 
 _allowed_origins = [
     item.strip()
@@ -116,6 +124,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.middleware("http")(observe_http_request)
+
+
+@app.get("/health/live", include_in_schema=False)
+def liveness():
+    return {"status": "alive"}
+
+
+@app.get("/health/ready", include_in_schema=False)
+def dependency_readiness():
+    result = health.readiness()
+    return JSONResponse(status_code=200 if result["ready"] else 503, content=result)
+
+
+app.mount("/internal/metrics", make_asgi_app())
 
 
 app.include_router(auth.router)
@@ -127,13 +150,17 @@ app.include_router(agent.router)
 
 @app.on_event("startup")
 def start_decision_check_scheduler():
-    start_decision_check_worker()
+    if not uses_celery_queue():
+        start_decision_check_worker()
 
 
 @app.on_event("shutdown")
 def stop_decision_check_scheduler():
-    stop_decision_check_worker()
+    if not uses_celery_queue():
+        stop_decision_check_worker()
 
-# Each process owns one daemon monitor. It only evaluates user-confirmed watchlist data.
-monitor.start_monitor(interval_seconds=3600)
-start_worker()
+# SQLite development mode retains the existing in-process workers. PostgreSQL
+# production mode is fail-closed and runs all long work in dedicated Celery services.
+if not uses_celery_queue():
+    monitor.start_monitor(interval_seconds=3600)
+    start_worker()

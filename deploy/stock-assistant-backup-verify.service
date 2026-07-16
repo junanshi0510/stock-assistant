@@ -1,0 +1,18 @@
+[Unit]
+Description=Stock Assistant PostgreSQL restore verification
+After=postgresql.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=/etc/stock-assistant/stock-assistant.env
+ExecStart=/opt/stock-assistant/deploy/scripts/verify-postgres-restore.sh
+Nice=15
+IOSchedulingClass=idle
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/backups/stock-assistant
+

@@ -7,7 +7,6 @@ import copy
 import datetime as dt
 import os
 import re
-import sqlite3
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -18,6 +17,7 @@ import funds
 import portfolio_exposure
 import portfolio_review
 import storage
+from database import INTEGRITY_ERRORS
 from investment_policy import payload_sha256
 from strategies.fund_switch_lifecycle import (
     CASH_TOLERANCE_YUAN,
@@ -65,7 +65,7 @@ def _append_lifecycle_event(
             actor_id=actor_id,
             user_id=user_id,
         )
-    except sqlite3.IntegrityError as error:
+    except INTEGRITY_ERRORS as error:
         raise LifecycleConflictError(
             "真实交易流水或批次事件已被其他请求绑定，请刷新后重试"
         ) from error

@@ -10,7 +10,6 @@ import json
 import os
 import re
 import secrets
-import sqlite3
 import threading
 import uuid
 from contextlib import contextmanager
@@ -21,6 +20,15 @@ from typing import Any, Iterator
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 from fastapi import HTTPException, Request
+
+from database import (
+    INTEGRITY_ERRORS,
+    configured_database_target,
+    connect_database,
+    database_dialect,
+    require_database_schema,
+    table_exists,
+)
 
 
 ROLE_ADMIN = "admin"
@@ -84,10 +92,9 @@ def _new_id(prefix: str) -> str:
 
 
 def _default_db_path() -> str:
-    configured = os.getenv("STOCK_ASSISTANT_DB_PATH") or os.getenv("AGENT_DB_PATH")
-    if configured:
-        return str(configured)
-    return str(Path(__file__).resolve().parent / "stock_assistant.db")
+    return configured_database_target(
+        str(Path(__file__).resolve().parent / "stock_assistant.db")
+    )
 
 
 @dataclass(frozen=True)
@@ -195,25 +202,20 @@ class AuthService:
         self.ensure_schema()
 
     @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute("PRAGMA busy_timeout=30000")
+    def _connect(self) -> Iterator[Any]:
+        connection = connect_database(self.db_path, close_on_exit=True)
+        if database_dialect(connection) == "sqlite":
+            connection.execute("PRAGMA journal_mode=WAL")
         try:
             with connection:
                 yield connection
         finally:
-            connection.close()
+            if not getattr(connection, "closed", False):
+                connection.close()
 
     @staticmethod
-    def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
-        row = connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-            (table,),
-        ).fetchone()
-        return row is not None
+    def _table_exists(connection: Any, table: str) -> bool:
+        return table_exists(connection, table)
 
     def ensure_schema(self) -> None:
         if self._schema_ready:
@@ -222,6 +224,19 @@ class AuthService:
             if self._schema_ready:
                 return
             with self._connect() as connection:
+                if database_dialect(connection) == "postgresql":
+                    require_database_schema(
+                        connection,
+                        {
+                            "auth_users",
+                            "auth_sessions",
+                            "auth_login_attempts",
+                            "auth_registration_attempts",
+                            "auth_audit_events",
+                        },
+                    )
+                    self._schema_ready = True
+                    return
                 connection.executescript(
                     """
                     CREATE TABLE IF NOT EXISTS auth_users (
@@ -344,7 +359,7 @@ class AuthService:
         ).hexdigest()
 
     @staticmethod
-    def _public_user(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    def _public_user(row: Any) -> dict[str, Any]:
         return {
             "id": row["id"],
             "username": row["username"],
@@ -360,7 +375,7 @@ class AuthService:
 
     def _append_audit(
         self,
-        connection: sqlite3.Connection,
+        connection: Any,
         event_type: str,
         *,
         actor_user_id: str | None = None,
@@ -564,7 +579,7 @@ class AuthService:
                 )
                 connection.commit()
                 row = connection.execute("SELECT * FROM auth_users WHERE id=?", (user_id,)).fetchone()
-        except sqlite3.IntegrityError as error:
+        except INTEGRITY_ERRORS as error:
             raise AuthError("用户名已经存在", code="username_exists", status_code=409) from error
         return self._public_user(row)
 
@@ -678,7 +693,7 @@ class AuthService:
                 row = connection.execute(
                     "SELECT * FROM auth_users WHERE id=?", (user_id,)
                 ).fetchone()
-        except sqlite3.IntegrityError as error:
+        except INTEGRITY_ERRORS as error:
             raise AuthError(
                 "用户名已经存在",
                 code="username_exists",
@@ -896,7 +911,7 @@ class AuthService:
 
     def _rate_limited(
         self,
-        connection: sqlite3.Connection,
+        connection: Any,
         username_hash: str,
         client_hash: str,
     ) -> bool:

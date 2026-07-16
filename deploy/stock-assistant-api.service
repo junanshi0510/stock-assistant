@@ -1,6 +1,7 @@
 [Unit]
 Description=Stock Assistant FastAPI backend
-After=network.target
+After=network-online.target postgresql.service redis-server.service
+Wants=network-online.target
 
 [Service]
 Type=simple
@@ -8,37 +9,25 @@ User=stockassistant
 Group=stockassistant
 UMask=0077
 WorkingDirectory=/opt/stock-assistant/backend
-StateDirectory=stock-assistant
 Environment="PYTHONUNBUFFERED=1"
-Environment="ALLOWED_ORIGINS=https://your-domain.com"
-EnvironmentFile=-/etc/stock-assistant/stock-assistant.env
-Environment="STOCK_ASSISTANT_DB_PATH=/var/lib/stock-assistant/stock_assistant.db"
+Environment="PYTHONPATH=/opt/stock-assistant/backend"
+Environment="SERVICE_NAME=stock-assistant-api"
+Environment="LOG_FORMAT=json"
+EnvironmentFile=/etc/stock-assistant/stock-assistant.env
 Environment="AUTH_REQUIRED=true"
 Environment="AUTH_TRUST_PROXY=true"
-# 2-core / 4 GB host: keep real-data Agent batches at two concurrent Run lanes.
-Environment="AGENT_WORKER_CONCURRENCY=2"
+Environment="TASK_QUEUE_MODE=celery"
+Environment="AGENT_WORKER_ENABLED=0"
+Environment="DECISION_CHECK_WORKER_ENABLED=0"
 Environment="AGENT_MAX_BATCH_SIZE=6"
 Environment="AGENT_MAX_PENDING_RUNS=20"
-# Opt-in portfolio checks run on one lease-protected lane.
-Environment="DECISION_CHECK_WORKER_ENABLED=1"
-Environment="DECISION_CHECK_POLL_SECONDS=30"
-Environment="DECISION_CHECK_LEASE_SECONDS=120"
-# Enable screenshot OCR import only after creating an Alibaba Cloud OCR AccessKey.
-# Environment="ALIBABA_CLOUD_ACCESS_KEY_ID=your-access-key-id"
-# Environment="ALIBABA_CLOUD_ACCESS_KEY_SECRET=your-access-key-secret"
-# Environment="ALIYUN_OCR_ENDPOINT=ocr-api.cn-hangzhou.aliyuncs.com"
-# Enable evidence-bound model synthesis only with a server-side API key.
-# Prefer storing these values in /etc/stock-assistant/stock-assistant.env.
-# Environment="LLM_PROVIDER=deepseek"
-# Environment="LLM_MODEL=deepseek-v4-flash"
-# Environment="DEEPSEEK_API_KEY=your-deepseek-api-key"
-# Environment="LLM_THINKING_MODE=disabled"
-# Environment="LLM_DATA_REGION=cn"
-# Keep private portfolio egress disabled until login, consent and tenant isolation are complete.
-# Environment="LLM_PRIVATE_CONTEXT_ENABLED=false"
+Environment="REQUIRE_OBJECT_STORAGE=true"
 ExecStart=/opt/stock-assistant/venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8000
 Restart=always
 RestartSec=5
+TimeoutStopSec=30
+MemoryMax=1G
+TasksMax=256
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

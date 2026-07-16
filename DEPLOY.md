@@ -1,409 +1,358 @@
-# 金融投资助手上线部署
+# 金融投资助手生产部署
 
-推荐方式：一台 Linux 云服务器运行 FastAPI 后端，Nginx 托管 React 构建产物，并把 `/api` 反向代理到后端。
+本文档描述当前生产架构。生产环境不再使用 SQLite 作为运行时数据库，也不允许 API 在 Redis、Worker 或 OSS 不可用时回退到进程内任务或本地文件。
 
-这样其他人访问 `https://你的域名` 就能直接使用，前端仍然请求相对路径 `/api/...`，不需要在前端写死后端地址。
+## 目录
 
-## 1. 服务器准备
+1. [生产架构](#1-生产架构)
+2. [服务器要求](#2-服务器要求)
+3. [安装运行依赖](#3-安装运行依赖)
+4. [生产环境变量](#4-生产环境变量)
+5. [初始化 PostgreSQL 与 Redis](#5-初始化-postgresql-与-redis)
+6. [初始化私有 OSS](#6-初始化私有-oss)
+7. [SQLite 首次迁移](#7-sqlite-首次迁移)
+8. [安装服务](#8-安装服务)
+9. [Nginx 与前端](#9-nginx-与前端)
+10. [验收](#10-验收)
+11. [备份与恢复演练](#11-备份与恢复演练)
+12. [日志与监控](#12-日志与监控)
+13. [日常发布](#13-日常发布)
+14. [回滚](#14-回滚)
 
-建议配置：
+## 1. 生产架构
 
-- Ubuntu 22.04/24.04
-- 2 核 4G 起步，基金/多股对比会抓真实数据，1 核 1G 容易慢
-- 开放安全组端口：`80`、`443`
+```text
+Browser
+  -> Nginx :80/:443
+     -> React static files
+     -> FastAPI :8000
+        -> PostgreSQL (authoritative state, audit chains, jobs)
+        -> Redis (task transport only; messages contain IDs)
 
-安装依赖：
+Celery queues
+  agent       -> Agent orchestration worker
+  market-data -> fund/stock/sector/news data worker
+  llm         -> DeepSeek synthesis worker
+  ocr         -> Alibaba Cloud OCR worker + private OSS
+  scheduler   -> durable schedules and stale-lease recovery
+
+Operations
+  journald JSON logs
+  /internal/metrics (localhost only)
+  /health/ready + two-minute systemd health check
+  daily PostgreSQL dump -> encrypted OSS
+  weekly isolated restore drill
+```
+
+PostgreSQL 保存所有输入、结果、租约、幂等键和不可变事件链。Redis 不是事实源，Redis 丢失后由 scheduler 从 PostgreSQL 重新派发尚未完成的任务。
+
+## 2. 服务器要求
+
+- Ubuntu 24.04 LTS。
+- 2 核 4G 是当前最低生产配置，建议增加 2G swap；用户量或并发批次增加后升级到 4 核 8G。
+- 根分区至少保留 15GB 可用空间。
+- 安全组只开放 `22`、`80`、`443`。不要开放 `5432`、`6379`、`8000`。
+- PostgreSQL、Redis、FastAPI 只监听本机地址。
+- 需要独立的阿里云 RAM 身份，最小授权 OCR 与指定 OSS Bucket，不使用主账号 AccessKey。
+
+## 3. 安装运行依赖
 
 ```bash
 sudo apt update
-sudo apt install -y python3 python3-venv python3-pip nodejs npm nginx git sqlite3 openssl
+sudo apt install -y \
+  python3 python3-venv python3-pip \
+  postgresql postgresql-client redis-server \
+  nginx git sqlite3 openssl curl
+
+sudo useradd --system --home-dir /var/lib/stock-assistant \
+  --shell /usr/sbin/nologin stockassistant 2>/dev/null || true
+sudo install -d -o stockassistant -g stockassistant -m 0700 /var/lib/stock-assistant
+sudo install -d -m 0750 /etc/stock-assistant
+sudo install -d -m 0700 /var/backups/stock-assistant/postgresql
 ```
 
-如果系统 Node.js 版本低于 18，建议用 NodeSource 或 nvm 安装 Node.js 20+。
-
-## 2. 上传项目
-
-假设部署到：
-
-```bash
-/opt/stock-assistant
-```
-
-可以用 Git 拉取，也可以把当前项目打包上传：
-
-```bash
-sudo mkdir -p /opt/stock-assistant
-sudo chown -R $USER:$USER /opt/stock-assistant
-cd /opt/stock-assistant
-```
-
-把本项目文件放到该目录后继续。
-
-## 3. 安装后端
+安装项目：
 
 ```bash
 cd /opt/stock-assistant
 python3 -m venv venv
-source venv/bin/activate
-pip install -r backend/requirements.txt
+/opt/stock-assistant/venv/bin/pip install -r backend/requirements.txt
 ```
 
-本地测试后端：
+## 4. 生产环境变量
+
+唯一环境文件为 `/etc/stock-assistant/stock-assistant.env`，必须由 root 持有且权限为 `600`：
+
+```bash
+sudo cp deploy/stock-assistant.env.example /etc/stock-assistant/stock-assistant.env
+sudo chown root:root /etc/stock-assistant/stock-assistant.env
+sudo chmod 600 /etc/stock-assistant/stock-assistant.env
+```
+
+至少配置：
+
+```ini
+DATABASE_URL=postgresql://stockassistant_app:URL编码密码@127.0.0.1:5432/stock_assistant
+POSTGRES_ADMIN_URL=postgresql://stockassistant_backup:URL编码密码@127.0.0.1:5432/postgres
+REDIS_URL=redis://:URL编码密码@127.0.0.1:6379/0
+TASK_QUEUE_MODE=celery
+
+AUTH_AUDIT_PEPPER=至少32字节随机值
+AUTH_COOKIE_SECURE=false
+
+OSS_REGION=cn-hangzhou
+OSS_BUCKET=全局唯一私有Bucket名
+OSS_USE_INTERNAL_ENDPOINT=true
+OSS_SSE_MODE=AES256
+OBJECT_KEY_PEPPER=至少32字节随机值
+REQUIRE_OBJECT_STORAGE=true
+
+ALIBABA_CLOUD_ACCESS_KEY_ID=RAM用户AccessKeyId
+ALIBABA_CLOUD_ACCESS_KEY_SECRET=RAM用户AccessKeySecret
+ALIYUN_OCR_ENDPOINT=ocr-api.cn-hangzhou.aliyuncs.com
+
+LLM_PROVIDER=deepseek
+LLM_MODEL=deepseek-chat
+DEEPSEEK_API_KEY=服务端Key
+```
+
+纯 IP HTTP 阶段使用 `AUTH_COOKIE_SECURE=false`。配置域名和 HTTPS 后改为 `true` 并重启 API。任何 Key 都不能写入 Git、前端变量或命令输出。
+
+## 5. 初始化 PostgreSQL 与 Redis
+
+推荐角色：
+
+- `stockassistant_app`：数据库 owner，仅供应用连接。
+- `stockassistant_backup`：仅具备 `LOGIN, CREATEDB`，用于隔离恢复演练，不保存 PostgreSQL 超级用户密码。
+
+创建角色和空数据库后，确认：
+
+```bash
+psql "$DATABASE_URL" -Atqc 'select current_database(), current_user'
+```
+
+Redis 至少配置：
+
+```conf
+bind 127.0.0.1 ::1
+protected-mode yes
+appendonly yes
+appendfsync everysec
+maxmemory 256mb
+maxmemory-policy noeviction
+requirepass <随机密码>
+```
+
+重启并检查：
+
+```bash
+sudo systemctl restart postgresql redis-server
+redis-cli -u "$REDIS_URL" ping
+```
+
+必须返回 `PONG`。禁止使用 `allkeys-lru`，否则积压任务可能被静默淘汰。
+
+## 6. 初始化私有 OSS
+
+配置环境变量后执行幂等初始化：
 
 ```bash
 cd /opt/stock-assistant/backend
-/opt/stock-assistant/venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8000
+sudo bash -c '
+  set -a
+  source /etc/stock-assistant/stock-assistant.env
+  set +a
+  exec runuser -u stockassistant --preserve-environment -- \
+    /opt/stock-assistant/venv/bin/python -m provision_object_storage
+'
 ```
 
-另开一个终端测试：
+该命令会创建或校验专用 Bucket，并强制：
+
+- Bucket ACL 为 `private`。
+- Bucket 级公共访问阻断开启。
+- OCR 原图 `private/holding-ocr/` 两天后删除。
+- PostgreSQL 异地备份保留 180 天。
+- 未完成分片上传七天后清理。
+- 所有应用上传对象使用 OSS 服务端加密。
+
+权限、区域、ACL 或生命周期校验失败时命令非零退出，不会改用本地文件。
+
+## 7. SQLite 首次迁移
+
+仅首次升级执行。目标 PostgreSQL 必须是空数据库。
 
 ```bash
-curl http://127.0.0.1:8000/api/markets
+cd /opt/stock-assistant
+sudo bash -c '
+  set -a
+  source /etc/stock-assistant/stock-assistant.env
+  set +a
+  TARGET_DATABASE_URL="$DATABASE_URL" \
+    SOURCE_SQLITE=/var/lib/stock-assistant/stock_assistant.db \
+    /opt/stock-assistant/deploy/scripts/cutover-sqlite-to-postgres.sh
+'
 ```
 
-## 4. 构建前端
+脚本执行顺序：
+
+1. 在旧 API 运行期间创建一份 SQLite 在线备份并执行 `integrity_check`。
+2. 停止 API 和 Worker。
+3. 创建最终 SQLite 一致性备份及 SHA-256。
+4. 迁移全部业务表、索引和外键。
+5. 在同一个 PostgreSQL 事务内安装平台表和审计触发器。
+6. 逐表比较源/目标行数和规范化内容 SHA-256。
+7. 检测迁移期间 SQLite 主文件/WAL 是否发生写入。
+
+任一检查失败，PostgreSQL 事务回滚并尝试恢复旧 SQLite API。成功后 SQLite 文件和两份备份仍保留，不自动删除。
+
+## 8. 安装服务
+
+```bash
+cd /opt/stock-assistant
+sudo cp deploy/stock-assistant-*.service /etc/systemd/system/
+sudo cp deploy/stock-assistant-*.timer /etc/systemd/system/
+sudo chmod 0755 deploy/scripts/*.sh
+sudo systemctl daemon-reload
+
+sudo systemctl enable --now \
+  stock-assistant-agent-worker \
+  stock-assistant-market-worker \
+  stock-assistant-llm-worker \
+  stock-assistant-ocr-worker \
+  stock-assistant-scheduler-worker \
+  stock-assistant-celery-beat \
+  stock-assistant-api
+
+sudo systemctl enable --now \
+  stock-assistant-healthcheck.timer \
+  stock-assistant-backup.timer \
+  stock-assistant-backup-verify.timer
+```
+
+所有 Worker 使用同一代码版本和环境文件，但使用独立队列、并发和内存上限。API 单元中禁止进程内 Agent 与定时 Worker。
+
+## 9. Nginx 与前端
 
 ```bash
 cd /opt/stock-assistant/frontend
-npm install
+npm ci
 npm run build
-sudo mkdir -p /var/www/stock-assistant
-sudo rm -rf /var/www/stock-assistant/*
-sudo cp -r dist/* /var/www/stock-assistant/
-```
+sudo install -d -m 0755 /var/www/stock-assistant
+sudo find /var/www/stock-assistant -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+sudo cp -a dist/. /var/www/stock-assistant/
 
-## 5. 配置后端常驻服务
-
-生产服务使用独立低权限用户，并把唯一数据库放在 `/var/lib/stock-assistant`，避免 API 进程以 root 身份运行或修改部署代码：
-
-```bash
-sudo useradd --system --home-dir /var/lib/stock-assistant --shell /usr/sbin/nologin stockassistant 2>/dev/null || true
-sudo install -d -o stockassistant -g stockassistant -m 700 /var/lib/stock-assistant
-```
-
-旧版本如果已经在 `backend/stock_assistant.db` 保存数据，先停止旧服务，再用 SQLite 在线备份协议复制完整数据库；不要只复制主文件而漏掉 WAL：
-
-```bash
-sudo systemctl stop stock-assistant-api 2>/dev/null || true
-if [ -f /opt/stock-assistant/backend/stock_assistant.db ] && [ ! -f /var/lib/stock-assistant/stock_assistant.db ]; then
-  sudo sqlite3 /opt/stock-assistant/backend/stock_assistant.db ".backup '/var/lib/stock-assistant/stock_assistant.db'"
-fi
-sudo chown stockassistant:stockassistant /var/lib/stock-assistant/stock_assistant.db 2>/dev/null || true
-sudo chmod 600 /var/lib/stock-assistant/stock_assistant.db 2>/dev/null || true
-```
-
-创建只由 root 读取的服务端配置文件：
-
-```bash
-sudo install -d -m 750 /etc/stock-assistant
-if [ ! -f /etc/stock-assistant/stock-assistant.env ]; then
-  sudo cp /opt/stock-assistant/deploy/stock-assistant.env.example /etc/stock-assistant/stock-assistant.env
-fi
-sudo chmod 600 /etc/stock-assistant/stock-assistant.env
-openssl rand -hex 32
-sudo nano /etc/stock-assistant/stock-assistant.env
-```
-
-把上一条命令生成的随机值写入 `AUTH_AUDIT_PEPPER`，不要提交到 Git。纯 HTTP IP 访问阶段设置 `AUTH_COOKIE_SECURE=false`；完成 HTTPS 后必须改为 `true`。已有 DeepSeek、OCR 等 Key 继续保留在同一文件中。
-
-普通用户自助注册由以下配置控制。注册接口只接收账号和密码，服务端固定创建 `user` 角色；管理员角色不能通过注册请求指定：
-
-```ini
-AUTH_SELF_REGISTRATION_ENABLED=true
-AUTH_REGISTRATION_LIMIT=5
-AUTH_REGISTRATION_WINDOW_MINUTES=60
-```
-
-初始化唯一的首个管理员。命令会在终端安全地输入两次密码，不会把密码写进 Shell 历史；旧版 `default` 持仓和 `anonymous` Agent Run 会一次性归属该管理员：
-
-```bash
-sudo -u stockassistant env STOCK_ASSISTANT_DB_PATH=/var/lib/stock-assistant/stock_assistant.db \
-  /opt/stock-assistant/venv/bin/python /opt/stock-assistant/backend/manage_auth.py \
-  bootstrap-admin --username admin --display-name "系统管理员"
-```
-
-初始密码或管理员重置密码至少 12 个字符，且不能包含用户名。首次登录必须修改临时密码，修改后所有会话都会退出。
-
-复制模板：
-
-```bash
-sudo cp /opt/stock-assistant/deploy/stock-assistant-api.service /etc/systemd/system/
-```
-
-编辑域名：
-
-```bash
-sudo nano /etc/systemd/system/stock-assistant-api.service
-```
-
-把：
-
-```ini
-Environment="ALLOWED_ORIGINS=https://your-domain.com"
-```
-
-改成你的真实域名，例如：
-
-```ini
-Environment="ALLOWED_ORIGINS=https://fund.example.com"
-```
-
-启动服务：
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now stock-assistant-api
-sudo systemctl status stock-assistant-api
-```
-
-认证验收：第一个接口应显示认证已初始化、开放注册但当前未登录，第二个接口必须返回 `401`。浏览器未登录时只能看到登录和注册界面：
-
-```bash
-curl -i http://127.0.0.1:8000/api/auth/session
-curl -i http://127.0.0.1:8000/api/markets
-```
-
-管理员遗失密码或账户被误停用时，只能通过服务器 SSH 执行离线恢复。恢复操作会启用该管理员、吊销全部旧会话、要求首次改密并写入审计链：
-
-```bash
-sudo -u stockassistant env STOCK_ASSISTANT_DB_PATH=/var/lib/stock-assistant/stock_assistant.db \
-  /opt/stock-assistant/venv/bin/python /opt/stock-assistant/backend/manage_auth.py \
-  recover-admin --username admin
-
-sudo -u stockassistant env STOCK_ASSISTANT_DB_PATH=/var/lib/stock-assistant/stock_assistant.db \
-  /opt/stock-assistant/venv/bin/python /opt/stock-assistant/backend/manage_auth.py verify-audit
-```
-
-查看日志：
-
-```bash
-journalctl -u stock-assistant-api -f
-```
-
-## 6. 配置 Nginx
-
-复制模板：
-
-```bash
-sudo cp /opt/stock-assistant/deploy/nginx-stock-assistant.conf /etc/nginx/sites-available/stock-assistant
-sudo ln -s /etc/nginx/sites-available/stock-assistant /etc/nginx/sites-enabled/stock-assistant
-```
-
-编辑域名：
-
-```bash
-sudo nano /etc/nginx/sites-available/stock-assistant
-```
-
-把：
-
-```nginx
-server_name your-domain.com;
-```
-
-改成你的真实域名。
-
-检查并重载：
-
-```bash
+sudo cp /opt/stock-assistant/deploy/nginx-stock-assistant.conf \
+  /etc/nginx/sites-available/stock-assistant
+sudo ln -sfn /etc/nginx/sites-available/stock-assistant \
+  /etc/nginx/sites-enabled/stock-assistant
 sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-现在访问：
+修改模板中的 `server_name`。`/internal/metrics` 只能由 `127.0.0.1` 和 `::1` 访问。
 
-```text
-http://你的域名
-```
-
-应该已经能打开页面。
-
-## 7. 配置 HTTPS
-
-使用 Certbot 自动签发免费证书：
+## 10. 验收
 
 ```bash
-sudo apt install -y certbot python3-certbot-nginx
-sudo certbot --nginx -d 你的域名
+curl -fsS http://127.0.0.1:8000/health/live
+curl -fsS http://127.0.0.1:8000/health/ready
+curl -fsS http://127.0.0.1:8000/internal/metrics/ | head
+
+sudo systemctl --no-pager --failed
+sudo systemctl status 'stock-assistant-*' --no-pager
+sudo -u postgres psql stock_assistant -Atqc \
+  "select count(*) from platform_schema_migrations"
 ```
 
-完成后访问：
+`/health/ready` 只有在数据库、Redis、OSS 和五个队列 Worker 全部可用时才返回 `200`。公网未登录访问业务 API 必须返回 `401`。
 
-```text
-https://你的域名
-```
+## 11. 备份与恢复演练
 
-确认 HTTPS 正常后，把 `/etc/stock-assistant/stock-assistant.env` 中的 `AUTH_COOKIE_SECURE` 改为 `true`，然后重启后端。否则浏览器不会在 HTTPS 安全策略下获得生产会话 Cookie：
+立即执行一次备份：
 
 ```bash
-sudo nano /etc/stock-assistant/stock-assistant.env
-sudo systemctl restart stock-assistant-api
+sudo systemctl start stock-assistant-backup.service
+sudo journalctl -u stock-assistant-backup.service -n 100 --no-pager
 ```
 
-## 8. 更新发布
+备份成功条件：
 
-每次代码更新后：
+- `pg_dump` 自定义压缩格式成功。
+- `pg_restore --list` 可读取。
+- 本地 SHA-256 已生成。
+- 备份和校验文件已上传到私有 OSS 且确认服务端加密。
+- 只有 OSS 上传成功后才清理超过保留期的本地备份。
+
+立即执行隔离恢复演练：
+
+```bash
+sudo systemctl start stock-assistant-backup-verify.service
+sudo journalctl -u stock-assistant-backup-verify.service -n 100 --no-pager
+```
+
+恢复演练创建临时数据库、完整恢复、核对表数和迁移标记，随后删除临时数据库。默认每日备份、每周恢复演练。
+
+## 12. 日志与监控
+
+服务输出单行 JSON 到 journald，自动隐藏 API Key、AccessKey、密码、Authorization 和带认证信息的数据库/Redis URL。
+
+```bash
+sudo journalctl -u stock-assistant-api -f -o cat
+sudo journalctl -u stock-assistant-market-worker -f -o cat
+sudo journalctl -u stock-assistant-healthcheck.service --since today --no-pager
+```
+
+Prometheus 指标位于 `http://127.0.0.1:8000/internal/metrics/`，包括 HTTP 延迟、状态码、并发请求、队列深度和 Celery 任务结果。systemd 每两分钟执行一次完整 readiness 检查，失败记录可由阿里云云监控采集并告警。
+
+建议配置持久 journald：
+
+```ini
+# /etc/systemd/journald.conf.d/stock-assistant.conf
+[Journal]
+Storage=persistent
+SystemMaxUse=1G
+MaxRetentionSec=30day
+Compress=yes
+```
+
+修改后执行 `sudo systemctl restart systemd-journald`。
+
+## 13. 日常发布
 
 ```bash
 cd /opt/stock-assistant
-git pull
-
-source venv/bin/activate
-pip install -r backend/requirements.txt
+git pull --ff-only
+/opt/stock-assistant/venv/bin/pip install -r backend/requirements.txt
 
 cd frontend
-npm install
+npm ci
 npm run build
-sudo rm -rf /var/www/stock-assistant/*
-sudo cp -r dist/* /var/www/stock-assistant/
+sudo find /var/www/stock-assistant -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+sudo cp -a dist/. /var/www/stock-assistant/
 
-sudo systemctl restart stock-assistant-api
-sudo systemctl reload nginx
+sudo systemctl restart \
+  stock-assistant-agent-worker \
+  stock-assistant-market-worker \
+  stock-assistant-llm-worker \
+  stock-assistant-ocr-worker \
+  stock-assistant-scheduler-worker \
+  stock-assistant-celery-beat \
+  stock-assistant-api
+sudo nginx -t && sudo systemctl reload nginx
+curl -fsS http://127.0.0.1:8000/health/ready
 ```
 
-## 9. 生产注意事项
+数据库结构升级必须先备份并执行对应迁移，不能依赖应用启动时自动建表。
 
-- 前端必须通过 Nginx 托管 `frontend/dist`，不要用 `npm run dev` 对外提供服务。
-- 后端只监听 `127.0.0.1:8000`，不要直接暴露公网端口 8000。
-- 生产 systemd 服务必须保持 `AUTH_REQUIRED=true`，并使用 `stockassistant` 低权限用户；缺少审计 Pepper 或初始管理员时系统会拒绝业务 API，不要通过关闭认证绕过初始化。
-- 不要把会话 Cookie、临时密码、`AUTH_AUDIT_PEPPER`、OCR Key 或模型 Key 写入仓库、日志和前端环境变量。
-- 真实数据源依赖服务器网络环境；如果服务器访问东方财富、天天基金、Tushare、海外源不稳定，需要在服务器网络或代理规则里处理。
-- 如果美股基本面/新闻要稳定使用，需要在 `backend/config.py` 配置 Alpha Vantage/Polygon 等真实数据源 Key。
-- 如果前端和后端拆成两个域名，需要设置后端环境变量 `ALLOWED_ORIGINS=https://前端域名`。
-- “我的持仓”截图导入功能需要真实 OCR 服务。默认支持阿里云 OCR，未配置 AccessKey 时可以先用“粘贴识别文本/手动添加”。
+## 14. 回滚
 
-## 10. 云服务器部署建议
+代码回滚与数据回滚分开处理：
 
-本项目推荐整站部署到云服务器，不建议用 GitHub Pages，因为 GitHub Pages 不能运行 FastAPI 后端。
+1. 停止 API、Beat 和所有 Worker，防止继续写入。
+2. 代码回滚到已验证提交。
+3. 若 PostgreSQL 数据有效，只回滚代码，不恢复旧 SQLite。
+4. 只有明确决定放弃切换后的全部 PostgreSQL 写入时，才移除 `DATABASE_URL/REDIS_URL` 并恢复最终 SQLite 备份。
+5. 恢复前再次备份当前 PostgreSQL，保留迁移报告和服务日志。
 
-推荐最终结构：
-
-```text
-用户 -> https://your-domain.com/        -> Nginx 静态前端
-用户 -> https://your-domain.com/api/... -> Nginx 反代到 127.0.0.1:8000 FastAPI
-```
-
-这样浏览器看到的是同一个域名，前端可以继续请求相对路径 `/api/...`，不用处理跨域问题。
-
-如果你后续想拆成两个域名，例如：
-
-```text
-https://www.your-domain.com 前端
-https://api.your-domain.com 后端
-```
-
-则需要：
-
-- 前端构建时设置 `VITE_API_BASE_URL=https://api.your-domain.com`
-- 后端服务设置 `ALLOWED_ORIGINS=https://www.your-domain.com`
-
-但第一版上线建议先用单域名同站部署，排障最少。
-
-## 11. 启用阿里云 OCR 截图识别
-
-“我的持仓”支持上传基金/股票持仓截图并识别文字。该功能不会使用假数据；如果没有配置真实 OCR，接口会明确提示需要配置 AccessKey。
-
-启用步骤：
-
-1. 在阿里云控制台开通文字识别 OCR。
-2. 创建 RAM 用户或使用已有 AccessKey，并授权 OCR 调用权限。
-3. 编辑后端 systemd 服务：
-
-```bash
-sudo nano /etc/systemd/system/stock-assistant-api.service
-```
-
-加入或取消注释：
-
-```ini
-Environment="ALIBABA_CLOUD_ACCESS_KEY_ID=你的AccessKeyId"
-Environment="ALIBABA_CLOUD_ACCESS_KEY_SECRET=你的AccessKeySecret"
-Environment="ALIYUN_OCR_ENDPOINT=ocr-api.cn-hangzhou.aliyuncs.com"
-```
-
-4. 更新依赖并重启：
-
-```bash
-cd /opt/stock-assistant
-source venv/bin/activate
-pip install -r backend/requirements.txt
-sudo systemctl daemon-reload
-sudo systemctl restart stock-assistant-api
-sudo systemctl status stock-assistant-api
-```
-
-隐私建议：
-
-- 上传截图前尽量打码姓名、手机号、账号和银行卡。
-- 第一版只保存用户确认后的持仓结果，不长期保存原图。
-- 持仓保存时由服务端登录会话绑定真实 `user_id`；不得接受客户端自行指定用户归属。
-
-## 12. 配置批量基金 Agent 容量
-
-2 核 4 GB 服务器建议保持以下配置：
-
-```ini
-Environment="AGENT_WORKER_CONCURRENCY=2"
-Environment="AGENT_MAX_BATCH_SIZE=6"
-Environment="AGENT_MAX_PENDING_RUNS=20"
-```
-
-- `AGENT_WORKER_CONCURRENCY` 是同时执行的单基金 Run 数，不是批次数。代码会把值限制在 `1-4`。
-- `AGENT_MAX_BATCH_SIZE` 默认允许一次提交 2-6 只基金，API 代码硬上限为 8。
-- `AGENT_MAX_PENDING_RUNS` 同时限制单基金任务和批次子任务，创建批次前会原子检查所需队列名额。
-- 单个基金的持仓/新闻工具内部还会使用短生命周期 I/O 线程；不要在 2 核机器上把 Run 并发直接提高到 4。
-
-修改后执行：
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl restart stock-assistant-api
-curl -s http://127.0.0.1:8000/api/v1/agent/batches?limit=1
-```
-
-## 13. 启用证据约束的大模型研判
-
-未配置模型时，Agent 会继续完成真实数据和确定性风险门禁，但明确显示
-`model_not_configured`，不会用模板文本冒充模型研判。
-
-可以在阿里云服务器调用 DeepSeek 官方 API。密钥只写入独立环境文件，不写入代码、Git、systemd unit 或聊天记录：
-
-```bash
-sudo install -d -m 750 /etc/stock-assistant
-sudo touch /etc/stock-assistant/stock-assistant.env
-sudo chmod 600 /etc/stock-assistant/stock-assistant.env
-sudo nano /etc/stock-assistant/stock-assistant.env
-```
-
-```dotenv
-LLM_PROVIDER=deepseek
-LLM_MODEL=deepseek-v4-flash
-DEEPSEEK_API_KEY=你的DeepSeek-API-Key
-LLM_THINKING_MODE=disabled
-LLM_DATA_REGION=cn
-LLM_PRIVATE_CONTEXT_ENABLED=false
-```
-
-`deepseek-v4-flash` 适合默认批量研判；需要更强推理且能接受更高延迟时，可改为
-`deepseek-v4-pro`，并设置 `LLM_THINKING_MODE=enabled`。不要使用即将停用的
-`deepseek-chat` 或 `deepseek-reasoner` 旧别名。
-
-确认 `/etc/systemd/system/stock-assistant-api.service` 的 `[Service]` 包含：
-
-```ini
-EnvironmentFile=-/etc/stock-assistant/stock-assistant.env
-```
-
-然后执行：
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl restart stock-assistant-api
-curl -s http://127.0.0.1:8000/api/v1/agent/model/status
-```
-
-只有返回 `"configured": true` 才代表模型已接通。登录和用户级数据隔离并不等于用户已经同意把私人组合发送给外部模型，因此生产环境仍应保持
-`LLM_PRIVATE_CONTEXT_ENABLED=false`；此时个人持仓只在本机确定性门禁中使用，不会发送给模型。后续只有在补齐逐用户明示同意、处理地域和撤回机制后才能开启。
-
-再执行一次受控基金研究任务，并在 Run 详情中确认 `model.status=available`、模型 ID、
-响应 ID、Token 用量和 Evidence 引用均已保存，才算完成真实调用验收。禁止用模拟响应代替。
+SQLite 回滚会丢失切换后在 PostgreSQL 产生的用户、持仓、交易和 Agent 任务，必须由管理员明确批准，不能自动执行。

@@ -101,6 +101,33 @@ class AgentWorkflowRunner:
         definition: ToolDefinition,
         input_payload: dict[str, Any],
     ) -> dict[str, Any]:
+        from task_queue import uses_celery_queue
+
+        if uses_celery_queue():
+            from .queued_tools import (
+                QueuedToolError,
+                QueuedToolTimeout,
+                execute_queued_tool,
+                tool_queue,
+            )
+
+            if tool_queue(definition.name):
+                try:
+                    return execute_queued_tool(
+                        run_id=run_id,
+                        tool_name=definition.name,
+                        tool_version=definition.version,
+                        input_payload=dict(input_payload),
+                        timeout_seconds=definition.timeout_seconds,
+                        agent_repository=self.repository,
+                        cancel_check=lambda: self.repository.is_cancel_requested(run_id),
+                    )
+                except QueuedToolTimeout as error:
+                    raise ToolTimeoutError(str(error)) from error
+                except QueuedToolError as error:
+                    if self.repository.is_cancel_requested(run_id):
+                        raise RunCancelledError("Agent Run 已请求取消") from error
+                    raise
         executor = ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix=f"agent-{definition.name.replace('.', '-')}",

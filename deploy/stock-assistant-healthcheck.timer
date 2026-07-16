@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Stock Assistant health check every two minutes
+
+[Timer]
+OnBootSec=3m
+OnUnitActiveSec=2m
+AccuracySec=15s
+Persistent=true
+Unit=stock-assistant-healthcheck.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,33 @@
+[Unit]
+Description=Stock Assistant private OCR worker
+After=network-online.target postgresql.service redis-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=stockassistant
+Group=stockassistant
+UMask=0077
+WorkingDirectory=/opt/stock-assistant/backend
+EnvironmentFile=/etc/stock-assistant/stock-assistant.env
+Environment="PYTHONUNBUFFERED=1"
+Environment="PYTHONPATH=/opt/stock-assistant/backend"
+Environment="SERVICE_NAME=stock-assistant-ocr-worker"
+Environment="LOG_FORMAT=json"
+Environment="TASK_QUEUE_MODE=celery"
+Environment="MALLOC_ARENA_MAX=2"
+ExecStart=/opt/stock-assistant/venv/bin/celery -A task_queue:celery_app worker --queues=ocr --hostname=ocr@%H --concurrency=1 --pool=prefork --max-tasks-per-child=50 --without-gossip --without-mingle
+Restart=always
+RestartSec=5
+TimeoutStopSec=90
+KillSignal=SIGTERM
+MemoryMax=650M
+TasksMax=128
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/stock-assistant
+
+[Install]
+WantedBy=multi-user.target

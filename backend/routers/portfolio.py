@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 """User-confirmed holdings, watchlist, OCR import, and monitoring endpoints."""
 
-from concurrent.futures import ThreadPoolExecutor
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
+import hashlib
+import os
 from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, ConfigDict, Field
 
-import analysis
 import data_fetch
 import decision_center
 import fund_switch_cost_service
@@ -25,11 +25,24 @@ import portfolio_action_report
 import portfolio_review
 import storage
 import transaction_import
+from background_jobs import BackgroundJobRepository, sanitize_worker_error
 from auth import AuthPrincipal, principal_from_request
+from image_uploads import normalize_ocr_image
+from market_data_gateway import MarketDataGatewayError, execute_market_operation
 from investment_policy import (
     CONSENT_TEXT_SHA256,
     CONSENT_VERSION,
     validate_investment_policy,
+)
+from object_assets import ObjectAssetRepository
+from object_storage import (
+    AliyunObjectStorage,
+    ObjectStorageConfigurationError,
+)
+from task_queue import (
+    TaskQueueUnavailableError,
+    enqueue_background_job,
+    uses_celery_queue,
 )
 
 
@@ -42,6 +55,40 @@ def _subject_id(principal: object) -> str:
 
 def _actor_id(principal: object) -> str:
     return principal.user_id if isinstance(principal, AuthPrincipal) else "default"
+
+
+def _tenant_id(principal: object) -> str:
+    return "public"
+
+
+def _call_portfolio_data(
+    operation: str,
+    payload: dict,
+    *,
+    principal: AuthPrincipal,
+    error_prefix: str,
+):
+    user_id = _subject_id(principal)
+    try:
+        return execute_market_operation(
+            operation,
+            {**payload, "user_id": user_id},
+            tenant_id=_tenant_id(principal),
+            user_id=user_id,
+        )
+    except MarketDataGatewayError as error:
+        suffix = f" [job_id={error.job_id}]" if error.job_id else ""
+        raise HTTPException(
+            status_code=error.status_code,
+            detail=f"{error_prefix}:{error}{suffix}",
+        ) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        client_status = getattr(error, "http_status", None)
+        if client_status in {400, 404, 409}:
+            raise HTTPException(status_code=int(client_status), detail=str(error)) from error
+        raise HTTPException(status_code=502, detail=f"{error_prefix}:{error}") from error
 
 
 class HoldingRequest(BaseModel):
@@ -235,21 +282,12 @@ class PortfolioTransactionImportRequest(BaseModel):
 @router.get("/api/watchlist")
 def get_watchlist(principal: AuthPrincipal = Depends(principal_from_request)):
     """Return all saved symbols with independently calculated current scores."""
-    items = storage.list_watchlist(user_id=_subject_id(principal))
-
-    def enrich(item):
-        result = dict(item)
-        try:
-            dataframe = data_fetch.get_history_months(item["market"], item["symbol"], 12, fetch_months=12)
-            result.update(analysis.score_only(dataframe))
-        except Exception as error:
-            result["error"] = str(error)[:80]
-        return result
-
-    if items:
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            items = list(pool.map(enrich, items))
-    return {"items": items, "count": len(items)}
+    return _call_portfolio_data(
+        "portfolio.watchlist",
+        {},
+        principal=principal,
+        error_prefix="真实自选评分读取失败",
+    )
 
 
 @router.post("/api/watchlist")
@@ -283,18 +321,12 @@ def get_holdings_level_recurrence(
     months: int = Query(default=60, ge=6, le=120),
     principal: AuthPrincipal = Depends(principal_from_request),
 ):
-    try:
-        items = storage.list_holdings(user_id=_subject_id(principal))
-        return holding_level_recurrence.build_holding_level_recurrence(
-            items,
-            stock_months=months,
-            max_workers=6,
-        )
-    except Exception as error:
-        raise HTTPException(
-            status_code=502,
-            detail=f"真实持仓估值历史到达批量读取失败:{error}",
-        ) from error
+    return _call_portfolio_data(
+        "portfolio.level_recurrence",
+        {"months": months},
+        principal=principal,
+        error_prefix="真实持仓估值历史到达批量读取失败",
+    )
 
 
 @router.get("/api/holdings/insights")
@@ -302,13 +334,12 @@ def get_holdings_insights(
     max_funds: int = Query(6, ge=2, le=10),
     principal: AuthPrincipal = Depends(principal_from_request),
 ):
-    try:
-        return holdings_mod.holdings_insights(
-            max_funds=max_funds,
-            user_id=_subject_id(principal),
-        )
-    except Exception as error:
-        raise HTTPException(status_code=502, detail=f"真实持仓组合体检失败:{error}")
+    return _call_portfolio_data(
+        "portfolio.insights",
+        {"max_funds": max_funds},
+        principal=principal,
+        error_prefix="真实持仓组合体检失败",
+    )
 
 
 @router.get("/api/holdings/{holding_id}/fund-alternatives")
@@ -320,12 +351,16 @@ def get_holding_fund_alternatives(
     principal: AuthPrincipal = Depends(principal_from_request),
 ):
     try:
-        return fund_switch_cost_service.get_holding_fund_alternatives(
-            holding_id,
-            sort=sort,
-            limit=limit,
-            months=months,
-            user_id=_subject_id(principal),
+        return _call_portfolio_data(
+            "portfolio.fund_alternatives",
+            {
+                "holding_id": holding_id,
+                "sort": sort,
+                "limit": limit,
+                "months": months,
+            },
+            principal=principal,
+            error_prefix="真实基金替代成本核算失败",
         )
     except fund_switch_cost_service.HoldingNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
@@ -491,9 +526,11 @@ def get_holdings_exposure(
     max_funds: int = Query(6, ge=1, le=10),
     principal: AuthPrincipal = Depends(principal_from_request),
 ):
-    return holdings_mod.fund_lookthrough_exposure(
-        max_funds=max_funds,
-        user_id=_subject_id(principal),
+    return _call_portfolio_data(
+        "portfolio.exposure",
+        {"max_funds": max_funds},
+        principal=principal,
+        error_prefix="真实持仓穿透暴露读取失败",
     )
 
 
@@ -1271,22 +1308,149 @@ async def preview_holdings_file(file: UploadFile = File(...)):
         raise HTTPException(status_code=502, detail=f"持仓账单预览失败:{error}")
 
 
-@router.post("/api/holdings/ocr-upload")
-async def upload_holding_screenshot(file: UploadFile = File(...)):
+@router.post("/api/holdings/ocr-upload", status_code=202)
+async def upload_holding_screenshot(
+    file: UploadFile = File(...),
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    if not uses_celery_queue():
+        raise HTTPException(
+            status_code=503,
+            detail="截图 OCR 需要 PostgreSQL、Redis、私有 OSS 和独立 OCR Worker",
+        )
     content_type = file.content_type or ""
     if content_type and not content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="请上传图片文件")
     data = await file.read()
-    if not data:
-        raise HTTPException(status_code=400, detail="图片为空")
-    if len(data) > 8 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="图片不能超过 8MB")
     try:
-        return holdings_mod.recognize_image(data, content_type)
-    except RuntimeError as error:
+        normalized, image_info = normalize_ocr_image(data)
+    except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
+    user_id = _subject_id(principal)
+    digest = hashlib.sha256(normalized).hexdigest()
+    try:
+        object_storage = AliyunObjectStorage()
+        object_key = object_storage.build_private_key(
+            user_id, "holding-ocr", str(image_info["extension"])
+        )
+        retention_hours = max(
+            1, min(168, int(os.getenv("OCR_OBJECT_RETENTION_HOURS", "24")))
+        )
+        retention_until = (
+            datetime.now(timezone.utc) + timedelta(hours=retention_hours)
+        ).isoformat(timespec="milliseconds")
+        assets = ObjectAssetRepository()
+        asset, reserved = assets.reserve(
+            user_id=user_id,
+            purpose="holding_ocr",
+            bucket=object_storage.bucket,
+            object_key=object_key,
+            sha256=digest,
+            content_type=str(image_info["content_type"]),
+            byte_size=len(normalized),
+            retention_until=retention_until,
+            encryption_mode=object_storage.encryption_mode,
+            metadata={
+                "width": image_info["width"],
+                "height": image_info["height"],
+                "metadata_stripped": True,
+            },
+        )
+        if reserved or asset.get("status") == "pending":
+            object_storage.put_bytes(
+                str(asset["object_key"]),
+                normalized,
+                content_type=str(image_info["content_type"]),
+                metadata={
+                    "sha256": digest,
+                    "purpose": "holding-ocr",
+                    "asset-id": str(asset["id"]),
+                },
+            )
+            asset = assets.mark_available(str(asset["id"]))
+        jobs = BackgroundJobRepository()
+        job, _ = jobs.create_job(
+            job_type="ocr",
+            queue_name="ocr",
+            payload={"asset_id": asset["id"]},
+            tenant_id="public",
+            user_id=user_id,
+            object_asset_id=str(asset["id"]),
+            max_attempts=3,
+        )
+        enqueue_background_job(job, jobs)
+        return {
+            "job_id": job["id"],
+            "status": job["status"],
+            "created_at": job["created_at"],
+            "poll_url": f"/api/holdings/ocr-jobs/{job['id']}",
+        }
+    except ObjectStorageConfigurationError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    except TaskQueueUnavailableError as error:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "task_queue_unavailable",
+                "message": str(error),
+                "durable_status": "queued",
+                "job_id": job["id"] if "job" in locals() else None,
+            },
+        ) from error
     except Exception as error:
-        raise HTTPException(status_code=502, detail=f"真实 OCR 识别失败:{error}")
+        if "asset" in locals() and asset and asset.get("id"):
+            try:
+                assets.mark_quarantined(str(asset["id"]), type(error).__name__)
+            except Exception:
+                pass
+        raise HTTPException(
+            status_code=502,
+            detail=f"私有对象上传或 OCR 任务创建失败:{sanitize_worker_error(error)}",
+        ) from error
+
+
+@router.get("/api/holdings/ocr-jobs/{job_id}")
+def get_holding_ocr_job(
+    job_id: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    jobs = BackgroundJobRepository()
+    job = jobs.get_job(job_id, include_payload=True)
+    if job is None or (
+        not principal.is_admin and str(job.get("user_id")) != _subject_id(principal)
+    ):
+        raise HTTPException(status_code=404, detail="OCR 任务不存在")
+    response = {
+        "job_id": job["id"],
+        "status": job["status"],
+        "created_at": job["created_at"],
+        "started_at": job.get("started_at"),
+        "completed_at": job.get("completed_at"),
+        "attempt_count": job.get("attempt_count"),
+        "audit": jobs.verify_event_chain(job_id),
+    }
+    if job["status"] in {"succeeded", "partial"}:
+        response["result"] = job.get("result")
+    elif job["status"] == "failed":
+        response["error"] = {
+            "code": job.get("error_code"),
+            "message": job.get("error_message"),
+        }
+    return response
+
+
+@router.delete("/api/holdings/ocr-jobs/{job_id}")
+def cancel_holding_ocr_job(
+    job_id: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    jobs = BackgroundJobRepository()
+    job = jobs.get_job(job_id)
+    if job is None or (
+        not principal.is_admin and str(job.get("user_id")) != _subject_id(principal)
+    ):
+        raise HTTPException(status_code=404, detail="OCR 任务不存在")
+    return {"cancel_requested": jobs.request_cancel(job_id, str(job["user_id"]))}
 
 
 @router.get("/api/alerts")

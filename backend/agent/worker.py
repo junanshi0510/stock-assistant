@@ -144,6 +144,10 @@ strategy_shadow_worker = StrategyShadowOutcomeWorker(
 
 
 def start_worker() -> bool:
+    from task_queue import uses_celery_queue
+
+    if uses_celery_queue():
+        return False
     if os.getenv("AGENT_WORKER_ENABLED", "1").strip().lower() in {"0", "false", "no"}:
         return False
     run_started = worker.start()

@@ -88,6 +88,7 @@ EXPECTED_OPERATIONS = {
     "/api/holdings/parse-text": {"POST"},
     "/api/holdings/parse-file": {"POST"},
     "/api/holdings/ocr-upload": {"POST"},
+    "/api/holdings/ocr-jobs/{job_id}": {"GET", "DELETE"},
     "/api/alerts": {"GET", "DELETE"},
     "/api/alerts/scan": {"POST"},
     "/api/hot": {"GET"},

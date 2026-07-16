@@ -21,9 +21,16 @@ import datetime
 import hashlib
 import json
 import os
-import sqlite3
 import threading
 import uuid
+
+from database import (
+    configured_database_target,
+    connect_database,
+    connection_is_closed,
+    database_dialect,
+    require_database_schema,
+)
 
 from investment_policy import (
     CONSENT_TEXT_SHA256,
@@ -32,10 +39,8 @@ from investment_policy import (
     payload_sha256,
 )
 
-_DB_PATH = (
-    os.getenv("STOCK_ASSISTANT_DB_PATH")
-    or os.getenv("AGENT_DB_PATH")
-    or os.path.join(os.path.dirname(os.path.abspath(__file__)), "stock_assistant.db")
+_DB_PATH = configured_database_target(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "stock_assistant.db")
 )
 
 # sqlite 默认不允许跨线程共用连接;FastAPI 是多线程的,这里加锁串行化访问,
@@ -46,9 +51,24 @@ _conn = None
 
 def _get_conn():
     global _conn
-    if _conn is None:
-        _conn = sqlite3.connect(_DB_PATH, check_same_thread=False)
-        _conn.row_factory = sqlite3.Row
+    if connection_is_closed(_conn):
+        _conn = connect_database(_DB_PATH, close_on_exit=False)
+        if database_dialect(_conn) == "postgresql":
+            require_database_schema(
+                _conn,
+                {
+                    "storage_schema_migrations",
+                    "user_watchlist",
+                    "user_alerts",
+                    "holdings",
+                    "investment_profiles",
+                    "portfolio_transactions",
+                    "portfolio_snapshots",
+                    "decision_tasks",
+                    "decision_check_schedules",
+                },
+            )
+            return _conn
         _conn.execute("PRAGMA journal_mode=WAL")
         _conn.execute("PRAGMA foreign_keys=ON")
         _conn.execute("PRAGMA busy_timeout=30000")
@@ -1735,9 +1755,11 @@ def add_portfolio_transaction(item: dict, user_id: str = "default") -> dict:
                 shares, unit_price, fee, note, source, created_at
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING id
             """,
             values,
         )
+        inserted_id = cursor.fetchone()["id"]
         conn.commit()
         row = conn.execute(
             """
@@ -1747,7 +1769,7 @@ def add_portfolio_transaction(item: dict, user_id: str = "default") -> dict:
             FROM portfolio_transactions
             WHERE id=?
             """,
-            (cursor.lastrowid,),
+            (inserted_id,),
         ).fetchone()
     return dict(row)
 
@@ -1805,10 +1827,11 @@ def add_portfolio_transactions(
                         shares, unit_price, fee, note, source, created_at
                     )
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    RETURNING id
                     """,
                     value,
                 )
-                inserted_ids.append(cursor.lastrowid)
+                inserted_ids.append(cursor.fetchone()["id"])
             conn.execute(
                 """
                 INSERT INTO portfolio_imports (user_id, file_sha256, filename, row_count, imported_at)
@@ -1881,6 +1904,7 @@ def create_portfolio_snapshot(items: list[dict], reason: str = "manual", user_id
                 total_profit, total_yesterday_profit, holdings_json
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING id
             """,
             (
                 user_id,
@@ -1893,6 +1917,7 @@ def create_portfolio_snapshot(items: list[dict], reason: str = "manual", user_id
                 json.dumps(compact_items, ensure_ascii=False, separators=(",", ":")),
             ),
         )
+        inserted_id = cursor.fetchone()["id"]
         conn.commit()
         row = conn.execute(
             """
@@ -1901,7 +1926,7 @@ def create_portfolio_snapshot(items: list[dict], reason: str = "manual", user_id
             FROM portfolio_snapshots
             WHERE id=?
             """,
-            (cursor.lastrowid,),
+            (inserted_id,),
         ).fetchone()
     return dict(row)
 
@@ -2059,7 +2084,7 @@ def list_portfolio_exposure_snapshots(
                    profile_version_id, status, payload_sha256, created_at
             FROM portfolio_exposure_snapshots
             WHERE {where}
-            ORDER BY created_at DESC, rowid DESC
+            ORDER BY created_at DESC, id DESC
             LIMIT ?
             """,
             params,
@@ -2442,7 +2467,7 @@ def list_latest_fund_switch_quotes(
                     AND q2.holding_id=q.holding_id
                     AND q2.candidate_code=q.candidate_code
               )
-            ORDER BY q.created_at DESC, q.rowid DESC
+            ORDER BY q.created_at DESC, q.id DESC
             """,
             params,
         ).fetchall()
@@ -2786,7 +2811,7 @@ def list_latest_fund_switch_execution_reviews(
                     AND r2.holding_id=r.holding_id
                     AND r2.candidate_code=r.candidate_code
               )
-            ORDER BY r.created_at DESC, r.rowid DESC
+            ORDER BY r.created_at DESC, r.id DESC
             """,
             params,
         ).fetchall()
@@ -3176,7 +3201,7 @@ def list_fund_switch_lifecycle_case_heads(
                   FROM fund_switch_lifecycle_events e2
                   WHERE e2.user_id=e.user_id AND e2.case_id=e.case_id
               )
-            ORDER BY e.created_at DESC, e.rowid DESC
+            ORDER BY e.created_at DESC, e.id DESC
             LIMIT ?
             """,
             params,
@@ -3399,7 +3424,7 @@ def list_latest_holding_theses(user_id: str = "default") -> list[dict]:
                     AND candidate.market=current.market
                     AND candidate.code=current.code
               )
-            ORDER BY current.created_at DESC, current.rowid DESC
+            ORDER BY current.created_at DESC, current.id DESC
             """,
             (user_id,),
         ).fetchall()
@@ -3588,7 +3613,7 @@ def list_portfolio_action_reports(
                    theses_sha256, profile_version_id, status, payload_sha256, created_at
             FROM portfolio_action_reports
             WHERE user_id=?
-            ORDER BY created_at DESC, rowid DESC
+            ORDER BY created_at DESC, id DESC
             LIMIT ?
             """,
             (user_id, limit),

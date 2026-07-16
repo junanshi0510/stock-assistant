@@ -1,0 +1,32 @@
+[Unit]
+Description=Stock Assistant Celery scheduler
+After=network-online.target postgresql.service redis-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=stockassistant
+Group=stockassistant
+UMask=0077
+WorkingDirectory=/opt/stock-assistant/backend
+RuntimeDirectory=stock-assistant-celery
+EnvironmentFile=/etc/stock-assistant/stock-assistant.env
+Environment="PYTHONUNBUFFERED=1"
+Environment="PYTHONPATH=/opt/stock-assistant/backend"
+Environment="SERVICE_NAME=stock-assistant-celery-beat"
+Environment="LOG_FORMAT=json"
+Environment="TASK_QUEUE_MODE=celery"
+ExecStart=/opt/stock-assistant/venv/bin/celery -A task_queue:celery_app beat --schedule=/run/stock-assistant-celery/celerybeat-schedule --pidfile=/run/stock-assistant-celery/celerybeat.pid
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+MemoryMax=350M
+TasksMax=64
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/run/stock-assistant-celery
+
+[Install]
+WantedBy=multi-user.target

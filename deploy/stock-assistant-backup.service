@@ -1,0 +1,21 @@
+[Unit]
+Description=Stock Assistant verified PostgreSQL backup
+After=postgresql.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=/etc/stock-assistant/stock-assistant.env
+WorkingDirectory=/opt/stock-assistant/backend
+ExecStart=/opt/stock-assistant/deploy/scripts/backup-postgres.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/backups/stock-assistant
+

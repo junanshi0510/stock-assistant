@@ -34,6 +34,13 @@ from agent.worker import (
     strategy_shadow_service,
     synthesis_service,
 )
+from task_queue import (
+    TASK_OUTCOME_SCHEDULES,
+    TaskQueueUnavailableError,
+    enqueue_agent_run,
+    enqueue_scheduler_task,
+    uses_celery_queue,
+)
 
 
 router = APIRouter(prefix="/api/v1/agent", tags=["投资 Agent"])
@@ -276,6 +283,34 @@ def _actor_id(principal: object) -> str:
     return "anonymous"
 
 
+def _dispatch_run(run_id: str) -> None:
+    if not uses_celery_queue():
+        start_worker()
+        return
+    try:
+        enqueue_agent_run(run_id, repository)
+    except TaskQueueUnavailableError as error:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "task_queue_unavailable",
+                "message": str(error),
+                "run_id": run_id,
+                "durable_status": "queued",
+            },
+        ) from error
+
+
+def _dispatch_batch(batch: dict) -> None:
+    if not uses_celery_queue():
+        start_worker()
+        return
+    for item in batch.get("items") or []:
+        run_id = str((item.get("run") or {}).get("id") or "")
+        if run_id:
+            _dispatch_run(run_id)
+
+
 def _can_access(owner_user_id: str, principal: object) -> bool:
     if not isinstance(principal, AuthPrincipal):
         return owner_user_id == "anonymous"
@@ -510,6 +545,8 @@ def create_agent_run(
     if idempotency_key:
         existing = repository.get_run_by_idempotency_key(user_id, idempotency_key)
         if existing is not None:
+            if existing.get("status") == "queued":
+                _dispatch_run(str(existing["id"]))
             return {"created": False, "run": existing}
     max_pending = max(1, int(os.getenv("AGENT_MAX_PENDING_RUNS", "20")))
     if repository.count_active_runs() >= max_pending:
@@ -534,7 +571,7 @@ def create_agent_run(
         idempotency_key=idempotency_key,
         profile_version_id=profile_version_id,
     )
-    start_worker()
+    _dispatch_run(str(run["id"]))
     return {"created": created, "run": repository.get_run(run["id"])}
 
 
@@ -550,6 +587,7 @@ def create_agent_batch(
     if idempotency_key:
         existing = repository.get_batch_by_idempotency_key(user_id, idempotency_key)
         if existing is not None:
+            _dispatch_batch(existing)
             return {"created": False, "batch": _summarize_batch_public(existing)}
 
     max_batch_size = max(2, min(8, int(os.getenv("AGENT_MAX_BATCH_SIZE", "6"))))
@@ -586,7 +624,7 @@ def create_agent_batch(
                 f"超过系统上限 {error.maximum}。"
             ),
         ) from error
-    start_worker()
+    _dispatch_batch(batch)
     return {"created": created, "batch": _summarize_batch_public(batch)}
 
 
@@ -944,7 +982,21 @@ def configure_agent_run_outcome_schedule(
         actor_id=_actor_id(principal),
     )
     if request.enabled:
-        start_worker()
+        if uses_celery_queue():
+            try:
+                enqueue_scheduler_task(TASK_OUTCOME_SCHEDULES)
+            except TaskQueueUnavailableError as error:
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "code": "task_queue_unavailable",
+                        "message": str(error),
+                        "schedule_id": schedule.get("id"),
+                        "durable_status": schedule.get("status"),
+                    },
+                ) from error
+        else:
+            start_worker()
     return {
         "changed": changed,
         "eligibility": eligibility,
@@ -1021,6 +1073,8 @@ def rerun_agent_run(
     if idempotency_key:
         existing = repository.get_run_by_idempotency_key(source["user_id"], idempotency_key)
         if existing is not None:
+            if existing.get("status") == "queued":
+                _dispatch_run(str(existing["id"]))
             return {"created": False, "run": existing}
     input_payload = dict(source.get("input") or {})
     profile = storage.get_investment_profile(user_id=source["user_id"])
@@ -1044,7 +1098,7 @@ def rerun_agent_run(
         parent_run_id=source["id"],
         profile_version_id=profile_version_id,
     )
-    start_worker()
+    _dispatch_run(str(run["id"]))
     return {"created": created, "run": repository.get_run(run["id"])}
 
 

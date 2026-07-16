@@ -351,6 +351,10 @@ export function uploadHoldingScreenshot(file) {
   return getJson('/api/holdings/ocr-upload', { method: 'POST', body: form })
 }
 
+export function fetchHoldingOcrJob(jobId) {
+  return getJson(`/api/holdings/ocr-jobs/${encodeURIComponent(jobId)}`)
+}
+
 export function fetchAlerts(limit = 50) {
   return getJson(`/api/alerts?limit=${limit}`)
 }
