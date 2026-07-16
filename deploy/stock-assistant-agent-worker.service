@@ -16,12 +16,12 @@ Environment="SERVICE_NAME=stock-assistant-agent-worker"
 Environment="LOG_FORMAT=json"
 Environment="TASK_QUEUE_MODE=celery"
 Environment="MALLOC_ARENA_MAX=2"
-ExecStart=/opt/stock-assistant/venv/bin/celery -A task_queue:celery_app worker --queues=agent --hostname=agent@%H --concurrency=2 --pool=prefork --max-tasks-per-child=20 --without-gossip --without-mingle
+ExecStart=/opt/stock-assistant/venv/bin/celery -A task_queue:celery_app worker --queues=agent --hostname=agent@%H --concurrency=1 --pool=prefork --max-tasks-per-child=20 --without-gossip --without-mingle
 Restart=always
 RestartSec=5
 TimeoutStopSec=90
 KillSignal=SIGTERM
-MemoryMax=1100M
+MemoryMax=900M
 TasksMax=256
 NoNewPrivileges=true
 PrivateTmp=true
