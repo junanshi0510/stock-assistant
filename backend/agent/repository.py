@@ -30,6 +30,35 @@ from database import (
 RUN_TERMINAL_STATUSES = {"completed", "partial", "failed", "cancelled", "abstained"}
 STEP_REUSABLE_STATUSES = {"succeeded", "partial"}
 STRATEGY_STATUSES = {"draft", "review", "shadow", "canary", "active", "paused", "retired"}
+FEEDBACK_RESULT_STATUSES = {"completed", "partial", "abstained"}
+FEEDBACK_SCHEMA_VERSION = "agent_run_feedback.v1"
+FEEDBACK_VERDICTS = {
+    "helpful",
+    "partly_helpful",
+    "not_helpful",
+    "data_issue",
+    "not_suitable",
+}
+FEEDBACK_DECISIONS = {
+    "observe",
+    "hold",
+    "add",
+    "reduce",
+    "exit",
+    "no_action",
+    "undecided",
+}
+FEEDBACK_REASON_CODES = {
+    "evidence_clear",
+    "fits_portfolio",
+    "risk_too_high",
+    "data_stale",
+    "missing_data",
+    "conclusion_unclear",
+    "conflicts_with_plan",
+    "already_acted",
+    "other",
+}
 
 
 class AgentQueueCapacityError(RuntimeError):
@@ -40,6 +69,14 @@ class AgentQueueCapacityError(RuntimeError):
         super().__init__(
             f"活动任务 {self.active} + 本次 {self.requested} 超过队列上限 {self.maximum}"
         )
+
+
+class AgentFeedbackConflictError(RuntimeError):
+    """The decision journal changed after the client last read it."""
+
+
+class AgentFeedbackEligibilityError(RuntimeError):
+    """The run cannot accept a decision journal entry."""
 
 
 def _utc_now() -> str:
@@ -111,6 +148,7 @@ class AgentRepository:
                             "agent_evidence",
                             "agent_claims",
                             "agent_audit_events",
+                            "agent_run_feedback_events",
                             "agent_batches",
                             "agent_batch_items",
                             "agent_outcome_schedules",
@@ -466,6 +504,51 @@ class AgentRepository:
                         event_hash     TEXT NOT NULL,
                         created_at     TEXT NOT NULL
                     );
+
+                    CREATE TABLE IF NOT EXISTS agent_run_feedback_events (
+                        id                    TEXT PRIMARY KEY,
+                        run_id                TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE RESTRICT,
+                        tenant_id             TEXT NOT NULL,
+                        user_id               TEXT NOT NULL,
+                        sequence_no           INTEGER NOT NULL,
+                        schema_version        TEXT NOT NULL,
+                        feedback_verdict      TEXT NOT NULL CHECK (
+                            feedback_verdict IN (
+                                'helpful', 'partly_helpful', 'not_helpful',
+                                'data_issue', 'not_suitable'
+                            )
+                        ),
+                        user_decision         TEXT NOT NULL CHECK (
+                            user_decision IN (
+                                'observe', 'hold', 'add', 'reduce', 'exit',
+                                'no_action', 'undecided'
+                            )
+                        ),
+                        reason_codes_json     TEXT NOT NULL,
+                        note                  TEXT NOT NULL DEFAULT '',
+                        planned_review_at     TEXT,
+                        run_result_sha256     TEXT NOT NULL,
+                        previous_hash         TEXT,
+                        event_hash            TEXT NOT NULL,
+                        actor_id              TEXT NOT NULL,
+                        created_at            TEXT NOT NULL,
+                        UNIQUE(run_id, sequence_no)
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_agent_run_feedback_chain
+                    ON agent_run_feedback_events(run_id, sequence_no);
+
+                    CREATE TRIGGER IF NOT EXISTS trg_agent_run_feedback_no_update
+                    BEFORE UPDATE ON agent_run_feedback_events
+                    BEGIN
+                        SELECT RAISE(ABORT, 'agent run feedback events are immutable');
+                    END;
+
+                    CREATE TRIGGER IF NOT EXISTS trg_agent_run_feedback_no_delete
+                    BEFORE DELETE ON agent_run_feedback_events
+                    BEGIN
+                        SELECT RAISE(ABORT, 'agent run feedback events are immutable');
+                    END;
 
                     CREATE TABLE IF NOT EXISTS agent_strategy_versions (
                         strategy_id       TEXT NOT NULL,
@@ -975,6 +1058,39 @@ class AgentRepository:
     def _claim_from_row(row: Any) -> dict[str, Any]:
         item = dict(row)
         item["value"] = _load(item.pop("value_json", None), None)
+        return item
+
+    @staticmethod
+    def _feedback_canonical(item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": item.get("id"),
+            "run_id": item.get("run_id"),
+            "tenant_id": item.get("tenant_id"),
+            "user_id": item.get("user_id"),
+            "sequence_no": int(item.get("sequence_no") or 0),
+            "schema_version": item.get("schema_version"),
+            "feedback_verdict": item.get("feedback_verdict"),
+            "user_decision": item.get("user_decision"),
+            "reason_codes": list(item.get("reason_codes") or []),
+            "note": item.get("note") or "",
+            "planned_review_at": item.get("planned_review_at"),
+            "run_result_sha256": item.get("run_result_sha256"),
+            "previous_hash": item.get("previous_hash"),
+            "actor_id": item.get("actor_id"),
+            "created_at": item.get("created_at"),
+        }
+
+    @classmethod
+    def _feedback_from_row(cls, row: Any | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        item = dict(row)
+        item["reason_codes"] = _load(item.pop("reason_codes_json", None), [])
+        canonical = cls._feedback_canonical(item)
+        item["integrity_verified"] = (
+            hashlib.sha256(_json(canonical).encode("utf-8")).hexdigest()
+            == item.get("event_hash")
+        )
         return item
 
     @staticmethod
@@ -3760,6 +3876,303 @@ class AgentRepository:
             "audit_verified": True,
             "reason": None,
         }
+
+    def run_feedback_eligibility(self, run_id: str) -> dict[str, Any]:
+        run = self.get_run(run_id, include_details=False)
+        if run is None:
+            return {
+                "eligible": False,
+                "reason_code": "run_not_found",
+                "reason": "Agent Run 不存在。",
+                "run_status": None,
+                "run_result_sha256": None,
+                "evidence_integrity": None,
+            }
+        result = run.get("result")
+        if run.get("status") not in FEEDBACK_RESULT_STATUSES:
+            return {
+                "eligible": False,
+                "reason_code": "run_result_unavailable",
+                "reason": "只有已形成研究结果的终态 Run 才能记录决策。",
+                "run_status": run.get("status"),
+                "run_result_sha256": None,
+                "evidence_integrity": None,
+            }
+        if not isinstance(result, dict) or not result:
+            return {
+                "eligible": False,
+                "reason_code": "run_result_missing",
+                "reason": "该 Run 没有可绑定的研究结果。",
+                "run_status": run.get("status"),
+                "run_result_sha256": None,
+                "evidence_integrity": None,
+            }
+        result_sha256 = hashlib.sha256(_json(result).encode("utf-8")).hexdigest()
+        evidence_integrity = self.verify_run_evidence_integrity(run_id)
+        if not evidence_integrity.get("verified"):
+            return {
+                "eligible": False,
+                "reason_code": "run_integrity_failed",
+                "reason": "Run 的证据或审计链校验未通过，已禁止记录决策。",
+                "run_status": run.get("status"),
+                "run_result_sha256": result_sha256,
+                "evidence_integrity": evidence_integrity,
+            }
+        return {
+            "eligible": True,
+            "reason_code": None,
+            "reason": None,
+            "run_status": run.get("status"),
+            "run_result_sha256": result_sha256,
+            "evidence_integrity": evidence_integrity,
+        }
+
+    def list_run_feedback(self, run_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM agent_run_feedback_events
+                WHERE run_id=?
+                ORDER BY sequence_no
+                """,
+                (run_id,),
+            ).fetchall()
+        return [self._feedback_from_row(row) for row in rows]
+
+    def verify_run_feedback_chain(self, run_id: str) -> dict[str, Any]:
+        run = self.get_run(run_id, include_details=False)
+        result = (run or {}).get("result")
+        result_sha256 = (
+            hashlib.sha256(_json(result).encode("utf-8")).hexdigest()
+            if isinstance(result, dict) and result
+            else None
+        )
+        items = self.list_run_feedback(run_id)
+        audit = self.verify_audit_chain(run_id)
+        feedback_audit_events = [
+            item
+            for item in self.list_audit_events(run_id)
+            if item.get("event_type") == "feedback.recorded"
+        ]
+        audited_ids = [
+            item.get("details", {}).get("feedback_event_id")
+            for item in feedback_audit_events
+        ]
+        event_ids = [item.get("id") for item in items]
+        if not audit.get("verified") or audited_ids != event_ids:
+            return {
+                "verified": False,
+                "event_count": len(items),
+                "failing_sequence": None,
+                "failing_event_id": None,
+                "chain_head": None,
+                "run_result_sha256": result_sha256,
+                "audit_verified": bool(audit.get("verified")),
+                "reason": (
+                    "feedback_audit_mismatch"
+                    if audit.get("verified")
+                    else "audit_chain_invalid"
+                ),
+            }
+
+        previous_hash = None
+        for expected_sequence, item in enumerate(items, start=1):
+            canonical = self._feedback_canonical(item)
+            calculated_hash = hashlib.sha256(
+                _json(canonical).encode("utf-8")
+            ).hexdigest()
+            audit_details = feedback_audit_events[expected_sequence - 1].get("details", {})
+            if (
+                int(item.get("sequence_no") or 0) != expected_sequence
+                or item.get("previous_hash") != previous_hash
+                or item.get("event_hash") != calculated_hash
+                or item.get("run_result_sha256") != result_sha256
+                or audit_details.get("feedback_event_hash") != item.get("event_hash")
+                or int(audit_details.get("feedback_sequence_no") or 0) != expected_sequence
+            ):
+                return {
+                    "verified": False,
+                    "event_count": len(items),
+                    "failing_sequence": item.get("sequence_no"),
+                    "failing_event_id": item.get("id"),
+                    "chain_head": previous_hash,
+                    "run_result_sha256": result_sha256,
+                    "audit_verified": True,
+                    "reason": "feedback_chain_invalid",
+                }
+            previous_hash = item.get("event_hash")
+        return {
+            "verified": True,
+            "event_count": len(items),
+            "failing_sequence": None,
+            "failing_event_id": None,
+            "chain_head": previous_hash,
+            "run_result_sha256": result_sha256,
+            "audit_verified": True,
+            "reason": None,
+        }
+
+    def append_run_feedback(
+        self,
+        run_id: str,
+        *,
+        user_id: str,
+        actor_id: str,
+        feedback_verdict: str,
+        user_decision: str,
+        reason_codes: list[str] | None = None,
+        note: str = "",
+        planned_review_at: str | None = None,
+        expected_previous_hash: str | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        verdict = str(feedback_verdict or "").strip()
+        decision = str(user_decision or "").strip()
+        reasons = sorted({str(item or "").strip() for item in (reason_codes or []) if item})
+        normalized_note = str(note or "").strip()
+        review_at = str(planned_review_at or "").strip() or None
+        previous_expectation = str(expected_previous_hash or "").strip() or None
+        if verdict not in FEEDBACK_VERDICTS:
+            raise ValueError(f"无效的反馈结论: {verdict}")
+        if decision not in FEEDBACK_DECISIONS:
+            raise ValueError(f"无效的用户决策: {decision}")
+        invalid_reasons = sorted(set(reasons) - FEEDBACK_REASON_CODES)
+        if invalid_reasons:
+            raise ValueError("无效的反馈原因: " + ", ".join(invalid_reasons))
+        if verdict != "helpful" and not reasons:
+            raise ValueError("非完全有帮助的反馈至少需要选择一个原因")
+        if len(normalized_note) > 500:
+            raise ValueError("决策备注不能超过 500 个字符")
+        if "other" in reasons and not normalized_note:
+            raise ValueError("选择其他原因时需要填写备注")
+        if review_at:
+            try:
+                dt.date.fromisoformat(review_at)
+            except ValueError as error:
+                raise ValueError("复盘日期必须使用 YYYY-MM-DD") from error
+        if previous_expectation and not re.fullmatch(r"[0-9a-f]{64}", previous_expectation):
+            raise ValueError("上一版本哈希格式无效")
+
+        eligibility = self.run_feedback_eligibility(run_id)
+        if not eligibility.get("eligible"):
+            raise AgentFeedbackEligibilityError(str(eligibility.get("reason") or "Run 不可记录决策"))
+        feedback_integrity = self.verify_run_feedback_chain(run_id)
+        if not feedback_integrity.get("verified"):
+            raise AgentFeedbackEligibilityError("既有决策日志校验未通过，已禁止追加新版本")
+
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            run_row = connection.execute(
+                "SELECT * FROM agent_runs WHERE id=?",
+                (run_id,),
+            ).fetchone()
+            run = self._run_from_row(run_row)
+            if run is None or str(run.get("user_id") or "") != str(user_id):
+                raise AgentFeedbackEligibilityError("只能记录本人 Agent Run 的决策")
+            if run.get("status") not in FEEDBACK_RESULT_STATUSES or not run.get("result"):
+                raise AgentFeedbackEligibilityError("该 Run 尚未形成可绑定的研究结果")
+            run_result_sha256 = hashlib.sha256(
+                _json(run["result"]).encode("utf-8")
+            ).hexdigest()
+            if run_result_sha256 != eligibility.get("run_result_sha256"):
+                raise AgentFeedbackConflictError("Run 结果已变化，请刷新后重新记录")
+
+            latest_row = connection.execute(
+                """
+                SELECT * FROM agent_run_feedback_events
+                WHERE run_id=?
+                ORDER BY sequence_no DESC
+                LIMIT 1
+                """,
+                (run_id,),
+            ).fetchone()
+            latest = self._feedback_from_row(latest_row)
+            if latest is not None:
+                unchanged = (
+                    latest.get("feedback_verdict") == verdict
+                    and latest.get("user_decision") == decision
+                    and latest.get("reason_codes") == reasons
+                    and latest.get("note") == normalized_note
+                    and latest.get("planned_review_at") == review_at
+                    and latest.get("run_result_sha256") == run_result_sha256
+                )
+                if unchanged:
+                    return latest, False
+                if previous_expectation != latest.get("event_hash"):
+                    raise AgentFeedbackConflictError("决策日志已有新版本，请刷新后再保存")
+            elif previous_expectation is not None:
+                raise AgentFeedbackConflictError("决策日志版本不一致，请刷新后再保存")
+
+            event_id = _new_id("feedback")
+            created_at = _utc_now()
+            sequence_no = int(latest.get("sequence_no") if latest else 0) + 1
+            item = {
+                "id": event_id,
+                "run_id": run_id,
+                "tenant_id": str(run.get("tenant_id") or "public"),
+                "user_id": str(user_id),
+                "sequence_no": sequence_no,
+                "schema_version": FEEDBACK_SCHEMA_VERSION,
+                "feedback_verdict": verdict,
+                "user_decision": decision,
+                "reason_codes": reasons,
+                "note": normalized_note,
+                "planned_review_at": review_at,
+                "run_result_sha256": run_result_sha256,
+                "previous_hash": latest.get("event_hash") if latest else None,
+                "actor_id": str(actor_id or user_id),
+                "created_at": created_at,
+            }
+            event_hash = hashlib.sha256(
+                _json(self._feedback_canonical(item)).encode("utf-8")
+            ).hexdigest()
+            connection.execute(
+                """
+                INSERT INTO agent_run_feedback_events (
+                    id, run_id, tenant_id, user_id, sequence_no, schema_version,
+                    feedback_verdict, user_decision, reason_codes_json, note,
+                    planned_review_at, run_result_sha256, previous_hash,
+                    event_hash, actor_id, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event_id,
+                    run_id,
+                    item["tenant_id"],
+                    item["user_id"],
+                    sequence_no,
+                    FEEDBACK_SCHEMA_VERSION,
+                    verdict,
+                    decision,
+                    _json(reasons),
+                    normalized_note,
+                    review_at,
+                    run_result_sha256,
+                    item["previous_hash"],
+                    event_hash,
+                    item["actor_id"],
+                    created_at,
+                ),
+            )
+            self._append_audit(
+                connection,
+                run_id,
+                "feedback.recorded",
+                {
+                    "feedback_event_id": event_id,
+                    "feedback_event_hash": event_hash,
+                    "feedback_sequence_no": sequence_no,
+                    "feedback_verdict": verdict,
+                    "user_decision": decision,
+                    "run_result_sha256": run_result_sha256,
+                },
+                actor_type="user",
+                actor_id=item["actor_id"],
+            )
+            row = connection.execute(
+                "SELECT * FROM agent_run_feedback_events WHERE id=?",
+                (event_id,),
+            ).fetchone()
+        return self._feedback_from_row(row), True
 
     def register_strategy_version(
         self,

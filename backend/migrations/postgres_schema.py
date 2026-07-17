@@ -25,6 +25,7 @@ IMMUTABLE_TABLES = (
     "fund_switch_lifecycle_events",
     "fund_switch_quote_events",
     "holding_thesis_versions",
+    "agent_run_feedback_events",
     "background_job_events",
     "object_asset_events",
 )
@@ -78,6 +79,39 @@ CREATE TABLE IF NOT EXISTS object_asset_events (
 
 CREATE INDEX IF NOT EXISTS idx_object_asset_events_chain
 ON object_asset_events(asset_id, sequence_no);
+
+CREATE TABLE IF NOT EXISTS agent_run_feedback_events (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE RESTRICT,
+    tenant_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    sequence_no INTEGER NOT NULL,
+    schema_version TEXT NOT NULL,
+    feedback_verdict TEXT NOT NULL CHECK (
+        feedback_verdict IN (
+            'helpful', 'partly_helpful', 'not_helpful',
+            'data_issue', 'not_suitable'
+        )
+    ),
+    user_decision TEXT NOT NULL CHECK (
+        user_decision IN (
+            'observe', 'hold', 'add', 'reduce', 'exit',
+            'no_action', 'undecided'
+        )
+    ),
+    reason_codes_json TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    planned_review_at TEXT,
+    run_result_sha256 TEXT NOT NULL,
+    previous_hash TEXT,
+    event_hash TEXT NOT NULL,
+    actor_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (run_id, sequence_no)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_run_feedback_chain
+ON agent_run_feedback_events(run_id, sequence_no);
 
 CREATE TABLE IF NOT EXISTS background_jobs (
     id TEXT PRIMARY KEY,

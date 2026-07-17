@@ -6659,3 +6659,206 @@ button.decision-workflow-stage:hover:not(:disabled) { background: #f4f8f8; box-s
   .peer-lifecycle-reconcile { grid-template-columns: minmax(0, 1fr); }
   .peer-lifecycle-reconcile button { width: 100%; }
 }
+
+/* Agent decision journal */
+.agent-decision-journal {
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-top: 3px solid #6f5c9d;
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.agent-journal-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 72px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.agent-journal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.agent-journal-head h3 { margin: 5px 0 0; font-size: 17px; letter-spacing: 0; }
+.agent-journal-head > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  font-size: 9.5px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.agent-journal-head > span.verified { color: #087d68; background: #e8f6f2; }
+.agent-journal-head > span.invalid { color: #b33845; background: #fff0f2; }
+
+.agent-journal-blocked,
+.agent-journal-readonly,
+.agent-journal-message {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: 14px;
+  padding: 9px 11px;
+  border-left: 3px solid #956300;
+  background: #fff9ea;
+  color: #6e531c;
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+.agent-journal-blocked svg,
+.agent-journal-message svg { flex: 0 0 auto; margin-top: 1px; }
+.agent-journal-readonly { border-left-color: #60737b; background: #f2f5f6; color: var(--muted); }
+.agent-journal-message.error { border-left-color: #b33845; background: #fff0f2; color: #9b2f3b; }
+.agent-journal-message.success { border-left-color: #087d68; background: #e8f6f2; color: #087d68; }
+
+.agent-journal-form { margin-top: 17px; padding-top: 17px; border-top: 1px solid var(--border); }
+.agent-journal-form fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+.agent-journal-form fieldset + fieldset { margin-top: 15px; }
+.agent-journal-form legend,
+.agent-journal-form label > span {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.agent-journal-segments {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+}
+.agent-journal-segments button {
+  min-width: 0;
+  min-height: 36px;
+  padding: 7px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  background: #f7f9fa;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 750;
+  line-height: 1.25;
+}
+.agent-journal-segments button:hover { border-color: #748b93; background: #fff; }
+.agent-journal-segments button.active {
+  border-color: #6f5c9d;
+  background: #f3f0f8;
+  color: #493a70;
+  box-shadow: inset 0 -2px 0 #6f5c9d;
+}
+
+.agent-journal-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 15px;
+}
+.agent-journal-fields label { min-width: 0; }
+.agent-journal-fields select,
+.agent-journal-date { width: 100%; min-height: 38px; }
+.agent-journal-fields select { padding: 7px 30px 7px 10px; border-radius: 5px; font-size: 11px; }
+.agent-journal-date {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: center;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  background: #fff;
+}
+.agent-journal-date:focus-within { border-color: var(--accent-2); outline: 2px solid rgba(30, 111, 145, 0.12); }
+.agent-journal-date svg { justify-self: end; color: var(--faint); }
+.agent-journal-date input { min-width: 0; height: 36px; padding: 6px 9px; border: 0; background: transparent; font-size: 11px; }
+.agent-journal-date input:focus { outline: 0; box-shadow: none; }
+
+.agent-journal-reasons { display: flex; flex-wrap: wrap; gap: 6px; }
+.agent-journal-reasons label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #f8fafb;
+  color: var(--muted);
+  cursor: pointer;
+}
+.agent-journal-reasons label.selected { border-color: #7aa9b8; background: #edf7fb; color: #1e6079; }
+.agent-journal-reasons input { width: 13px; height: 13px; margin: 0; accent-color: var(--accent-2); }
+.agent-journal-reasons label > span { margin: 0; color: inherit; font-size: 9.5px; }
+
+.agent-journal-note { display: block; margin-top: 15px; }
+.agent-journal-note > span { display: flex !important; justify-content: space-between; gap: 8px; }
+.agent-journal-note small { color: var(--faint); font-weight: 600; }
+.agent-journal-note textarea { width: 100%; min-height: 76px; padding: 9px 10px; border-radius: 5px; font-size: 11px; line-height: 1.55; }
+
+.agent-journal-submit {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 11px;
+}
+.agent-journal-submit > span { color: var(--faint); font-size: 9.5px; }
+.agent-journal-submit button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 112px;
+  min-height: 36px;
+  padding: 7px 11px;
+  border-radius: 5px;
+  background: #1e6f91;
+  color: #fff;
+  font-size: 10.5px;
+}
+.agent-inline-spinner { width: 13px; height: 13px; border: 2px solid rgba(255, 255, 255, 0.45); border-top-color: #fff; border-radius: 50%; animation: spin 0.8s linear infinite; }
+
+.agent-journal-history { margin-top: 17px; padding-top: 15px; border-top: 1px solid var(--border); }
+.agent-journal-event { padding: 10px 12px; border-left: 3px solid var(--border-strong); background: #f8fafb; }
+.agent-journal-history > .agent-journal-event { border-left-color: #6f5c9d; background: #f7f5fa; }
+.agent-journal-event + .agent-journal-event { margin-top: 7px; }
+.agent-journal-event-head,
+.agent-journal-event-summary { display: flex; align-items: center; gap: 8px; }
+.agent-journal-event-head { justify-content: space-between; }
+.agent-journal-event-head > div { display: flex; align-items: center; gap: 6px; }
+.agent-journal-event-head b { font-size: 10.5px; }
+.agent-journal-event-head span { padding: 2px 5px; border-radius: 3px; background: #e7e0f2; color: #5c477e; font-size: 8px; font-weight: 800; }
+.agent-journal-event-head time { color: var(--faint); font-size: 8.5px; }
+.agent-journal-event-summary { flex-wrap: wrap; margin-top: 7px; }
+.agent-journal-event-summary strong { color: #493a70; font-size: 11px; }
+.agent-journal-event-summary span { padding-left: 8px; border-left: 1px solid var(--border-strong); color: var(--muted); font-size: 9.5px; }
+.agent-journal-event-reasons { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+.agent-journal-event-reasons span { padding: 2px 5px; border-radius: 3px; background: #eaf1f3; color: #50666f; font-size: 8.5px; }
+.agent-journal-event p { margin: 7px 0 0; color: var(--text); font-size: 10px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.agent-journal-event > small { display: block; margin-top: 7px; color: var(--faint); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 8px; overflow-wrap: anywhere; }
+.agent-journal-history details { margin-top: 8px; }
+.agent-journal-history summary { display: inline-flex; align-items: center; gap: 6px; color: #1e6f91; font-size: 9.5px; font-weight: 750; cursor: pointer; }
+.agent-journal-history details > div { display: grid; gap: 7px; margin-top: 8px; }
+.agent-journal-policy { margin: 12px 0 0; color: var(--faint); font-size: 9px; line-height: 1.55; }
+
+@media (max-width: 720px) {
+  .agent-journal-segments { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .agent-journal-fields { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 480px) {
+  .agent-decision-journal { padding: 15px; }
+  .agent-journal-head,
+  .agent-journal-submit { align-items: flex-start; flex-direction: column; }
+  .agent-journal-head > span { white-space: normal; }
+  .agent-journal-submit button { width: 100%; }
+  .agent-journal-event-head { align-items: flex-start; flex-direction: column; }
+}

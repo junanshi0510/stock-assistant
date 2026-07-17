@@ -51,6 +51,7 @@ import FundMarketProfileView from '../components/FundMarketProfileView'
 import DecisionOutcomeView from '../components/DecisionOutcomeView'
 import AISynthesisView, { ModelStatusStrip } from '../components/AISynthesisView'
 import AgentBatchView from '../components/AgentBatchView'
+import AgentDecisionJournal from '../components/AgentDecisionJournal'
 
 const TERMINAL = new Set(['completed', 'partial', 'failed', 'cancelled', 'abstained'])
 const EMPTY_HISTORY_FILTERS = { code: '', status: '' }
@@ -1498,6 +1499,8 @@ export default function AgentTab() {
           {result.personalized_decision && (
             <PersonalizedDecisionView decision={result.personalized_decision} onOpenEvidence={openEvidence} />
           )}
+
+          <AgentDecisionJournal run={run} />
 
           {result.market_profile && (
             <FundMarketProfileView profile={result.market_profile} onOpenEvidence={openEvidence} />

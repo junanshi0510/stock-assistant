@@ -17,8 +17,13 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from agent.registry import ToolDefinition, ToolRegistry  # noqa: E402
-from agent.repository import AgentRepository  # noqa: E402
+from agent.repository import (  # noqa: E402
+    AgentFeedbackConflictError,
+    AgentFeedbackEligibilityError,
+    AgentRepository,
+)
 from agent.workflow import AgentWorkflowRunner  # noqa: E402
+from auth import AuthPrincipal  # noqa: E402
 from routers import agent as agent_router  # noqa: E402
 from strategies.personalized_fund_decision import (  # noqa: E402
     evaluate_personalized_fund_decision,
@@ -651,6 +656,190 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertTrue(verification["verified"])
         self.assertEqual(verification["event_count"], len(events))
         self.assertEqual(verification["chain_head"], previous)
+
+    def test_decision_feedback_is_append_only_idempotent_and_hash_chained(self):
+        run = self._run()
+        first, first_created = self.repository.append_run_feedback(
+            run["id"],
+            user_id="anonymous",
+            actor_id="anonymous",
+            feedback_verdict="helpful",
+            user_decision="observe",
+            reason_codes=["evidence_clear"],
+            note="等待下一次披露后复盘。",
+            planned_review_at="2026-08-15",
+        )
+        self.assertTrue(first_created)
+        self.assertEqual(first["sequence_no"], 1)
+        self.assertTrue(first["integrity_verified"])
+        self.assertIsNone(first["previous_hash"])
+
+        duplicate, duplicate_created = self.repository.append_run_feedback(
+            run["id"],
+            user_id="anonymous",
+            actor_id="anonymous",
+            feedback_verdict="helpful",
+            user_decision="observe",
+            reason_codes=["evidence_clear"],
+            note="等待下一次披露后复盘。",
+            planned_review_at="2026-08-15",
+        )
+        self.assertFalse(duplicate_created)
+        self.assertEqual(duplicate["id"], first["id"])
+
+        revised, revised_created = self.repository.append_run_feedback(
+            run["id"],
+            user_id="anonymous",
+            actor_id="anonymous",
+            feedback_verdict="partly_helpful",
+            user_decision="hold",
+            reason_codes=["missing_data", "evidence_clear"],
+            note="持有，但等待组合穿透数据补齐。",
+            planned_review_at="2026-08-31",
+            expected_previous_hash=first["event_hash"],
+        )
+        self.assertTrue(revised_created)
+        self.assertEqual(revised["sequence_no"], 2)
+        self.assertEqual(revised["previous_hash"], first["event_hash"])
+
+        items = self.repository.list_run_feedback(run["id"])
+        self.assertEqual([item["id"] for item in items], [first["id"], revised["id"]])
+        verification = self.repository.verify_run_feedback_chain(run["id"])
+        self.assertTrue(verification["verified"])
+        self.assertEqual(verification["event_count"], 2)
+        self.assertEqual(verification["chain_head"], revised["event_hash"])
+        feedback_audit = [
+            item
+            for item in self.repository.list_audit_events(run["id"])
+            if item["event_type"] == "feedback.recorded"
+        ]
+        self.assertEqual(len(feedback_audit), 2)
+
+    def test_decision_feedback_rejects_stale_writes_and_database_mutation(self):
+        run = self._run()
+        first, _ = self.repository.append_run_feedback(
+            run["id"],
+            user_id="anonymous",
+            actor_id="anonymous",
+            feedback_verdict="helpful",
+            user_decision="observe",
+            reason_codes=["evidence_clear"],
+        )
+        with self.assertRaises(AgentFeedbackConflictError):
+            self.repository.append_run_feedback(
+                run["id"],
+                user_id="anonymous",
+                actor_id="anonymous",
+                feedback_verdict="not_suitable",
+                user_decision="no_action",
+                reason_codes=["conflicts_with_plan"],
+                expected_previous_hash="a" * 64,
+            )
+
+        connection = sqlite3.connect(self.repository.db_path)
+        try:
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute(
+                    "UPDATE agent_run_feedback_events SET note='tampered' WHERE id=?",
+                    (first["id"],),
+                )
+            connection.rollback()
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute(
+                    "DELETE FROM agent_run_feedback_events WHERE id=?",
+                    (first["id"],),
+                )
+            connection.rollback()
+        finally:
+            connection.close()
+
+    def test_decision_feedback_requires_verified_evidence_and_owner(self):
+        run = self._run()
+        with self.assertRaises(AgentFeedbackEligibilityError):
+            self.repository.append_run_feedback(
+                run["id"],
+                user_id="another-user",
+                actor_id="another-user",
+                feedback_verdict="helpful",
+                user_decision="observe",
+                reason_codes=["evidence_clear"],
+            )
+
+        connection = sqlite3.connect(self.repository.db_path)
+        try:
+            connection.execute(
+                "UPDATE agent_evidence SET payload_json='{}' WHERE run_id=?",
+                (run["id"],),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        with self.assertRaises(AgentFeedbackEligibilityError):
+            self.repository.append_run_feedback(
+                run["id"],
+                user_id="anonymous",
+                actor_id="anonymous",
+                feedback_verdict="data_issue",
+                user_decision="undecided",
+                reason_codes=["missing_data"],
+            )
+
+    def test_decision_feedback_api_round_trip(self):
+        run = self._run()
+        request = agent_router.RecordAgentRunFeedbackRequest(
+            feedback_verdict="partly_helpful",
+            user_decision="observe",
+            reason_codes=["data_stale"],
+            note="等待下一个真实净值日。",
+            planned_review_at="2026-08-15",
+        )
+        with patch.object(agent_router, "repository", self.repository):
+            initial = agent_router.get_agent_run_feedback(run["id"])
+            saved = agent_router.record_agent_run_feedback(run["id"], request)
+            loaded = agent_router.get_agent_run_feedback(run["id"])
+
+        self.assertTrue(initial["can_record"])
+        self.assertEqual(initial["count"], 0)
+        self.assertTrue(saved["created"])
+        self.assertEqual(saved["latest"]["user_decision"], "observe")
+        self.assertTrue({"user_id", "tenant_id", "actor_id"}.isdisjoint(saved["event"]))
+        self.assertEqual(loaded["count"], 1)
+        self.assertTrue(loaded["verification"]["verified"])
+
+    def test_admin_can_review_but_cannot_record_another_users_decision(self):
+        run = self._run()
+        stored, _ = self.repository.append_run_feedback(
+            run["id"],
+            user_id="anonymous",
+            actor_id="anonymous",
+            feedback_verdict="helpful",
+            user_decision="observe",
+            reason_codes=["evidence_clear"],
+        )
+        admin = AuthPrincipal(
+            user_id="admin-user",
+            subject_id="admin-subject",
+            username="admin",
+            display_name="Admin",
+            role="admin",
+            must_change_password=False,
+            session_id="session-admin",
+        )
+        request = agent_router.RecordAgentRunFeedbackRequest(
+            feedback_verdict="helpful",
+            user_decision="observe",
+            reason_codes=["evidence_clear"],
+        )
+        with patch.object(agent_router, "repository", self.repository):
+            view = agent_router.get_agent_run_feedback(run["id"], principal=admin)
+            with self.assertRaises(agent_router.HTTPException) as raised:
+                agent_router.record_agent_run_feedback(run["id"], request, principal=admin)
+
+        self.assertFalse(view["can_record"])
+        self.assertEqual(view["latest"]["id"], stored["id"])
+        self.assertTrue({"user_id", "tenant_id", "actor_id"}.isdisjoint(view["latest"]))
+        self.assertEqual(raised.exception.status_code, 403)
+        self.assertEqual(len(self.repository.list_run_feedback(run["id"])), 1)
 
     def test_market_intelligence_and_ai_synthesis_are_persisted_as_evidence(self):
         run = self._run(

@@ -88,6 +88,18 @@ export function fetchAgentRun(runId) {
   return getJson(`/api/v1/agent/runs/${encodeURIComponent(runId)}`)
 }
 
+export function fetchAgentRunFeedback(runId) {
+  return getJson(`/api/v1/agent/runs/${encodeURIComponent(runId)}/feedback`)
+}
+
+export function recordAgentRunFeedback(runId, payload) {
+  return getJson(`/api/v1/agent/runs/${encodeURIComponent(runId)}/feedback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
 export function fetchAgentRunComparison(runId) {
   return getJson(`/api/v1/agent/runs/${encodeURIComponent(runId)}/comparison`)
 }

@@ -25,7 +25,12 @@ from agent import (
 from agent.batches import summarize_batch
 from agent.comparison import compare_run_results
 from agent.outcomes import DecisionOutcomeService, OutcomeEvaluationError
-from agent.repository import AgentQueueCapacityError, RUN_TERMINAL_STATUSES
+from agent.repository import (
+    AgentFeedbackConflictError,
+    AgentFeedbackEligibilityError,
+    AgentQueueCapacityError,
+    RUN_TERMINAL_STATUSES,
+)
 from agent.worker import (
     registry,
     repository,
@@ -265,6 +270,62 @@ class OutcomeScheduleRequest(BaseModel):
     run_immediately: bool = False
 
 
+class RecordAgentRunFeedbackRequest(BaseModel):
+    feedback_verdict: Literal[
+        "helpful",
+        "partly_helpful",
+        "not_helpful",
+        "data_issue",
+        "not_suitable",
+    ]
+    user_decision: Literal[
+        "observe",
+        "hold",
+        "add",
+        "reduce",
+        "exit",
+        "no_action",
+        "undecided",
+    ]
+    reason_codes: list[
+        Literal[
+            "evidence_clear",
+            "fits_portfolio",
+            "risk_too_high",
+            "data_stale",
+            "missing_data",
+            "conclusion_unclear",
+            "conflicts_with_plan",
+            "already_acted",
+            "other",
+        ]
+    ] = Field(default_factory=list, max_length=9)
+    note: str = Field(default="", max_length=500)
+    planned_review_at: date | None = None
+    expected_previous_hash: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+
+    @field_validator("reason_codes")
+    @classmethod
+    def unique_reason_codes(cls, values: list[str]) -> list[str]:
+        return list(dict.fromkeys(values))
+
+    @field_validator("note")
+    @classmethod
+    def normalize_note(cls, value: str) -> str:
+        return str(value or "").strip()
+
+    @model_validator(mode="after")
+    def validate_feedback_detail(self):
+        if self.feedback_verdict != "helpful" and not self.reason_codes:
+            raise ValueError("非完全有帮助的反馈至少需要选择一个原因")
+        if "other" in self.reason_codes and not self.note:
+            raise ValueError("选择其他原因时需要填写备注")
+        return self
+
+
 def _agent_user_id(principal: object) -> str:
     if isinstance(principal, AuthPrincipal) and not principal.auth_disabled:
         return principal.subject_id
@@ -434,6 +495,49 @@ def _schedule_view(schedule: dict | None) -> dict | None:
             "created_at",
             "updated_at",
         )
+    }
+
+
+def _feedback_event_public(item: dict | None) -> dict | None:
+    if item is None:
+        return None
+    return {
+        key: item.get(key)
+        for key in (
+            "id",
+            "run_id",
+            "sequence_no",
+            "schema_version",
+            "feedback_verdict",
+            "user_decision",
+            "reason_codes",
+            "note",
+            "planned_review_at",
+            "run_result_sha256",
+            "previous_hash",
+            "event_hash",
+            "created_at",
+            "integrity_verified",
+        )
+    }
+
+
+def _feedback_view(run: dict, principal: object) -> dict:
+    stored_items = repository.list_run_feedback(str(run["id"]))
+    items = [_feedback_event_public(item) for item in stored_items]
+    eligibility = repository.run_feedback_eligibility(str(run["id"]))
+    is_owner = str(run.get("user_id") or "") == _agent_user_id(principal)
+    return {
+        "eligibility": eligibility,
+        "can_record": bool(is_owner and eligibility.get("eligible")),
+        "latest": items[-1] if items else None,
+        "items": items,
+        "count": len(items),
+        "verification": repository.verify_run_feedback_chain(str(run["id"])),
+        "policy": (
+            "决策日志只追加新版本并绑定当次 Run 结果哈希；它记录用户选择，"
+            "不会修改 Agent 结论、绕过风险门禁或自动执行交易。"
+        ),
     }
 
 
@@ -852,6 +956,57 @@ def get_agent_run(
     principal: AuthPrincipal = Depends(principal_from_request),
 ):
     return _get_run_or_404(run_id, principal)
+
+
+@router.get("/runs/{run_id}/feedback")
+def get_agent_run_feedback(
+    run_id: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    run = _get_run_or_404(run_id, principal)
+    return _feedback_view(run, principal)
+
+
+@router.post("/runs/{run_id}/feedback")
+def record_agent_run_feedback(
+    run_id: str,
+    request: RecordAgentRunFeedbackRequest,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    run = _get_run_or_404(run_id, principal)
+    if str(run.get("user_id") or "") != _agent_user_id(principal):
+        raise HTTPException(status_code=403, detail="管理员只能审阅，不能代替用户记录个人决策")
+    try:
+        event, created = repository.append_run_feedback(
+            run_id,
+            user_id=_agent_user_id(principal),
+            actor_id=_actor_id(principal),
+            feedback_verdict=request.feedback_verdict,
+            user_decision=request.user_decision,
+            reason_codes=request.reason_codes,
+            note=request.note,
+            planned_review_at=(
+                request.planned_review_at.isoformat()
+                if request.planned_review_at is not None
+                else None
+            ),
+            expected_previous_hash=request.expected_previous_hash,
+        )
+    except AgentFeedbackConflictError as error:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "feedback_conflict", "message": str(error)},
+        ) from error
+    except AgentFeedbackEligibilityError as error:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "feedback_not_eligible", "message": str(error)},
+        ) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    response = _feedback_view(run, principal)
+    response.update({"created": created, "event": _feedback_event_public(event)})
+    return response
 
 
 @router.get("/runs/{run_id}/strategy-shadow-outcome")
