@@ -24,6 +24,7 @@ from agent import (
 )
 from agent.batches import summarize_batch
 from agent.comparison import compare_run_results
+from agent.decision_reviews import DecisionReviewService
 from agent.outcomes import DecisionOutcomeService, OutcomeEvaluationError
 from agent.repository import (
     AgentFeedbackConflictError,
@@ -545,6 +546,10 @@ def _outcome_service() -> DecisionOutcomeService:
     return DecisionOutcomeService(repository, registry)
 
 
+def _decision_review_service() -> DecisionReviewService:
+    return DecisionReviewService(repository)
+
+
 @router.get("/tools")
 def get_agent_tool_catalog():
     return {
@@ -948,6 +953,22 @@ def list_agent_runs(
         "next_cursor": _encode_cursor(runs[-1]) if has_more and runs else None,
         "has_more": has_more,
     }
+
+
+@router.get("/decision-reviews")
+def list_agent_decision_reviews(
+    limit: int = Query(default=20, ge=1, le=50),
+    review_status: Literal[
+        "attention", "blocked", "due", "ready", "upcoming", "unscheduled"
+    ] | None = Query(default=None, alias="status"),
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    return _decision_review_service().list_reviews(
+        tenant_id="public",
+        user_id=_agent_user_id(principal),
+        limit=limit,
+        status=review_status,
+    )
 
 
 @router.get("/runs/{run_id}")

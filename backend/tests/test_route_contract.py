@@ -124,6 +124,7 @@ EXPECTED_OPERATIONS = {
     "/api/v1/agent/runs": {"GET", "POST"},
     "/api/v1/agent/runs/{run_id}": {"GET"},
     "/api/v1/agent/runs/{run_id}/feedback": {"GET", "POST"},
+    "/api/v1/agent/decision-reviews": {"GET"},
     "/api/v1/agent/runs/{run_id}/strategy-shadow-outcome": {"GET"},
     "/api/v1/agent/runs/{run_id}/evaluate": {"POST"},
     "/api/v1/agent/runs/{run_id}/evaluations": {"GET"},

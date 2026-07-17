@@ -113,7 +113,7 @@ function FeedbackEvent({ event, latest = false }) {
   )
 }
 
-export default function AgentDecisionJournal({ run }) {
+export default function AgentDecisionJournal({ run, onSaved }) {
   const [journal, setJournal] = useState(null)
   const [form, setForm] = useState(emptyForm)
   const [loading, setLoading] = useState(true)
@@ -178,6 +178,7 @@ export default function AgentDecisionJournal({ run }) {
       })
       setJournal(data)
       setForm(formFromEvent(data.latest))
+      onSaved?.(data)
       setNotice(data.created ? `已保存第 ${data.latest.sequence_no} 版决策` : '当前决策已保存')
     } catch (requestError) {
       setError(requestError.message || '决策保存失败')

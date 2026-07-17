@@ -8,6 +8,14 @@
 
 ## 最近更新
 
+### 2026-07-17：Agent 决策复盘队列
+
+- 新增用户级复盘队列，只读取每个 Run 最新的不可变决策版本，并按计划复盘日划分为证据阻塞、到期待复盘、真实证据已更新、等待复盘日和未设日期。
+- 复盘状态仅由原 Run 完整性、决策日志哈希链、真实确认净值 `outcome_observation` Evidence 和持久化采集计划共同判定；计划日前的净值不能让任务提前变为可复盘。
+- 队列展示的是标的自原 Run 确认净值基线后的变化，不推断用户已经成交、个人盈亏或策略有效。保存新决策版本或刷新真实净值后，前端会同步更新复盘队列，并可直接打开原 Run 查看完整证据。
+- `GET /api/v1/agent/decision-reviews` 严格按登录用户隔离，返回内容移除租户、用户和操作者内部标识；数据库为最新决策队列增加 SQLite/PostgreSQL 一致索引。
+- 后端全量回归 `411` 项通过，前端生产构建通过；本地 API、桌面端和 `390×844` 手机端完成真实页面验证，无横向溢出或控制台错误。
+
 ### 2026-07-17：Agent 决策日志与用户反馈闭环
 
 - 每个已形成真实研究结果且 Evidence/Audit 完整的 Agent Run，都可以记录用户对研判质量的评价、本人下一步决策、原因、备注和计划复盘日期；记录绑定当次 Run 结果 SHA-256，不会修改原结论或触发交易。
@@ -488,6 +496,7 @@ backend/
   agent/
     batches.py             批次状态、逐只决策矩阵与披露持仓重合下界
     comparison.py          基于持久化结果和 Evidence 门禁的父子 Run 对比
+    decision_reviews.py    用户决策版本、计划日期与真实净值结果复盘队列
     llm_gateway.py         提供商中立模型网关、重试与调用元数据
     portfolio_context.py   用户已确认持仓与投资约束的最小只读上下文
     registry.py            版本化工具白名单
@@ -538,6 +547,7 @@ frontend/
   src/components/PersonalizedDecisionView.jsx  Agent 个人决策与门禁面板
   src/components/AISynthesisView.jsx           模型研判、反证、未知项与审计摘要
   src/components/AgentDecisionJournal.jsx      用户决策、复盘日期与不可变版本历史
+  src/components/AgentDecisionReviewQueue.jsx  服务端筛选的真实结果复盘待办
   src/components/FundMarketProfileView.jsx     基金跨市场 Evidence 面板
   src/tabs/                总览、基金、市场、组合和研究页面
   src/features/funds/      基金研究组件和状态管理

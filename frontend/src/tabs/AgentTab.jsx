@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowRight,
   ArrowRightLeft,
@@ -29,6 +29,7 @@ import {
   createFundResearchRun,
   fetchAgentBatch,
   fetchAgentBatches,
+  fetchAgentDecisionReviews,
   fetchAgentModelStatus,
   fetchAgentAudit,
   fetchAgentEvidence,
@@ -52,6 +53,7 @@ import DecisionOutcomeView from '../components/DecisionOutcomeView'
 import AISynthesisView, { ModelStatusStrip } from '../components/AISynthesisView'
 import AgentBatchView from '../components/AgentBatchView'
 import AgentDecisionJournal from '../components/AgentDecisionJournal'
+import AgentDecisionReviewQueue from '../components/AgentDecisionReviewQueue'
 
 const TERMINAL = new Set(['completed', 'partial', 'failed', 'cancelled', 'abstained'])
 const EMPTY_HISTORY_FILTERS = { code: '', status: '' }
@@ -457,6 +459,10 @@ export default function AgentTab() {
   const [historyFilterDraft, setHistoryFilterDraft] = useState(EMPTY_HISTORY_FILTERS)
   const [historyFilters, setHistoryFilters] = useState(EMPTY_HISTORY_FILTERS)
   const [historyOpen, setHistoryOpen] = useState(false)
+  const [decisionReviews, setDecisionReviews] = useState(null)
+  const [loadingDecisionReviews, setLoadingDecisionReviews] = useState(false)
+  const [decisionReviewFilter, setDecisionReviewFilter] = useState('attention')
+  const decisionReviewRequest = useRef(0)
   const [error, setError] = useState('')
   const [modelStatus, setModelStatus] = useState(null)
   const [modelStatusError, setModelStatusError] = useState('')
@@ -565,6 +571,27 @@ export default function AgentTab() {
     }
   }
 
+  async function loadDecisionReviews({ status = decisionReviewFilter } = {}) {
+    const requestId = decisionReviewRequest.current + 1
+    decisionReviewRequest.current = requestId
+    setLoadingDecisionReviews(true)
+    try {
+      const data = await fetchAgentDecisionReviews({
+        limit: 50,
+        status: status === 'all' ? '' : status,
+      })
+      if (requestId === decisionReviewRequest.current) setDecisionReviews(data)
+    } catch (requestError) {
+      if (requestId === decisionReviewRequest.current) {
+        setError(requestError.message || '决策复盘队列获取失败')
+      }
+    } finally {
+      if (requestId === decisionReviewRequest.current) {
+        setLoadingDecisionReviews(false)
+      }
+    }
+  }
+
   async function loadEvaluations(runId) {
     if (!runId) return
     try {
@@ -627,6 +654,7 @@ export default function AgentTab() {
     loadHistory()
     loadBatchHistory()
     loadModelStatus()
+    loadDecisionReviews()
   }, [])
 
   useEffect(() => {
@@ -979,6 +1007,7 @@ export default function AgentTab() {
       })
       setAudit(null)
       await loadRun(run.id, { quiet: true })
+      await loadDecisionReviews()
     } catch (requestError) {
       setError(requestError.message || '真实确认净值结果评估失败')
     } finally {
@@ -1247,6 +1276,19 @@ export default function AgentTab() {
         onRefreshAttribution={refreshBatchPurchaseAttribution}
       />
 
+      <AgentDecisionReviewQueue
+        data={decisionReviews}
+        loading={loadingDecisionReviews}
+        filter={decisionReviewFilter}
+        selectedRunId={run?.id || ''}
+        onRefresh={() => loadDecisionReviews()}
+        onFilterChange={(status) => {
+          setDecisionReviewFilter(status)
+          loadDecisionReviews({ status })
+        }}
+        onOpenRun={loadRun}
+      />
+
       <section className="agent-history-panel" aria-label="Agent 运行历史">
         <div className="agent-section-head">
           <div><span className="eyebrow">Run History</span><h3>最近研究任务 <small>{history.items.length}</small></h3></div>
@@ -1500,7 +1542,10 @@ export default function AgentTab() {
             <PersonalizedDecisionView decision={result.personalized_decision} onOpenEvidence={openEvidence} />
           )}
 
-          <AgentDecisionJournal run={run} />
+          <AgentDecisionJournal
+            run={run}
+            onSaved={() => loadDecisionReviews()}
+          />
 
           {result.market_profile && (
             <FundMarketProfileView profile={result.market_profile} onOpenEvidence={openEvidence} />

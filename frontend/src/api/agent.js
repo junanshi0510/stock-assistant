@@ -119,6 +119,12 @@ export function fetchAgentRuns({ limit = 8, cursor = '', status = '', code = '' 
   return getJson(`/api/v1/agent/runs?${params.toString()}`)
 }
 
+export function fetchAgentDecisionReviews({ limit = 30, status = '' } = {}) {
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (status) params.set('status', status)
+  return getJson(`/api/v1/agent/decision-reviews?${params.toString()}`)
+}
+
 export function cancelAgentRun(runId) {
   return getJson(`/api/v1/agent/runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST' })
 }

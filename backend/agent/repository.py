@@ -538,6 +538,11 @@ class AgentRepository:
                     CREATE INDEX IF NOT EXISTS idx_agent_run_feedback_chain
                     ON agent_run_feedback_events(run_id, sequence_no);
 
+                    CREATE INDEX IF NOT EXISTS idx_agent_run_feedback_review_queue
+                    ON agent_run_feedback_events(
+                        tenant_id, user_id, planned_review_at, created_at
+                    );
+
                     CREATE TRIGGER IF NOT EXISTS trg_agent_run_feedback_no_update
                     BEFORE UPDATE ON agent_run_feedback_events
                     BEGIN
@@ -3938,6 +3943,42 @@ class AgentRepository:
                 (run_id,),
             ).fetchall()
         return [self._feedback_from_row(row) for row in rows]
+
+    def list_latest_run_feedback(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        limit: int = 500,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Return only the latest immutable journal version for each owned Run."""
+        page_size = max(1, min(1000, int(limit)))
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT feedback.*
+                FROM agent_run_feedback_events AS feedback
+                INNER JOIN agent_runs AS runs
+                    ON runs.id=feedback.run_id
+                   AND runs.tenant_id=feedback.tenant_id
+                   AND runs.user_id=feedback.user_id
+                WHERE feedback.tenant_id=? AND feedback.user_id=?
+                  AND feedback.sequence_no=(
+                      SELECT MAX(candidate.sequence_no)
+                      FROM agent_run_feedback_events AS candidate
+                      WHERE candidate.run_id=feedback.run_id
+                  )
+                ORDER BY
+                    CASE WHEN feedback.planned_review_at IS NULL THEN 1 ELSE 0 END,
+                    feedback.planned_review_at,
+                    feedback.created_at DESC,
+                    feedback.id DESC
+                LIMIT ?
+                """,
+                (tenant_id, user_id, page_size + 1),
+            ).fetchall()
+        has_more = len(rows) > page_size
+        return [self._feedback_from_row(row) for row in rows[:page_size]], has_more
 
     def verify_run_feedback_chain(self, run_id: str) -> dict[str, Any]:
         run = self.get_run(run_id, include_details=False)

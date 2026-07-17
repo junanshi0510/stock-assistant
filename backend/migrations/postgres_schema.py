@@ -113,6 +113,9 @@ CREATE TABLE IF NOT EXISTS agent_run_feedback_events (
 CREATE INDEX IF NOT EXISTS idx_agent_run_feedback_chain
 ON agent_run_feedback_events(run_id, sequence_no);
 
+CREATE INDEX IF NOT EXISTS idx_agent_run_feedback_review_queue
+ON agent_run_feedback_events(tenant_id, user_id, planned_review_at, created_at);
+
 CREATE TABLE IF NOT EXISTS background_jobs (
     id TEXT PRIMARY KEY,
     tenant_id TEXT NOT NULL,
