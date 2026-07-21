@@ -2,8 +2,9 @@
 """
 热门股票 / 涨跌幅榜抓取
 ======================
-提供各市场的热门股票榜单,三个市场统一走【东方财富网】的公开榜单接口:
-免费、无需 key、无明显限流,且项目已为东财域名配好 NO_PROXY 直连(见 data_fetch.py)。
+提供各市场的热门股票榜单：A股/港股使用东方财富公开榜单，美股使用
+Yahoo Finance 预定义筛选器与批量 Spark 日线。不使用新浪作为榜单回退源；
+请求失败时优先返回最近一次成功缓存，并明确标注陈旧状态。
 
 榜单类型(type):
     gainers  涨幅榜(涨得最快)
@@ -24,19 +25,23 @@
 """
 
 from concurrent.futures import ThreadPoolExecutor
-import json
-import re
+import copy
+import datetime
+import threading
+import time
 
 import requests
 import data_fetch
 
 _TIMEOUT = 10
-_CLIST_URL = "http://push2.eastmoney.com/api/qt/clist/get"
-_KLINE_URL = "http://push2his.eastmoney.com/api/qt/stock/kline/get"
+_CLIST_URL = "https://push2.eastmoney.com/api/qt/clist/get"
 _UT = "bd1d9ddb04089700cf9c27f6f7426281"
-_SINA_A_URL = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData"
-_SINA_HK_URL = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHKStockData"
-_SINA_US_URL = "https://stock.finance.sina.com.cn/usstock/api/jsonp.php/var%20x=/US_CategoryService.getList"
+_YAHOO_SCREENER_URL = "https://query2.finance.yahoo.com/v1/finance/screener/predefined/saved"
+_YAHOO_SPARK_URL = "https://query2.finance.yahoo.com/v7/finance/spark"
+_YAHOO_HEADERS = {"User-Agent": "Mozilla/5.0"}
+_CACHE_TTL = {"1d": 60, "7d": 300, "30d": 600}
+_cache: dict[tuple, tuple[float, dict]] = {}
+_cache_lock = threading.Lock()
 
 # 各市场的东财板块过滤串(fs)
 _MARKET_FS = {
@@ -67,16 +72,50 @@ def get_hot_stocks(market: str, period: str = "1d",
         raise ValueError(f"不支持的周期:{period}")
 
     limit = max(5, min(50, limit))
+    cache_key = (market, period, type_, limit)
+    with _cache_lock:
+        cached = _cache.get(cache_key)
+    if cached and time.time() - cached[0] < _CACHE_TTL[period]:
+        return copy.deepcopy(cached[1])
 
-    if period == "1d":
-        items = _hot_1d(market, type_, limit)
-        scope = "全市场"
-    else:
-        items = _hot_multiday(market, type_, _PERIOD_DAYS[period], limit)
-        scope = "活跃股范围内"
+    try:
+        if period == "1d":
+            items = _hot_1d(market, type_, limit)
+            scope = "全市场"
+        else:
+            items = _hot_multiday(market, type_, _PERIOD_DAYS[period], limit)
+            scope = "活跃股范围内"
+    except Exception:
+        if cached:
+            stale = copy.deepcopy(cached[1])
+            stale["stale"] = True
+            stale["warning"] = "实时榜单暂不可用，当前展示最近一次成功缓存。"
+            return stale
+        raise
 
-    return {"market": market, "period": period, "type": type_,
-            "scope": scope, "items": items, "count": len(items)}
+    result = {
+        "market": market,
+        "period": period,
+        "type": type_,
+        "scope": scope,
+        "source": "Yahoo Finance" if market == "美股" else "东方财富",
+        "retrieved_at": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+        "stale": False,
+        "methodology": (
+            ("Yahoo Finance 美股预定义筛选器" if market == "美股" else "东方财富全市场服务端实时排序")
+            if period == "1d"
+            else (
+                "Yahoo Finance 成交活跃候选池内，按批量日K计算区间涨跌"
+                if market == "美股"
+                else "东方财富成交活跃候选池内，按真实日K计算区间涨跌"
+            )
+        ),
+        "items": items,
+        "count": len(items),
+    }
+    with _cache_lock:
+        _cache[cache_key] = (time.time(), copy.deepcopy(result))
+    return result
 
 
 def _clist(market: str, fid: str, po: int, limit: int) -> list[dict]:
@@ -110,15 +149,13 @@ def _clist(market: str, fid: str, po: int, limit: int) -> list[dict]:
 
 def _hot_1d(market: str, type_: str, limit: int) -> list[dict]:
     """当日榜单:服务端排序,全市场。"""
-    try:
-        return _sina_1d(market, type_, limit)
-    except Exception:
-        # 东财仅作为真实备选源;不会返回任何精选/假数据。
-        if type_ == "gainers":
-            return _clist(market, "f3", 1, limit)
-        if type_ == "losers":
-            return _clist(market, "f3", 0, limit)
-        return _clist(market, "f6", 1, limit)
+    if market == "美股":
+        return _yahoo_us_1d(type_, limit)
+    if type_ == "gainers":
+        return _clist(market, "f3", 1, limit)
+    if type_ == "losers":
+        return _clist(market, "f3", 0, limit)
+    return _clist(market, "f6", 1, limit)
 
 
 def _hot_multiday(market: str, type_: str, days: int, limit: int) -> list[dict]:
@@ -126,24 +163,108 @@ def _hot_multiday(market: str, type_: str, days: int, limit: int) -> list[dict]:
     多日榜单:先取成交额最大的活跃候选池(~50 只),再并行抓日K算 N 日涨幅后排序。
     active 类型直接返回按成交额排序的候选池;gainers/losers 按 N 日涨幅排序。
     """
-    pool = _hot_1d(market, "active", max(20, min(50, limit * 3)))  # 真实活跃股候选池
+    candidates = _hot_1d(market, "active", max(20, min(50, limit * 3)))
+
+    if market == "美股":
+        enriched = _yahoo_us_period_returns(candidates, days)
+    else:
+        def enrich(it):
+            try:
+                it = dict(it)
+                it["change_pct"] = _n_day_return(market, it["symbol"], days)
+                return it
+            except Exception:
+                return None
+
+        with ThreadPoolExecutor(max_workers=8) as pool_exec:
+            enriched = [x for x in pool_exec.map(enrich, candidates) if x is not None]
+
+    # 成交活跃榜保持成交额排名，但 change_pct 必须改成所选区间的真实涨跌，
+    # 否则前端“近7日/30日涨跌”标题会错误展示当日涨跌。
     if type_ == "active":
-        return pool[:limit]
-
-    def enrich(it):
-        try:
-            it = dict(it)
-            it["change_pct"] = _n_day_return(market, it["symbol"], days)
-            return it
-        except Exception:
-            return None
-
-    with ThreadPoolExecutor(max_workers=8) as pool_exec:
-        enriched = [x for x in pool_exec.map(enrich, pool) if x is not None]
+        return enriched[:limit]
 
     reverse = (type_ == "gainers")
     enriched.sort(key=lambda x: x["change_pct"], reverse=reverse)
     return enriched[:limit]
+
+
+def _yahoo_us_1d(type_: str, limit: int) -> list[dict]:
+    screener = {
+        "gainers": "day_gainers",
+        "losers": "day_losers",
+        "active": "most_actives",
+    }[type_]
+    response = requests.get(
+        _YAHOO_SCREENER_URL,
+        params={"formatted": "false", "scrIds": screener, "count": limit, "start": 0},
+        headers=_YAHOO_HEADERS,
+        timeout=_TIMEOUT,
+    )
+    response.raise_for_status()
+    finance = response.json().get("finance") or {}
+    results = finance.get("result") or []
+    quotes = (results[0].get("quotes") or []) if results else []
+    if not quotes:
+        raise RuntimeError("Yahoo Finance 美股榜单返回空数据")
+    return [{
+        "symbol": str(item.get("symbol") or "").upper(),
+        "name": item.get("shortName") or item.get("longName") or "",
+        "price": _num(item.get("regularMarketPrice")),
+        "change_pct": _num(item.get("regularMarketChangePercent")),
+        "volume": _num(item.get("regularMarketVolume")),
+        "secid": str(item.get("symbol") or "").upper(),
+    } for item in quotes[:limit] if item.get("symbol")]
+
+
+def _yahoo_us_period_returns(candidates: list[dict], days: int) -> list[dict]:
+    """用一次 Yahoo Spark 批量请求计算美股候选池多日涨跌。"""
+    symbols = [str(item.get("symbol") or "").upper() for item in candidates]
+    results = _yahoo_spark_results(symbols, days)
+    returns = {}
+    for result in results:
+        symbol = str(result.get("symbol") or "").upper()
+        responses = result.get("response") or []
+        quote_sets = (((responses[0].get("indicators") or {}).get("quote") or [{}]) if responses else [{}])
+        closes = [value for value in (quote_sets[0].get("close") or []) if value is not None]
+        if len(closes) >= 2:
+            window = closes[-(days + 1):]
+            returns[symbol] = round((window[-1] / window[0] - 1) * 100, 2)
+    enriched = []
+    for item in candidates:
+        symbol = str(item.get("symbol") or "").upper()
+        if symbol not in returns:
+            continue
+        row = dict(item)
+        row["change_pct"] = returns[symbol]
+        enriched.append(row)
+    return enriched
+
+
+def _yahoo_spark_results(symbols: list[str], days: int) -> list[dict]:
+    """批次含无效临时代码时自动二分隔离，避免一只坏代码拖垮整榜。"""
+    if not symbols:
+        return []
+    response = requests.get(
+        _YAHOO_SPARK_URL,
+        params={
+            "symbols": ",".join(symbols),
+            "range": "1mo" if days <= 7 else "3mo",
+            "interval": "1d",
+        },
+        headers=_YAHOO_HEADERS,
+        timeout=_TIMEOUT,
+    )
+    if response.ok:
+        spark = response.json().get("spark") or {}
+        return spark.get("result") or []
+    if len(symbols) == 1:
+        return []
+    middle = len(symbols) // 2
+    return (
+        _yahoo_spark_results(symbols[:middle], days)
+        + _yahoo_spark_results(symbols[middle:], days)
+    )
 
 
 def _n_day_return(market: str, symbol: str, days: int) -> float:
@@ -163,106 +284,3 @@ def _num(v):
         return float(v)
     except (ValueError, TypeError):
         return None
-
-
-def _sina_1d(market: str, type_: str, limit: int) -> list[dict]:
-    if market == "A股":
-        return _sina_a_1d(type_, limit)
-    if market == "港股":
-        return _sina_hk_1d(type_, limit)
-    if market == "美股":
-        return _sina_us_1d(type_, limit)
-    raise ValueError(f"不支持的市场:{market}")
-
-
-def _sina_sort(type_: str) -> tuple[str, str]:
-    if type_ == "gainers":
-        return "changepercent", "0"
-    if type_ == "losers":
-        return "changepercent", "1"
-    return "amount", "0"
-
-
-def _sina_a_1d(type_: str, limit: int) -> list[dict]:
-    sort, asc = _sina_sort(type_)
-    params = {
-        "page": 1,
-        "num": limit,
-        "sort": sort,
-        "asc": asc,
-        "node": "hs_a",
-        "symbol": "",
-        "_s_r_a": "page",
-    }
-    resp = requests.get(_SINA_A_URL, params=params, timeout=_TIMEOUT)
-    resp.raise_for_status()
-    data = resp.json()
-    if not data:
-        raise RuntimeError("新浪A股榜单返回空数据")
-    return [{
-        "symbol": str(it.get("code") or "").strip(),
-        "name": it.get("name") or "",
-        "price": _num(it.get("trade")),
-        "change_pct": _num(it.get("changepercent")),
-        "volume": _num(it.get("volume")),
-        "secid": it.get("symbol") or "",
-    } for it in data[:limit]]
-
-
-def _sina_hk_1d(type_: str, limit: int) -> list[dict]:
-    sort, asc = _sina_sort(type_)
-    params = {
-        "page": 1,
-        "num": limit,
-        "sort": sort,
-        "asc": asc,
-        "node": "qbgg_hk",
-        "_s_r_a": "page",
-    }
-    resp = requests.get(_SINA_HK_URL, params=params, timeout=_TIMEOUT)
-    resp.raise_for_status()
-    data = resp.json()
-    if not data:
-        raise RuntimeError("新浪港股榜单返回空数据")
-    return [{
-        "symbol": str(it.get("symbol") or "").zfill(5),
-        "name": it.get("name") or "",
-        "price": _num(it.get("lasttrade")),
-        "change_pct": _num(it.get("changepercent")),
-        "volume": _num(it.get("volume")),
-        "secid": str(it.get("symbol") or "").zfill(5),
-    } for it in data[:limit]]
-
-
-def _sina_us_1d(type_: str, limit: int) -> list[dict]:
-    if type_ == "gainers":
-        sort, asc = "chg", "0"
-    elif type_ == "losers":
-        sort, asc = "chg", "1"
-    else:
-        sort, asc = "volume", "0"
-    params = {
-        "page": 1,
-        "num": limit,
-        "sort": sort,
-        "asc": asc,
-        "market": "",
-        "id": "",
-    }
-    resp = requests.get(_SINA_US_URL, params=params, timeout=_TIMEOUT)
-    resp.raise_for_status()
-    m = re.search(r"var\s+x=\((.*)\);\s*$", resp.text, re.S)
-    if not m:
-        raise RuntimeError("新浪美股榜单 JSONP 解析失败")
-    payload = json.loads(m.group(1))
-    data = payload.get("data") or []
-    if not data:
-        raise RuntimeError("新浪美股榜单返回空数据")
-    return [{
-        "symbol": str(it.get("symbol") or "").upper(),
-        "name": it.get("cname") or it.get("name") or "",
-        "price": _num(it.get("price")),
-        "change_pct": _num(it.get("chg")),
-        "volume": _num(it.get("volume")),
-        "secid": str(it.get("symbol") or "").upper(),
-    } for it in data[:limit]]

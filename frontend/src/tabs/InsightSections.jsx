@@ -320,6 +320,7 @@ export function CompareSection({ market, symbol, trigger }) {
           <div style={{ display: 'flex', gap: 14, alignItems: 'center', marginBottom: 14, flexWrap: 'wrap' }}>
             <span className={`badge ${verdictClass(data.verdict)}`}>{data.verdict}</span>
             <span className="hint">对比基准:{data.benchmark}</span>
+            <span className="hint">截至:{data.as_of || '—'}</span>
           </div>
           <div className="bt-cards" style={{ marginBottom: 14 }}>
             <div className="bt-card">
@@ -331,6 +332,20 @@ export function CompareSection({ market, symbol, trigger }) {
               <div className="k">相关性</div>
               <div className="v">{data.correlation ?? '—'}</div>
               <div className="hint" style={{ marginTop: 6 }}>与大盘同向程度(-1~1)</div>
+            </div>
+            <div className="bt-card">
+              <div className="k">多周期加权超额</div>
+              <div className={`v ${data.weighted_excess > 0 ? 'delta-pos' : data.weighted_excess < 0 ? 'delta-neg' : ''}`}>
+                {data.weighted_excess > 0 ? '+' : ''}{data.weighted_excess ?? '—'}%
+              </div>
+              <div className="hint" style={{ marginTop: 6 }}>
+                跑赢 {data.periods_outperformed ?? 0}/{data.periods_available ?? 0} 个周期
+              </div>
+            </div>
+            <div className="bt-card">
+              <div className="k">信息比率</div>
+              <div className="v">{data.information_ratio ?? '—'}</div>
+              <div className="hint" style={{ marginTop: 6 }}>单位主动风险获得的超额收益</div>
             </div>
           </div>
           {data.periods?.length > 0 && (
@@ -351,11 +366,24 @@ export function CompareSection({ market, symbol, trigger }) {
             </table>
           )}
           <div style={{ display: 'flex', gap: 16, marginBottom: 8, flexWrap: 'wrap' }}>
-              <span className="hint"><span style={{ color: '#c63b4a' }}>━</span> 个股</span>
-              <span className="hint"><span style={{ color: '#176f9c' }}>━</span> {data.benchmark}</span>
+            <span className="hint"><span style={{ color: '#c63b4a' }}>━</span> 个股</span>
+            <span className="hint"><span style={{ color: '#176f9c' }}>━</span> {data.benchmark}</span>
             <span className="hint">(都从 100 起步,看谁走得更高)</span>
           </div>
           <RebasedChart rebased={data.rebased} />
+          <div className="ind-grid" style={{ marginTop: 14 }}>
+            <div className="ind"><div className="k">个股年化波动</div><div className="v">{data.stock_volatility ?? '—'}%</div></div>
+            <div className="ind"><div className="k">基准年化波动</div><div className="v">{data.benchmark_volatility ?? '—'}%</div></div>
+            <div className="ind"><div className="k">个股最大回撤</div><div className="v">{data.stock_max_drawdown ?? '—'}%</div></div>
+            <div className="ind"><div className="k">基准最大回撤</div><div className="v">{data.benchmark_max_drawdown ?? '—'}%</div></div>
+            <div className="ind"><div className="k">跟踪误差</div><div className="v">{data.tracking_error ?? '—'}%</div></div>
+            <div className="ind"><div className="k">统计样本</div><div className="v">{data.sample_days ?? '—'}日</div></div>
+          </div>
+          <p className="hint" style={{ margin: '12px 0 0' }}>
+            个股数据源：{data.stock_source || '—'}；基准数据源：{data.benchmark_source || '—'}。
+            {data.benchmark_is_proxy ? ' 当前使用可交易ETF代理指数，可能存在管理费、分红与跟踪误差。' : ''}
+            Beta、相关性和信息比率均基于近一年共同交易日，不代表未来表现。
+          </p>
         </>
       )}
     </div>

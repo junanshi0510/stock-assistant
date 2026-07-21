@@ -219,7 +219,7 @@ def get_hot(
     market: str = Query(...),
     period: str = Query("1d", pattern="^(1d|7d|30d)$"),
     type: str = Query("gainers", pattern="^(gainers|losers|active)$"),
-    limit: int = Query(50, ge=10, le=100),
+    limit: int = Query(50, ge=10, le=50),
 ):
     _validate_market(market)
     return _call_market_operation(

@@ -2,7 +2,7 @@
 """
 数据抓取模块
 ------------
-负责从 akshare 抓取 A股 / 港股 / 美股 的历史日线行情。
+负责从多个可追溯行情源抓取 A股 / 港股 / 美股的历史日线行情。
 对外只暴露两个函数:
     - get_history(market, symbol, start, end)  抓取某只股票的历史行情
     - search_us_symbol(keyword)                根据美股代码/名称查找 akshare 内部代码
@@ -16,10 +16,10 @@ import contextlib
 import io
 
 # ── 代理策略:国内数据源直连,海外数据源走系统代理 ──────────────────────
-# 国内源(东方财富/新浪/Tushare)在【国内服务器】,本应直连;但 Python 的 requests
+# 国内源(东方财富/Tushare)在【国内服务器】,本应直连;但 Python 的 requests
 # 会自动读取 Windows 系统代理(如 Clash 的 127.0.0.1:7897)把国内请求塞进 VPN,
 # 导致 "Unable to connect to proxy" 报错。
-# 这里只对国内域名设置 NO_PROXY(绕过代理直连),海外源(Polygon/AlphaVantage)
+# 这里只对国内域名设置 NO_PROXY(绕过代理直连),海外源(Polygon/AlphaVantage/Yahoo)
 # 不在列表里,仍按系统代理走 —— 在国内访问海外源往往正需要代理。
 # (BaoStock 走自有 socket 协议,不读代理环境变量,不受影响。)
 os.environ["NO_PROXY"] = (
@@ -110,7 +110,7 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         raise ValueError("没有取到数据,请检查股票代码是否正确,或稍后重试。")
 
-    # 有的数据源(如新浪)把日期放在索引里,先还原成普通列
+    # 有的数据源会把日期放在索引里,先还原成普通列
     if "date" not in df.columns and "日期" not in df.columns:
         df = df.reset_index()
 
@@ -348,29 +348,109 @@ def _src_us_alphavantage(symbol, start, end):
     return pd.DataFrame(recs)
 
 
-# ========== 免费备用源(akshare:东方财富 / 新浪)==========
+# —— Yahoo Finance(港股/美股,免 key;标准 OHLCV 日线)——
+_YAHOO_CHART_URL = "https://query2.finance.yahoo.com/v8/finance/chart/{symbol}"
+_YAHOO_HEADERS = {"User-Agent": "Mozilla/5.0"}
+
+
+def _yahoo_symbol_hk(symbol: str) -> str:
+    code = str(symbol or "").strip().upper()
+    if code.endswith(".HK"):
+        code = code[:-3]
+    if not code.isdigit():
+        raise ValueError(f"无效港股代码: {symbol}")
+    return f"{int(code):04d}.HK"
+
+
+def _yahoo_symbol_us(symbol: str) -> str:
+    code = str(symbol or "").strip().upper()
+    if not code:
+        raise ValueError("美股代码不能为空")
+    # Yahoo 对 BRK.B / BF.B 这类类别股使用连字符代码。
+    return code.replace(".", "-")
+
+
+def _src_yahoo(symbol: str, start: str, end: str) -> pd.DataFrame:
+    """从 Yahoo Chart API 取得精确日期范围内的未复权 OHLCV 日线。"""
+    start_date = pd.to_datetime(start, format="%Y%m%d").date()
+    end_date = min(pd.to_datetime(end, format="%Y%m%d").date(), datetime.date.today())
+    if start_date > end_date:
+        raise ValueError("开始日期晚于可用的结束日期")
+
+    period1 = int(datetime.datetime.combine(
+        start_date, datetime.time.min, tzinfo=datetime.timezone.utc
+    ).timestamp())
+    # Yahoo 的 period2 是开区间，所以向后多取一天以包含 end_date。
+    period2 = int(datetime.datetime.combine(
+        end_date + datetime.timedelta(days=1),
+        datetime.time.min,
+        tzinfo=datetime.timezone.utc,
+    ).timestamp())
+    response = requests.get(
+        _YAHOO_CHART_URL.format(symbol=symbol),
+        params={
+            "period1": period1,
+            "period2": period2,
+            "interval": "1d",
+            "events": "history",
+        },
+        headers=_YAHOO_HEADERS,
+        timeout=10,
+    )
+    response.raise_for_status()
+    chart = response.json().get("chart") or {}
+    if chart.get("error"):
+        error = chart["error"] or {}
+        raise RuntimeError(error.get("description") or "Yahoo 行情返回错误")
+    results = chart.get("result") or []
+    if not results:
+        raise RuntimeError(f"Yahoo 未返回 {symbol} 行情")
+
+    result = results[0]
+    timestamps = list(result.get("timestamp") or [])
+    quotes = ((result.get("indicators") or {}).get("quote") or [{}])[0]
+    if not timestamps or not quotes:
+        raise RuntimeError(f"Yahoo 未返回 {symbol} 日线")
+
+    size = len(timestamps)
+
+    def values(name: str) -> list:
+        items = list(quotes.get(name) or [])
+        return (items + [None] * size)[:size]
+
+    frame = pd.DataFrame({
+        "date": pd.to_datetime(timestamps, unit="s", utc=True)
+            .tz_localize(None).normalize(),
+        "open": values("open"),
+        "high": values("high"),
+        "low": values("low"),
+        "close": values("close"),
+        "volume": values("volume"),
+    })
+    return frame
+
+
+def _src_hk_yahoo(symbol, start, end):
+    return _src_yahoo(_yahoo_symbol_hk(symbol), start, end)
+
+
+def _src_us_yahoo(symbol, start, end):
+    return _src_yahoo(_yahoo_symbol_us(symbol), start, end)
+
+
+# ========== 免费备用源(akshare:东方财富)==========
 
 def _src_a_em(symbol, start, end):
     return ak.stock_zh_a_hist(symbol=symbol, period="daily",
                               start_date=start, end_date=end, adjust="qfq")
 
-def _src_a_sina(symbol, start, end):
-    return ak.stock_zh_a_daily(symbol=_sina_a_symbol(symbol),
-                               start_date=start, end_date=end, adjust="qfq")
-
 def _src_hk_em(symbol, start, end):
     return ak.stock_hk_hist(symbol=symbol, period="daily",
                             start_date=start, end_date=end, adjust="qfq")
 
-def _src_hk_sina(symbol, start, end):
-    return ak.stock_hk_daily(symbol=symbol, adjust="qfq")
-
 def _src_us_em(symbol, start, end):
     return ak.stock_us_hist(symbol=_resolve_us_code(symbol), period="daily",
                             start_date=start, end_date=end, adjust="qfq")
-
-def _src_us_sina(symbol, start, end):
-    return ak.stock_us_daily(symbol=symbol.upper(), adjust="qfq")
 
 
 # 当前成交价必须与未复权历史价格比较，否则分红、拆股会造成虚假的价位命中。
@@ -463,12 +543,12 @@ def _src_us_em_raw(symbol, start, end):
 
 # 每个市场的数据源优先级:专业源在前,免费备用源在后,自动降级。
 _SOURCES = {
-    "A股": [("Tushare", _src_a_tushare), ("腾讯证券", _src_a_tencent), ("BaoStock", _src_a_baostock),
-            ("东方财富", _src_a_em), ("新浪", _src_a_sina)],
+    "A股": [("Tushare", _src_a_tushare), ("BaoStock", _src_a_baostock),
+            ("腾讯证券", _src_a_tencent), ("东方财富", _src_a_em)],
     "港股": [("Tushare", _src_hk_tushare),
-            ("东方财富", _src_hk_em), ("新浪", _src_hk_sina)],
+            ("Yahoo Finance", _src_hk_yahoo), ("东方财富", _src_hk_em)],
     "美股": [("Polygon", _src_us_polygon), ("AlphaVantage", _src_us_alphavantage),
-            ("东方财富", _src_us_em), ("新浪", _src_us_sina)],
+            ("Yahoo Finance", _src_us_yahoo), ("东方财富", _src_us_em)],
 }
 
 _PRICE_LEVEL_SOURCES = {
@@ -480,11 +560,13 @@ _PRICE_LEVEL_SOURCES = {
     ],
     "港股": [
         ("Tushare 港股日线", _src_hk_tushare),
+        ("Yahoo Finance 港股日线", _src_hk_yahoo),
         ("东方财富港股未复权日线", _src_hk_em_raw),
     ],
     "美股": [
         ("Polygon 未复权日线", _src_us_polygon_raw),
         ("Alpha Vantage 未复权日线", _src_us_alphavantage),
+        ("Yahoo Finance 美股日线", _src_us_yahoo),
         ("东方财富美股未复权日线", _src_us_em_raw),
     ],
 }
@@ -500,7 +582,7 @@ def get_history(market: str, symbol: str, start: str = "20230101",
     """
     抓取某只股票的历史日线行情(前复权)。
 
-    多数据源容错:依次尝试 东方财富 → 新浪,任一源成功即返回;
+    多数据源容错:依照专业源优先级逐一尝试,任一源成功即返回;
     全部失败时抛出汇总错误。
 
     参数:
