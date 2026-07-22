@@ -258,6 +258,10 @@ def _hot(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _market_providers(_payload: dict[str, Any]) -> dict[str, Any]:
+    return hot_stocks.get_provider_status()
+
+
 def _sectors(payload: dict[str, Any]) -> dict[str, Any]:
     return sectors_mod.get_sector_analysis(
         market=str(payload["market"]),
@@ -383,6 +387,7 @@ _OPERATIONS: dict[str, OperationHandler] = {
     "market.scan": _scan,
     "market.multi_compare": _multi_compare,
     "market.hot": _hot,
+    "market.providers": _market_providers,
     "market.sectors": _sectors,
     "market.daily": _market_daily,
     "portfolio.watchlist": _portfolio_watchlist,

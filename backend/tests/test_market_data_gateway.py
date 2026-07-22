@@ -9,6 +9,19 @@ from task_queue import TaskQueueUnavailableError
 
 
 class MarketDataGatewayTests(unittest.TestCase):
+    def test_provider_status_is_an_allowlisted_read_operation(self):
+        expected = {"policy_version": "test", "secrets_exposed": False, "markets": []}
+        with patch.object(
+            market_data_operations.hot_stocks,
+            "get_provider_status",
+            return_value=expected,
+        ) as provider:
+            result = market_data_operations.execute_operation("market.providers", {})
+
+        self.assertEqual(result, expected)
+        provider.assert_called_once_with()
+        self.assertIn("market.providers", market_data_operations.allowed_operations())
+
     def test_embedded_mode_executes_allowlisted_operation(self):
         expected = {"code": "013403", "estimate": 1.2345}
         with (

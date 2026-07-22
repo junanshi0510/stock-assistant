@@ -350,24 +350,31 @@ def _resolve_universe(definition: dict[str, Any], user_id: str) -> dict[str, Any
         for item in storage.list_watchlist(user_id=user_id):
             add(item.get("market"), item.get("symbol"), item.get("name"), "watchlist")
     for market in markets:
-        for kind in universe["hot_lists"]:
-            try:
-                result = hot_stocks.get_hot_stocks(
-                    market,
-                    period="1d",
-                    type_=kind,
-                    limit=universe["hot_limit_per_market"],
-                )
-                for item in result.get("items") or []:
+        kinds = universe["hot_lists"]
+        if not kinds:
+            continue
+        try:
+            bundle = hot_stocks.get_hot_stock_bundle(
+                market,
+                kinds,
+                limit=universe["hot_limit_per_market"],
+            )
+            for kind in kinds:
+                for item in (bundle.get("rankings") or {}).get(kind) or []:
                     add(market, item.get("symbol"), item.get("name"), f"hot_{kind}")
-                if result.get("stale"):
-                    warnings.append(
-                        {"source": f"{market}:hot_{kind}", "message": result.get("warning") or "使用了陈旧热门榜缓存"}
-                    )
-            except Exception as error:
+            if bundle.get("degraded"):
                 warnings.append(
-                    {"source": f"{market}:hot_{kind}", "message": str(error)[:180]}
+                    {
+                        "source": f"{market}:hot_provider",
+                        "message": bundle.get("warning") or "热门榜正在使用公开降级源",
+                    }
                 )
+        except Exception as error:
+            # One market-level warning replaces three repeated gainers/losers/active
+            # failures and keeps the strategy run usable when other sources exist.
+            warnings.append(
+                {"source": f"{market}:hot_provider", "message": str(error)[:500]}
+            )
     items = list(collected.values())
     truncated = max(0, len(items) - MAX_UNIVERSE)
     if truncated:

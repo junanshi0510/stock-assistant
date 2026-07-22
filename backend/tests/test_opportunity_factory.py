@@ -142,6 +142,28 @@ class OpportunityFactoryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "A股代码格式无效"):
             service.normalize_definition(value)
 
+    def test_hot_provider_failures_are_collapsed_to_one_warning_per_market(self):
+        definition = _definition()
+        definition["markets"] = ["A股", "港股", "美股"]
+        definition["universe"]["hot_lists"] = ["active", "losers", "gainers"]
+
+        with patch.object(
+            service.hot_stocks,
+            "get_hot_stock_bundle",
+            side_effect=RuntimeError("professional and public providers unavailable"),
+        ) as provider:
+            result = service._resolve_universe(definition, "owner")
+
+        self.assertEqual(provider.call_count, 3)
+        hot_warnings = [
+            item for item in result["warnings"] if item["source"].endswith(":hot_provider")
+        ]
+        self.assertEqual(len(hot_warnings), 3)
+        self.assertEqual(
+            {item["source"] for item in hot_warnings},
+            {"A股:hot_provider", "港股:hot_provider", "美股:hot_provider"},
+        )
+
     def test_strategy_versions_are_immutable_and_user_scoped(self):
         original = _definition()
         strategy = self.repo.create_strategy(

@@ -644,6 +644,35 @@ tbody tr:hover { background: rgba(255,255,255,0.03); }
 .rank-score .bar { flex: 1; height: 7px; border-radius: 4px; background: rgba(255,255,255,0.07); overflow: hidden; min-width: 60px; }
 .rank-score .bar > div { height: 100%; }
 
+.provider-status {
+  display: grid;
+  gap: 10px;
+  margin: 10px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel) 88%, #17676a 12%);
+}
+.provider-status-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.provider-status-head > span, .provider-status-head em { display: inline-flex; align-items: center; gap: 6px; }
+.provider-status-head b { font-size: 12px; }
+.provider-status-head em { color: var(--muted); font-size: 10px; font-style: normal; }
+.provider-status-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.provider-status.compact .provider-status-grid { grid-template-columns: minmax(0, 1fr); }
+.provider-status-card { display: grid; gap: 4px; min-width: 0; padding: 9px 10px; border: 1px solid var(--border); border-radius: 9px; background: rgba(8, 18, 29, 0.22); }
+.provider-status-card > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.provider-status-card > div span { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 9px; font-weight: 750; }
+.provider-status-card > b { font-size: 11px; }
+.provider-status-card small { color: var(--muted); font-size: 9px; }
+.provider-status-card code { overflow: hidden; color: #d8a13b; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.provider-status-card p { overflow: hidden; margin: 1px 0 0; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.provider-status-card.state-ready > div span,
+.provider-status-card.state-configured_unverified > div span { color: #269978; }
+.provider-status-card.state-configuration_required > div span,
+.provider-status-card.state-configuration_invalid > div span,
+.provider-status-card.state-circuit_open > div span { color: #d8a13b; }
+.provider-status-note { margin: 0; color: var(--muted); font-size: 9.5px; line-height: 1.5; }
+
 .hot-health-toolbar {
   display: flex;
   align-items: center;
@@ -660,10 +689,15 @@ tbody tr:hover { background: rgba(255,255,255,0.03); }
 .hot-health-toolbar span { color: var(--muted); font-size: 11px; }
 .hot-health-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .hot-health-actions button { min-height: 34px; padding: 7px 12px; }
+.hot-table-scroll { min-width: 0; max-width: 100%; overflow-x: auto; overscroll-behavior-inline: contain; }
+.hot-ranking-table { min-width: 660px; }
+.hot-health-table { min-width: 820px; }
 .hot-select-col { width: 52px; text-align: center; }
 .hot-select-col input { width: 16px; min-height: 16px; margin: 0; cursor: pointer; }
 
 @media (max-width: 760px) {
+  .provider-status-grid { grid-template-columns: 1fr; }
+  .provider-status-head { align-items: flex-start; flex-direction: column; }
   .hot-health-toolbar { align-items: stretch; flex-direction: column; }
   .hot-health-actions button { flex: 1; }
 }

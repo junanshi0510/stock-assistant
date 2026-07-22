@@ -215,12 +215,18 @@ def _fund_candidate_card(row: dict) -> dict:
 
 def _stock_list_payload(data: dict | None, market: str, list_type: str) -> dict:
     data = data or {}
+    items = ((data.get("rankings") or {}).get(list_type) or data.get("items") or [])[:8]
     return {
         "market": market,
         "type": list_type,
         "scope": data.get("scope") or "",
-        "items": (data.get("items") or [])[:8],
-        "count": data.get("count") or 0,
+        "source": data.get("source"),
+        "provider_tier": data.get("provider_tier"),
+        "data_freshness": data.get("data_freshness"),
+        "degraded": bool(data.get("degraded")),
+        "warning": data.get("warning"),
+        "items": items,
+        "count": len(items),
     }
 
 
@@ -271,10 +277,9 @@ def get_market_daily(risk: str = "balanced", fund_limit: int = 4) -> dict:
         "sector_analysis": lambda: sectors.get_sector_analysis("A股", sector_limit=8, stock_limit=5, include_concepts=True),
         "fund_categories": funds.get_fund_categories,
         "fund_opportunities": lambda: funds.get_fund_opportunities(risk=risk, limit=fund_limit),
-        "a_gainers": lambda: hot_stocks.get_hot_stocks("A股", "1d", "gainers", 10),
-        "a_losers": lambda: hot_stocks.get_hot_stocks("A股", "1d", "losers", 10),
-        "hk_gainers": lambda: hot_stocks.get_hot_stocks("港股", "1d", "gainers", 8),
-        "us_gainers": lambda: hot_stocks.get_hot_stocks("美股", "1d", "gainers", 8),
+        "a_hot": lambda: hot_stocks.get_hot_stock_bundle("A股", ["gainers", "losers"], 10),
+        "hk_hot": lambda: hot_stocks.get_hot_stock_bundle("港股", ["gainers"], 8),
+        "us_hot": lambda: hot_stocks.get_hot_stock_bundle("美股", ["gainers"], 8),
     }
 
     data = {}
@@ -321,7 +326,7 @@ def get_market_daily(risk: str = "balanced", fund_limit: int = 4) -> dict:
     fund_opp = data.get("fund_opportunities") or {}
     fund_candidates = [_fund_candidate_card(row) for row in (fund_opp.get("top_items") or [])[:10]]
 
-    hot_losers = (data.get("a_losers") or {}).get("items") or []
+    hot_losers = ((data.get("a_hot") or {}).get("rankings") or {}).get("losers") or []
     risks = _build_risks(industry_cards, concept_cards, fund_category_cards, hot_losers)
 
     top_industry = industry_cards[0] if industry_cards else None
@@ -372,10 +377,10 @@ def get_market_daily(risk: str = "balanced", fund_limit: int = 4) -> dict:
         "fund_categories": fund_category_cards[:8],
         "fund_candidates": fund_candidates,
         "hot_stocks": [
-            _stock_list_payload(data.get("a_gainers"), "A股", "gainers"),
-            _stock_list_payload(data.get("a_losers"), "A股", "losers"),
-            _stock_list_payload(data.get("hk_gainers"), "港股", "gainers"),
-            _stock_list_payload(data.get("us_gainers"), "美股", "gainers"),
+            _stock_list_payload(data.get("a_hot"), "A股", "gainers"),
+            _stock_list_payload(data.get("a_hot"), "A股", "losers"),
+            _stock_list_payload(data.get("hk_hot"), "港股", "gainers"),
+            _stock_list_payload(data.get("us_hot"), "美股", "gainers"),
         ],
         "risks": risks,
         "failed": failed[:10],

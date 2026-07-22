@@ -92,6 +92,7 @@ EXPECTED_OPERATIONS = {
     "/api/alerts": {"GET", "DELETE"},
     "/api/alerts/scan": {"POST"},
     "/api/hot": {"GET"},
+    "/api/market/providers": {"GET"},
     "/api/sectors": {"GET"},
     "/api/market/daily": {"GET"},
     "/api/v1/opportunities/templates": {"GET"},

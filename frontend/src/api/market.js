@@ -72,6 +72,10 @@ export function fetchHot(market, period = '1d', type = 'gainers', limit = 50) {
   return getJson(`/api/hot?${query.toString()}`)
 }
 
+export function fetchMarketProviders() {
+  return getJson('/api/market/providers')
+}
+
 export function fetchSectors(market = 'A股', sectorLimit = 12, stockLimit = 8, includeConcepts = true) {
   const query = new URLSearchParams({
     market,

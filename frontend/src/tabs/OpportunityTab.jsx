@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Archive, Boxes, History, Pencil, Play, Plus, Radar, RefreshCw, ShieldCheck, WalletCards } from 'lucide-react'
 import WorkspaceHeader from '../components/WorkspaceHeader'
+import MarketProviderStatus from '../components/MarketProviderStatus'
+import { fetchMarketProviders } from '../api/market'
 import {
   archiveOpportunityStrategy,
   createOpportunityPaperBasket,
@@ -42,6 +44,7 @@ export default function OpportunityTab({ goAnalyze }) {
   const [runLoading, setRunLoading] = useState(false)
   const [paperBusy, setPaperBusy] = useState(false)
   const [error, setError] = useState('')
+  const [providerStatus, setProviderStatus] = useState(null)
 
   const refreshOverview = useCallback(async () => {
     const result = await fetchOpportunityOverview()
@@ -52,11 +55,16 @@ export default function OpportunityTab({ goAnalyze }) {
 
   useEffect(() => {
     let live = true
-    Promise.all([fetchOpportunityTemplates(), fetchOpportunityOverview()])
-      .then(([templateResult, overviewResult]) => {
+    Promise.all([
+      fetchOpportunityTemplates(),
+      fetchOpportunityOverview(),
+      fetchMarketProviders().catch(() => null),
+    ])
+      .then(([templateResult, overviewResult, providerResult]) => {
         if (!live) return
         setTemplates(templateResult.items || [])
         setOverview(overviewResult)
+        setProviderStatus(providerResult)
         setSelectedStrategyId(overviewResult.strategies?.[0]?.id || null)
         if (!overviewResult.strategies?.length) setBuilderMode('new')
       })
@@ -181,6 +189,7 @@ export default function OpportunityTab({ goAnalyze }) {
         <div><b>从“看一只股票”升级为可复现的投资研究流水线</b><span>候选发现 → 数据门禁 → 同市场多因子 → 相关性与仓位约束 → 前瞻纸面复盘</span></div>
         <em><ShieldCheck size={14} />不承诺涨跌，不自动交易</em>
       </div>
+      <MarketProviderStatus data={providerStatus} />
       {error && <div className="error opp-global-error">{error}</div>}
       {loading && <div className="page-loading"><span className="spinner" />正在加载机会工厂</div>}
 

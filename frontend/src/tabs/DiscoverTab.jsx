@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { fetchHot, scan } from '../api/market'
+import { fetchHot, fetchMarketProviders, scan } from '../api/market'
+import MarketProviderStatus from '../components/MarketProviderStatus'
 import { dirClass, scoreColor } from '../helpers'
 
 const TYPE_LABELS = {
@@ -26,6 +27,15 @@ export default function DiscoverTab({ markets, goAnalyze }) {
   const [healthLoading, setHealthLoading] = useState(false)
   const [healthError, setHealthError] = useState('')
   const [healthData, setHealthData] = useState(null)
+  const [providerStatus, setProviderStatus] = useState(null)
+
+  useEffect(() => {
+    let live = true
+    fetchMarketProviders()
+      .then((result) => { if (live) setProviderStatus(result) })
+      .catch(() => {})
+    return () => { live = false }
+  }, [])
 
   useEffect(() => {
     setSelected([])
@@ -129,6 +139,8 @@ export default function DiscoverTab({ markets, goAnalyze }) {
         {error && <div className="error" style={{ marginTop: 12 }}>{error}</div>}
       </div>
 
+      <MarketProviderStatus data={providerStatus} market={market} compact />
+
       {loading && items.length === 0 && (
         <div className="placeholder">
           <div className="big">⏳</div>
@@ -152,12 +164,14 @@ export default function DiscoverTab({ markets, goAnalyze }) {
             </span>
           </h3>
           <p className="hint" style={{ marginTop: -6, marginBottom: 12 }}>
-            数据源：{data.source || '东方财富'}{retrievedAt ? ` · 获取于 ${retrievedAt}` : ''}
+            数据源：{data.source || '未知'} · {data.provider_tier === 'professional' ? '专业源' : '公开降级源'}
+            {data.data_freshness ? ` · 时效：${data.data_freshness}` : ''}{data.as_of ? ` · 截止 ${data.as_of}` : ''}
+            {retrievedAt ? ` · 获取于 ${retrievedAt}` : ''}
             {data.scope ? ` · 范围：${data.scope}` : ''}
           </p>
-          {data.stale && (
+          {(data.stale || data.degraded) && (
             <div className="warning" style={{ marginBottom: 12 }}>
-              ⚠️ {data.warning || '实时数据暂不可用，当前展示最近缓存。'}
+              ⚠️ {data.warning || '专业行情源当前未生效，请核对服务端配置。'}
             </div>
           )}
           {period !== '1d' && type !== 'active' && (
@@ -184,7 +198,8 @@ export default function DiscoverTab({ markets, goAnalyze }) {
             </div>
           </div>
           {healthError && <div className="error" style={{ marginBottom: 12 }}>{healthError}</div>}
-          <table>
+          <div className="hot-table-scroll">
+          <table className="hot-ranking-table">
             <thead>
               <tr>
                 <th className="hot-select-col">选择</th>
@@ -221,6 +236,7 @@ export default function DiscoverTab({ markets, goAnalyze }) {
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       )}
 
@@ -235,7 +251,8 @@ export default function DiscoverTab({ markets, goAnalyze }) {
           <div className="warning" style={{ marginBottom: 14 }}>
             热门榜反映市场关注或涨跌，不等于未来收益；技术评分也可能失效。这里用于排除明显冲突，不构成买卖建议。
           </div>
-          <table>
+          <div className="hot-table-scroll">
+          <table className="hot-health-table">
             <thead>
               <tr><th>#</th><th>代码</th><th>名称</th><th>榜单涨跌</th><th>技术评分</th><th>估计概率</th><th>方向</th><th>风险标签</th></tr>
             </thead>
@@ -264,6 +281,7 @@ export default function DiscoverTab({ markets, goAnalyze }) {
               })}
             </tbody>
           </table>
+          </div>
           {healthData.failed_count > 0 && (
             <p className="hint" style={{ marginTop: 12 }}>
               未完成：{healthData.failed.map((item) => item.symbol).join('、')}。可能是代码格式或行情源暂时不可用。

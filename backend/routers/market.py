@@ -226,6 +226,15 @@ def get_hot(
     )
 
 
+@router.get("/api/market/providers")
+def market_providers():
+    return _call_market_operation(
+        "market.providers",
+        {},
+        "行情源状态读取失败",
+    )
+
+
 @router.get("/api/sectors")
 def get_sectors(
     market: str = Query("A股"),

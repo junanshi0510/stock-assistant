@@ -27,8 +27,8 @@ class MarketDailyTests(unittest.TestCase):
                 "concepts": {"items": []},
             }
 
-        def hot_stocks(*_args, **_kwargs):
-            return {"items": [], "count": 0}
+        def hot_stock_bundle(*_args, **_kwargs):
+            return {"rankings": {"gainers": [], "losers": []}}
 
         with patch.object(market_daily, "_cache_get", return_value=None), \
              patch.object(market_daily, "_cache_put"), \
@@ -36,7 +36,7 @@ class MarketDailyTests(unittest.TestCase):
              patch.object(market_daily.sectors, "get_sector_analysis", side_effect=sector_analysis), \
              patch.object(market_daily.funds, "get_fund_categories", side_effect=slow_fund_categories), \
              patch.object(market_daily.funds, "get_fund_opportunities", return_value={"top_items": []}), \
-             patch.object(market_daily.hot_stocks, "get_hot_stocks", side_effect=hot_stocks):
+             patch.object(market_daily.hot_stocks, "get_hot_stock_bundle", side_effect=hot_stock_bundle):
             started = time.monotonic()
             result = market_daily.get_market_daily()
             elapsed = time.monotonic() - started

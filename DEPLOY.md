@@ -97,6 +97,16 @@ POSTGRES_ADMIN_URL=postgresql://stockassistant_backup:URL编码密码@127.0.0.1:
 REDIS_URL=redis://:URL编码密码@127.0.0.1:6379/0
 TASK_QUEUE_MODE=celery
 
+# 生产热门榜：A/港股使用 Tushare Pro，美股使用 Alpha Vantage。
+# Key 只写入本文件；不要写入 Git、前端或 systemd unit。
+TUSHARE_TOKEN=服务端Token
+ALPHAVANTAGE_API_KEY=服务端Key
+# 留空为日终；只有订阅明确授权时才设置 delayed 或 realtime。
+ALPHAVANTAGE_MARKET_DATA_ENTITLEMENT=
+HOT_STOCK_PUBLIC_FALLBACK_ENABLED=true
+HOT_STOCK_PROVIDER_FAILURE_THRESHOLD=2
+HOT_STOCK_PROVIDER_CIRCUIT_SECONDS=300
+
 AUTH_AUDIT_PEPPER=至少32字节随机值
 AUTH_COOKIE_SECURE=false
 
@@ -118,6 +128,8 @@ DEEPSEEK_API_KEY=服务端Key
 ```
 
 纯 IP HTTP 阶段使用 `AUTH_COOKIE_SECURE=false`。配置域名和 HTTPS 后改为 `true` 并重启 API。任何 Key 都不能写入 Git、前端变量或命令输出。
+
+`TUSHARE_TOKEN` 必须实际拥有所用 A 股日线权限；港股日线/基础资料可能需要单独开通。Alpha Vantage 留空 entitlement 时按日终榜使用，不能把免费或日终权限标记为实时。公开降级默认开启只用于迁移期；它没有 SLA，云服务器 IP 被拒绝时系统会明确失败。专业源验收稳定后可设 `HOT_STOCK_PUBLIC_FALLBACK_ENABLED=false`，以严格阻止公开网页依赖。修改这些变量后至少重启 `stock-assistant-market-worker`，否则 Worker 子进程仍持有旧配置。
 
 ## 5. 初始化 PostgreSQL 与 Redis
 
@@ -267,6 +279,8 @@ sudo -u postgres psql stock_assistant -Atqc \
 ```
 
 `/health/ready` 只有在数据库、Redis、OSS 和五个队列 Worker 全部可用时才返回 `200`。公网未登录访问业务 API 必须返回 `401`。
+
+登录后还应在“机会工厂”或“发现股票”检查专业行情源卡片。`GET /api/market/providers` 只返回配置状态，不会泄露 Key，也不会主动消耗供应商额度。随后分别执行 A 股、港股、美股三榜冒烟；必须确认 `provider_tier=professional`、`degraded=false`、`as_of`/`data_freshness` 符合订阅，不能只以 HTTP 200 作为验收成功。
 
 ## 11. 备份与恢复演练
 
