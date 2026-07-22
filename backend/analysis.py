@@ -69,6 +69,7 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
         (low - close.shift()).abs(),
     ], axis=1).max(axis=1)
     atr = tr.ewm(alpha=1 / 14, adjust=False).mean()
+    df["atr"] = atr
     df["atr_pct"] = atr / close * 100
 
     # —— ADX(14)趋势强度 ——

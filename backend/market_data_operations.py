@@ -130,7 +130,18 @@ def _backtest(payload: dict[str, Any]) -> dict[str, Any]:
     market = str(payload["market"])
     symbol = str(payload["symbol"])
     raw = data_fetch.get_history_months(market, symbol, 48)
-    result = backtest_mod.backtest(raw, horizon=int(payload["horizon"]))
+    result = backtest_mod.backtest(
+        raw,
+        horizon=int(payload["horizon"]),
+        entry_score=float(payload.get("entry_score", 65)),
+        stop_atr=float(payload.get("stop_atr", 2)),
+        target_atr=float(payload.get("target_atr", 3)),
+        commission_bps=float(payload.get("commission_bps", 5)),
+        slippage_bps=float(payload.get("slippage_bps", 5)),
+        sell_tax_bps=float(payload.get("sell_tax_bps", 0)),
+        risk_per_trade_pct=float(payload.get("risk_per_trade_pct", 1)),
+        max_position_pct=float(payload.get("max_position_pct", 30)),
+    )
     result.update({"market": market, "symbol": symbol})
     return result
 

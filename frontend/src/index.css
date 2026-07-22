@@ -688,6 +688,116 @@ tbody tr:hover { background: rgba(255,255,255,0.03); }
 .bt-card { background: rgba(10,14,23,0.5); border: 1px solid var(--border); border-radius: 13px; padding: 16px; text-align: center; }
 .bt-card .k { color: var(--muted); font-size: 12px; }
 .bt-card .v { font-size: 26px; font-weight: 800; margin-top: 8px; }
+.bt-card .hint { display: block; margin-top: 6px; }
+.bt-config-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.bt-config-head > div { display: grid; gap: 4px; }
+.bt-config-head b { font-size: 13px; }
+.bt-config-head span { color: var(--muted); font-size: 11.5px; line-height: 1.5; }
+.bt-assumption-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 11px;
+  margin-top: 13px;
+}
+.bt-assumption-grid .field { min-width: 0; }
+.bt-assumption-grid input { width: 100%; }
+.bt-gate-panel { border-left: 4px solid var(--accent); }
+.bt-gate-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+.bt-gate-head > div:first-child { min-width: 0; }
+.bt-gate-head h3 { margin: 10px 0 5px; font-size: 18px; }
+.bt-gate-head p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.bt-policy-version {
+  flex: 0 0 auto;
+  max-width: 290px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--faint);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+.bt-assumption-summary { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 15px; }
+.bt-assumption-summary span {
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(255,255,255,0.025);
+  color: var(--muted);
+  font-size: 10.5px;
+}
+.bt-execution-cards { margin-top: 0; }
+.bt-equity-chart { min-width: 0; }
+.bt-equity-chart svg {
+  display: block;
+  width: 100%;
+  height: 210px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: rgba(10,14,23,0.4);
+}
+.bt-equity-chart polyline { fill: none; stroke-width: 3; stroke-linejoin: round; stroke-linecap: round; }
+.bt-equity-chart polyline.positive { stroke: var(--up); }
+.bt-equity-chart polyline.negative { stroke: var(--down); }
+.bt-equity-chart circle.positive { fill: var(--up); }
+.bt-equity-chart circle.negative { fill: var(--down); }
+.bt-equity-baseline { stroke: var(--border); stroke-width: 1; stroke-dasharray: 5 5; }
+.bt-equity-caption {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 7px;
+  color: var(--faint);
+  font-size: 10px;
+}
+.bt-exit-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  margin-top: 16px;
+  border-block: 1px solid var(--border);
+}
+.bt-exit-grid > div { min-width: 0; padding: 11px 12px; border-right: 1px solid var(--border); }
+.bt-exit-grid > div:last-child { border-right: 0; }
+.bt-exit-grid span, .bt-exit-grid b { display: block; overflow-wrap: anywhere; }
+.bt-exit-grid span { color: var(--faint); font-size: 9.5px; }
+.bt-exit-grid b { margin-top: 6px; font-size: 15px; }
+.bt-trade-table { min-width: 1240px; }
+.bt-trade-table th, .bt-trade-table td { vertical-align: top; }
+.bt-trade-table td small { display: block; margin-top: 4px; color: var(--faint); font-size: 9.5px; line-height: 1.35; }
+.bt-trade-table td small.delta-neg { color: var(--down); }
+.bt-limitations ul { margin: 8px 0 0 18px; padding: 0; }
+.bt-limitations li { margin-top: 4px; line-height: 1.5; }
+@media (max-width: 980px) {
+  .bt-assumption-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .bt-exit-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .bt-exit-grid > div:nth-child(3) { border-right: 0; }
+  .bt-exit-grid > div:nth-child(-n+3) { border-bottom: 1px solid var(--border); }
+}
+@media (max-width: 560px) {
+  .bt-config-head, .bt-gate-head { flex-direction: column; }
+  .bt-config-head button { width: 100%; }
+  .bt-assumption-grid { grid-template-columns: 1fr 1fr; }
+  .bt-policy-version { max-width: 100%; }
+  .bt-equity-chart svg { height: 170px; }
+  .bt-equity-caption { flex-wrap: wrap; }
+  .bt-exit-grid { grid-template-columns: 1fr 1fr; }
+  .bt-exit-grid > div:nth-child(3) { border-right: 1px solid var(--border); }
+  .bt-exit-grid > div:nth-child(even) { border-right: 0; }
+  .bt-exit-grid > div:nth-child(-n+4) { border-bottom: 1px solid var(--border); }
+}
 .fund-subhead { margin: 18px 0 10px; font-size: 13px; font-weight: 800; color: var(--text); }
 .fund-cards { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 14px; }
 .fund-table { min-width: 820px; }

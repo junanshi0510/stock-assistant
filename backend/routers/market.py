@@ -104,11 +104,31 @@ def run_backtest(
     market: str = Query(...),
     symbol: str = Query(..., min_length=1),
     horizon: int = Query(20, ge=3, le=60),
+    entry_score: float = Query(65, ge=50, le=90),
+    stop_atr: float = Query(2, ge=0.5, le=6),
+    target_atr: float = Query(3, ge=0.5, le=12),
+    commission_bps: float = Query(5, ge=0, le=100),
+    slippage_bps: float = Query(5, ge=0, le=100),
+    sell_tax_bps: float = Query(0, ge=0, le=200),
+    risk_per_trade_pct: float = Query(1, ge=0.1, le=5),
+    max_position_pct: float = Query(30, ge=1, le=100),
 ):
     _validate_market(market)
     return _call_market_operation(
         "market.backtest",
-        {"market": market, "symbol": symbol, "horizon": horizon},
+        {
+            "market": market,
+            "symbol": symbol,
+            "horizon": horizon,
+            "entry_score": entry_score,
+            "stop_atr": stop_atr,
+            "target_atr": target_atr,
+            "commission_bps": commission_bps,
+            "slippage_bps": slippage_bps,
+            "sell_tax_bps": sell_tax_bps,
+            "risk_per_trade_pct": risk_per_trade_pct,
+            "max_position_pct": max_position_pct,
+        },
         "真实回测数据获取失败",
     )
 

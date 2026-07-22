@@ -13,8 +13,12 @@ export function analyze(market, symbol, months) {
   return getJson(`/api/analyze?${query.toString()}`)
 }
 
-export function runBacktest(market, symbol, horizon) {
-  const query = new URLSearchParams({ market, symbol, horizon: String(horizon) })
+export function runBacktest(market, symbol, options = 20) {
+  const config = typeof options === 'number' ? { horizon: options } : options
+  const query = new URLSearchParams({ market, symbol })
+  Object.entries(config || {}).forEach(([key, value]) => {
+    if (value !== '' && value !== null && value !== undefined) query.set(key, String(value))
+  })
   return getJson(`/api/backtest?${query.toString()}`)
 }
 
