@@ -17,7 +17,7 @@ import { FundLineChart } from '../features/funds/FundCharts'
 import { deltaClass, num, pct } from '../features/funds/fundFormatters'
 
 const FUND_VIEWS = [
-  { id: 'discover', label: '发现基金', description: '从真实榜单和分类热度中建立候选池' },
+  { id: 'discover', label: '候选初筛', description: '从真实榜单建立待研究候选池，不直接给出买入结论' },
   { id: 'research', label: '研究基金', description: '将单只基金的数据转化为可复盘的决策框架' },
   { id: 'compare', label: '比较与替换', description: '比较多只基金的风险、相关性与重复暴露' },
 ]

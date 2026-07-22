@@ -4,8 +4,8 @@
 ==============
 1) 计算一整套常用技术指标(均线及斜率、RSI、MACD、KDJ、布林带、ATR、ADX、OBV、
    多周期动量、52周位置、量价关系)。
-2) 用【加权多因子模型】把这些指标综合成 0-100 的「看涨打分」,并由打分映射出一个
-   「模型估计上涨概率」。
+2) 用【确定性加权规则】把这些指标综合成 0-100 的「技术强度」，只描述当前历史
+   行情状态，不把规则分数伪装成未来上涨概率。
 3) 每个因子的贡献都透明列出(加了多少分、为什么)。
 
 ⚠️ 重要说明:这是基于历史价格的【量化信号】,不是预测,更不是投资建议。
@@ -165,7 +165,7 @@ def _evaluate(last, prev):
     elif rsi > 65:
         add("RSI", 3, f"RSI={rsi:.0f} 偏强(注意过热)")
     elif rsi < 25:
-        add("RSI", 6, f"RSI={rsi:.0f} 严重超卖,反弹概率大")
+        add("RSI", 6, f"RSI={rsi:.0f} 严重超卖,存在超跌反弹条件")
     elif rsi < 35:
         add("RSI", 3, f"RSI={rsi:.0f} 偏弱(或现超卖)")
     else:
@@ -193,7 +193,7 @@ def _evaluate(last, prev):
         elif pctb > 0.8:
             add("布林带", 5, "贴近上轨,强势")
         elif pctb < 0:
-            add("布林带", 6, "跌破下轨,超跌反弹概率大")
+            add("布林带", 6, "跌破下轨,存在超跌反弹条件")
         elif pctb < 0.2:
             add("布林带", 3, "贴近下轨,偏弱")
         else:
@@ -230,16 +230,10 @@ def _evaluate(last, prev):
     return points, reasons
 
 
-def score_to_probability(total: float) -> float:
-    """打分(0-100)-> 估计上涨概率(0-100)。logistic 映射,保守。"""
-    prob = 1 / (1 + np.exp(-0.045 * (total - 50)))
-    return round(float(prob) * 100, 1)
-
-
 def score(df: pd.DataFrame) -> dict:
     """
-    综合多因子打分(0-100,50 为中性),并映射出估计上涨概率。
-    返回:score / probability / direction / reasons / indicators / df。
+    综合技术强度(0-100,50 为中性)，不输出未经校准的未来概率。
+    返回:score / direction / signal_integrity / reasons / indicators / df。
     """
     if len(df) < 60:
         raise ValueError("数据太少(不足 60 个交易日),无法可靠计算指标。")
@@ -249,22 +243,27 @@ def score(df: pd.DataFrame) -> dict:
     last = df.iloc[-1]
 
     total = float(np.clip(points, 0, 100))
-    probability = score_to_probability(total)
-
     if total >= 65:
-        direction = "看涨"
+        direction = "技术偏强"
     elif total <= 35:
-        direction = "看跌"
+        direction = "技术偏弱"
     else:
-        direction = "中性/震荡"
+        direction = "技术中性"
 
     def r2(x):
         return round(float(x), 2) if pd.notna(x) else None
 
     return {
         "score": round(total, 1),
-        "probability": probability,
         "direction": direction,
+        "signal_integrity": {
+            "kind": "rule_based_technical_state",
+            "calibrated_probability": False,
+            "forecast_horizon_days": None,
+            "decision_eligible": False,
+            "validation_required": True,
+            "statement": "技术强度只描述当前历史价量状态，不代表未来上涨概率或买卖指令。",
+        },
         "reasons": reasons,
         "indicators": {
             "收盘价": r2(last["close"]),
@@ -286,11 +285,11 @@ def score(df: pd.DataFrame) -> dict:
 
 
 def score_only(df: pd.DataFrame) -> dict:
-    """轻量版:只返回打分/概率/方向/收盘价(批量扫描用,不带 df)。"""
+    """轻量版:只返回技术强度、状态与完整性声明(不带 df)。"""
     r = score(df)
     return {
         "score": r["score"],
-        "probability": r["probability"],
         "direction": r["direction"],
+        "signal_integrity": r["signal_integrity"],
         "close": r["indicators"]["收盘价"],
     }

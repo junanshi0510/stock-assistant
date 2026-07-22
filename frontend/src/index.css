@@ -3453,6 +3453,22 @@ tbody tr:hover { background: #f0f8f6; }
 
 .decision-priority.high { color: #b53c49; }
 .decision-priority.medium { color: #916100; }
+.decision-proof-state,
+.decision-validation-state,
+.decision-no-execution {
+  padding: 2px 5px;
+  border: 1px solid #d8e3e4;
+  border-radius: 3px;
+  background: #f6f9f9;
+  color: #63767d;
+  font-size: 9px;
+  font-weight: 800;
+}
+.decision-proof-state.verified { border-color: #b9d9d2; background: #eef8f5; color: #0b7565; }
+.decision-proof-state.partial { border-color: #e9d7a7; background: #fff9ed; color: #8b620d; }
+.decision-proof-state.invalid,
+.decision-proof-state.unavailable { border-color: #edc7cc; background: #fff5f6; color: #ad3e4a; }
+.decision-no-execution { border-style: dashed; }
 
 .decision-action h4 {
   margin: 0;
@@ -6424,7 +6440,7 @@ button.portfolio-detail-backdrop:hover:not(:disabled) { box-shadow: none; transf
 
 .decision-workflow-stages {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   margin-top: 18px;
   border-top: 1px solid #dde6e8;
   border-bottom: 1px solid #dde6e8;
@@ -6452,13 +6468,50 @@ button.decision-workflow-stage:hover:not(:disabled) { background: #f4f8f8; box-s
 .decision-workflow-stage.complete > svg { color: #0b7b68; }
 .decision-workflow-stage.incomplete > svg { color: #ad7200; }
 .decision-workflow-stage.unavailable > svg { color: #b23f4b; }
+.decision-workflow-stage.optional > svg { color: #829097; }
 .decision-workflow-copy { min-width: 0; }
 .decision-workflow-copy b { display: block; color: #263a43; font-size: 12.5px; }
 .decision-workflow-copy small { display: block; overflow: hidden; margin-top: 4px; color: #718188; font-size: 10.5px; line-height: 1.45; text-overflow: ellipsis; }
 .decision-workflow-state { grid-column: 3; align-self: end; color: #7e8c91; font-size: 10px; font-weight: 800; }
 .decision-workflow-stage.complete .decision-workflow-state { color: #0b7565; }
 .decision-workflow-stage.incomplete .decision-workflow-state { color: #936100; }
+.decision-workflow-stage.optional .decision-workflow-state { color: #718188; }
 .decision-workflow-stage.blocked { background: #fafbfb; opacity: .67; }
+
+.research-source-strip {
+  margin-bottom: 18px;
+  padding: 18px 20px;
+  border: 1px solid #d6e0e3;
+  border-radius: 8px;
+  background: #f8fbfb;
+}
+.research-source-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; }
+.research-source-head h3 { margin: 3px 0 0; color: #20343e; font-size: 17px; }
+.research-source-head > span { color: #64777f; font-size: 11px; font-weight: 750; }
+.research-source-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
+button.research-source-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px 10px;
+  min-height: 92px;
+  padding: 13px 14px;
+  border: 1px solid #dbe4e6;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: none;
+  color: #314750;
+  text-align: left;
+}
+button.research-source-card:hover { border-color: #9abbb7; background: #f3f9f8; box-shadow: none; transform: none; }
+.research-source-card > span { font-size: 11px; font-weight: 800; }
+.research-source-card > b { color: #0d776a; font-size: 10px; }
+.research-source-card.partial > b,
+.research-source-card.running > b { color: #946400; }
+.research-source-card.failed > b,
+.research-source-card.unavailable > b { color: #b23f4b; }
+.research-source-card > small { grid-column: 1 / -1; overflow: hidden; color: #61747c; font-size: 10.5px; line-height: 1.45; text-overflow: ellipsis; }
+.research-source-card > i { grid-column: 1 / -1; color: #819097; font-size: 9.5px; font-style: normal; font-weight: 750; }
+.research-source-empty { grid-column: 1 / -1; padding: 18px; color: #718188; font-size: 11px; text-align: center; }
 
 .decision-next-action {
   display: flex;
@@ -6812,6 +6865,8 @@ button.decision-workflow-stage:hover:not(:disabled) { background: #f4f8f8; box-s
   .decision-workflow-head { display: flex; }
   .decision-workflow-progress { width: 100%; flex-basis: auto; text-align: left; }
   .decision-workflow-stages { display: grid; grid-template-columns: 1fr; }
+  .research-source-head { align-items: flex-start; flex-direction: column; }
+  .research-source-grid { grid-template-columns: 1fr; }
   button.decision-workflow-stage,
   button.decision-workflow-stage:nth-child(3) { min-height: 78px; border-right: 0; }
   .decision-next-action { display: flex; }

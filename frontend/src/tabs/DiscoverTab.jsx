@@ -268,7 +268,7 @@ export default function DiscoverTab({ markets, goAnalyze }) {
           <div className="hot-table-scroll">
           <table className="hot-health-table">
             <thead>
-              <tr><th>#</th><th>代码</th><th>名称</th><th>榜单涨跌</th><th>技术评分</th><th>估计概率</th><th>方向</th><th>风险标签</th></tr>
+              <tr><th>#</th><th>代码</th><th>名称</th><th>榜单涨跌</th><th>技术强度</th><th>技术状态</th><th>风险标签</th></tr>
             </thead>
             <tbody>
               {healthData.results.map((row, index) => {
@@ -287,7 +287,6 @@ export default function DiscoverTab({ markets, goAnalyze }) {
                         <div className="bar"><div style={{ width: `${row.score}%`, background: scoreColor(row.score) }} /></div>
                       </div>
                     </td>
-                    <td>{row.probability}%</td>
                     <td><span className={`badge ${dirClass(row.direction)}`}>{row.direction}</span></td>
                     <td className="hint" style={{ color: 'var(--text)' }}>{healthLabel(row)}</td>
                   </tr>

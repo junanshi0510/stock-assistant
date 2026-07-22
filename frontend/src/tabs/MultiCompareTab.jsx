@@ -501,7 +501,7 @@ export default function MultiCompareTab({ markets, goAnalyze }) {
   function exportCsv() {
     if (!sortedMetrics.length) return
     const hasFund = data.fundamentals_included
-    const header = ['代码', '名称', '综合分', '综合结论', '1月收益%', '3月收益%', '6月收益%', '区间收益%', '年化波动%', '最大回撤%', '收益/波动', '技术评分', '上涨概率%', '方向']
+    const header = ['代码', '名称', '综合分', '综合结论', '1月收益%', '3月收益%', '6月收益%', '区间收益%', '年化波动%', '最大回撤%', '收益/波动', '技术强度', '技术状态']
     if (hasFund) {
       header.push('基本面评分', '评级', 'ROE%', '毛利率%', '净利率%', '负债率%', '现金流质量', 'PE分位%', 'PB分位%', '营收连续增长年数', '净利润连续增长年数')
     }
@@ -518,7 +518,6 @@ export default function MultiCompareTab({ markets, goAnalyze }) {
       r.max_drawdown,
       r.risk_adjusted ?? '',
       r.score,
-      r.probability,
       r.direction,
       ...(hasFund ? [
         r.fundamental_score ?? '',

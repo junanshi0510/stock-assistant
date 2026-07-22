@@ -114,8 +114,8 @@ def _analyze_stock(payload: dict[str, Any]) -> dict[str, Any]:
         "market": market,
         "symbol": symbol,
         "score": result["score"],
-        "probability": result["probability"],
         "direction": result["direction"],
+        "signal_integrity": result["signal_integrity"],
         "reasons": [
             {"name": reason[0], "delta": reason[1], "detail": reason[2]}
             for reason in result["reasons"]
@@ -200,8 +200,13 @@ def _scan(payload: dict[str, Any]) -> dict[str, Any]:
                 {
                     "symbol": row["symbol"],
                     "score": row["score"],
-                    "probability": row["probability"],
                     "direction": row["direction"],
+                    "signal_integrity": row.get("signal_integrity") or {
+                        "kind": "rule_based_technical_state",
+                        "calibrated_probability": False,
+                        "decision_eligible": False,
+                        "validation_required": True,
+                    },
                     "close": row["end_price"],
                 }
                 for row in comparison["metrics"]

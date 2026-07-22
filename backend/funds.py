@@ -1276,7 +1276,13 @@ def _opportunity_candidate(row: dict, bucket: dict, risk: str) -> dict:
         "scale_yi": row.get("scale_yi"),
         "fee": row.get("fee"),
         "trend": row.get("trend"),
-        "opportunity_score": _round(score),
+        "screening_score": _round(score),
+        "score_integrity": {
+            "kind": "rule_based_candidate_filter",
+            "calibrated_probability": False,
+            "decision_eligible": False,
+            "next_step_required": "single_fund_research",
+        },
         "reasons": reasons,
         "cautions": cautions,
     }
@@ -1299,9 +1305,9 @@ def get_fund_opportunities(risk: str = "balanced", limit: int = 5) -> dict:
                 if not code or code in seen:
                     continue
                 candidate = _opportunity_candidate(row, bucket, risk)
-                if candidate["opportunity_score"] >= 52:
+                if candidate["screening_score"] >= 52:
                     rows.append(candidate)
-            rows.sort(key=lambda x: (x["opportunity_score"], x.get("scale_yi") or 0), reverse=True)
+            rows.sort(key=lambda x: (x["screening_score"], x.get("scale_yi") or 0), reverse=True)
             selected = rows[:limit]
             for row in selected:
                 seen.add(row["code"])
@@ -1319,7 +1325,7 @@ def get_fund_opportunities(risk: str = "balanced", limit: int = 5) -> dict:
     if not buckets:
         raise RuntimeError("真实基金机会数据当前不可用")
     all_items = [item for bucket in buckets for item in bucket["items"]]
-    all_items.sort(key=lambda x: x["opportunity_score"], reverse=True)
+    all_items.sort(key=lambda x: x["screening_score"], reverse=True)
     return {
         "source": "东方财富基金排行",
         "source_url": "https://fund.eastmoney.com/data/fundranking.html",
@@ -1331,7 +1337,7 @@ def get_fund_opportunities(risk: str = "balanced", limit: int = 5) -> dict:
         "failed": failed,
         "method": {
             "screening": "只使用东方财富基金排行披露的收益窗口、分类、规模和费率字段，不生成模拟数据。",
-            "score": "机会分综合近1月、近3月、近6月、近1年、今年来、规模和风险偏好；高分代表更值得进一步研究，不代表买入建议。",
+            "score": "初筛强度综合近1月、近3月、近6月、近1年、今年来、规模和风险偏好；它是固定规则排序，不是未来收益概率，也不能直接进入交易。",
             "next_step": "点进单只基金后，应继续查看真实净值回撤、波动、基金持仓和同类排名。",
         },
         "risk_note": "基金有波动和本金亏损风险；榜单收益代表历史表现，不保证未来收益。",

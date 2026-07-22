@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-机器学习预测模块
-================
-用技术指标作为特征,训练一个梯度提升分类器,预测「未来 N 个交易日是否上涨」。
+机器学习历史验证模块
+====================
+用技术指标作为特征，检查它们在后段历史样本中是否曾经优于简单基准。
 
 ⚠️ 诚实声明(非常重要):
 单只股票的价格序列噪声极大,机器学习很容易【过拟合】——对历史拟合得很好,
@@ -10,8 +10,8 @@
   1) 用【时间序列切分】(前 70% 训练 / 后 30% 测试),绝不打乱,杜绝"偷看未来"。
   2) 把【样本外(测试集)准确率 / AUC】和【基准】一并显示出来。
      —— 只有样本外准确率明显高于基准,模型才算"学到了东西"。
-  3) 多数情况下,单股技术面模型的样本外准确率只在 50%±几个百分点之间,
-     和抛硬币差不多,请务必理性看待,不要因为一个"上涨概率%"就重仓。
+  3) 不发布最新时点的上涨概率。单次时间切分既没有完成概率校准，也不是可重复使用
+     的真正未来样本，只能作为实验性历史诊断。
 """
 
 import numpy as np
@@ -42,7 +42,7 @@ def _build_features(df: pd.DataFrame):
 
 def predict(df: pd.DataFrame, horizon: int = 10) -> dict:
     """
-    训练 + 样本外评估 + 给出最新一天的上涨概率。
+    训练并完成一次后段历史评估；不对最新一天发布可执行预测。
     """
     if len(df) < 250:
         raise ValueError("数据太少(建议至少 1.5 年),无法可靠训练模型。")
@@ -51,7 +51,7 @@ def predict(df: pd.DataFrame, horizon: int = 10) -> dict:
     df["future_ret"] = df["close"].shift(-horizon) / df["close"] - 1
     df["label"] = (df["future_ret"] > 0).astype(int)
 
-    # 有标签(未来已知)的样本用于训练/测试;最后 horizon 行没有未来,留作"当前预测"
+    # 只使用未来结果已经发生的历史样本，最后 horizon 行不参与任何输出。
     known = df.dropna(subset=feats + ["future_ret"]).copy()
     if len(known) < 150:
         raise ValueError("有效样本不足,无法训练。")
@@ -81,15 +81,7 @@ def predict(df: pd.DataFrame, horizon: int = 10) -> dict:
     base_rate = float(y_te.mean() * 100)
     baseline_acc = max(base_rate, 100 - base_rate)
 
-    # 用【全部已知样本】重新训练,对最新一天给出概率
-    model_full = HistGradientBoostingClassifier(
-        max_depth=3, max_iter=200, learning_rate=0.05,
-        l2_regularization=1.0, random_state=42)
-    model_full.fit(X, y)
-    latest_feat = df[feats].dropna().iloc[-1:].values
-    latest_proba = float(model_full.predict_proba(latest_feat)[0, 1] * 100)
-
-    # 评价:模型相对基准的"超额准确率"
+    # 评价:模型相对基准的"超额准确率"，仍然只是一次历史切分。
     edge = round(test_acc - baseline_acc, 1)
     if edge >= 5:
         verdict = "样本外略有预测力(仍需谨慎)"
@@ -108,5 +100,13 @@ def predict(df: pd.DataFrame, horizon: int = 10) -> dict:
         "baseline_accuracy": round(baseline_acc, 1),
         "edge_vs_baseline": edge,
         "verdict": verdict,
-        "latest_up_probability": round(latest_proba, 1),
+        "research_status": "historical_validation_only",
+        "decision_eligible": False,
+        "calibrated_probability": False,
+        "latest_forecast_available": False,
+        "validation": {
+            "method": "chronological_70_30_holdout",
+            "reusable_out_of_sample": False,
+            "reason": "用户看到后继续调参会污染后段样本，且本模型未完成概率校准、跨标的验证和前瞻纸面跟踪。",
+        },
     }

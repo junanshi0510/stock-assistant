@@ -13,6 +13,7 @@ import holding_thesis
 import market_daily as market_daily_mod
 import portfolio_action_report
 import portfolio_review
+import decision_sources
 import storage
 
 
@@ -87,6 +88,9 @@ def _workflow_stage(
     description: str,
     target: str,
     action_label: str,
+    *,
+    required_for_decision: bool = True,
+    lane: str = "decision",
 ) -> dict:
     return {
         "id": stage_id,
@@ -97,11 +101,28 @@ def _workflow_stage(
         "description": description,
         "target": target,
         "action_label": action_label,
+        "required_for_decision": required_for_decision,
+        "lane": lane,
     }
 
 
-def _decision_workflow(profile: dict, portfolio: dict, *, user_id: str = "default") -> dict:
-    """Describe one ordered path from confirmed facts to an actionable report."""
+def _decision_workflow(
+    profile: dict,
+    portfolio: dict,
+    research: dict | None = None,
+    *,
+    user_id: str = "default",
+) -> dict:
+    """Separate pre-decision evidence gates from post-decision validation."""
+    research = research or {
+        "status": "available",
+        "summary": {
+            "ready_source_count": 0,
+            "paper_tracking_count": 0,
+            "paper_pending_count": 0,
+        },
+        "sources": [],
+    }
     summary = portfolio.get("summary") or {}
     allocation = portfolio.get("allocation") or []
     holding_count = int(summary.get("holding_count") or 0)
@@ -110,8 +131,7 @@ def _decision_workflow(profile: dict, portfolio: dict, *, user_id: str = "defaul
     )
     holdings_complete = portfolio.get("status") == "available" and amount_complete
     policy_complete = bool(
-        holdings_complete
-        and profile.get("configured")
+        profile.get("configured")
         and not profile.get("review_required")
         and profile.get("integrity_verified", True)
     )
@@ -126,8 +146,7 @@ def _decision_workflow(profile: dict, portfolio: dict, *, user_id: str = "defaul
     active_thesis_count = int(thesis_coverage.get("active_thesis_count") or 0)
     verified_thesis_count = int(thesis_coverage.get("verified_thesis_count") or 0)
     thesis_complete = bool(
-        policy_complete
-        and holding_count > 0
+        holdings_complete
         and active_thesis_count == holding_count
         and verified_thesis_count == holding_count
     )
@@ -135,26 +154,33 @@ def _decision_workflow(profile: dict, portfolio: dict, *, user_id: str = "defaul
     ledger_error = portfolio.get("ledger_error")
     transaction_count = int((portfolio.get("ledger_summary") or {}).get("transaction_count") or 0)
     performance_status = (portfolio.get("performance") or {}).get("status")
-    ledger_complete = bool(
-        thesis_complete
-        and not ledger_error
-        and transaction_count > 0
-        and performance_status == "available"
-    )
+    measurement_complete = False
 
     report = None
     report_error = None
-    try:
-        report = portfolio_action_report.load_latest_action_report(user_id=user_id)
-    except Exception as error:
-        report_error = str(error)[:240]
+    if transaction_count > 0 and not ledger_error:
+        try:
+            report = portfolio_action_report.load_latest_action_report(user_id=user_id)
+        except Exception as error:
+            report_error = str(error)[:240]
     report_current = bool(
         report
         and (report.get("binding") or {}).get("current")
         and (report.get("integrity") or {}).get("verified")
         and report.get("status") in {"reviewable", "partial"}
     )
-    report_complete = bool(ledger_complete and report_current)
+    measurement_complete = bool(
+        transaction_count > 0
+        and not ledger_error
+        and performance_status == "available"
+        and report_current
+    )
+
+    research_summary = research.get("summary") or {}
+    ready_source_count = int(research_summary.get("ready_source_count") or 0)
+    paper_tracking_count = int(research_summary.get("paper_tracking_count") or 0)
+    paper_pending_count = int(research_summary.get("paper_pending_count") or 0)
+    research_ready = bool(research.get("status") != "unavailable" and ready_source_count > 0)
 
     if portfolio.get("status") != "available":
         holdings_state = "unavailable"
@@ -166,14 +192,9 @@ def _decision_workflow(profile: dict, portfolio: dict, *, user_id: str = "defaul
         holdings_state = "incomplete"
         holdings_metric = "尚未完成持仓确认" if holding_count == 0 else f"{holding_count} 项，金额待补齐"
 
-    if not holdings_complete:
-        policy_state = "blocked"
-    elif policy_complete:
-        policy_state = "complete"
-    else:
-        policy_state = "incomplete"
+    policy_state = "complete" if policy_complete else "incomplete"
 
-    if not policy_complete:
+    if not holdings_complete:
         thesis_state = "blocked"
     elif thesis_error:
         thesis_state = "unavailable"
@@ -182,23 +203,30 @@ def _decision_workflow(profile: dict, portfolio: dict, *, user_id: str = "defaul
     else:
         thesis_state = "incomplete"
 
-    if not thesis_complete:
-        ledger_state = "blocked"
-    elif ledger_error:
-        ledger_state = "unavailable"
-    elif ledger_complete:
-        ledger_state = "complete"
+    if research.get("status") == "unavailable":
+        research_state = "unavailable"
+    elif research_ready:
+        research_state = "complete"
     else:
-        ledger_state = "incomplete"
+        research_state = "incomplete"
 
-    if not ledger_complete:
-        report_state = "blocked"
-    elif report_error:
-        report_state = "unavailable"
-    elif report_complete:
-        report_state = "complete"
+    if not research_ready:
+        validation_state = "blocked"
+    elif paper_tracking_count > 0:
+        validation_state = "complete"
+    elif paper_pending_count > 0:
+        validation_state = "incomplete"
     else:
-        report_state = "incomplete"
+        validation_state = "optional"
+
+    if transaction_count == 0:
+        measurement_state = "optional"
+    elif ledger_error or report_error:
+        measurement_state = "unavailable"
+    elif measurement_complete:
+        measurement_state = "complete"
+    else:
+        measurement_state = "incomplete"
 
     stages = [
         _workflow_stage(
@@ -225,42 +253,88 @@ def _decision_workflow(profile: dict, portfolio: dict, *, user_id: str = "defaul
             "portfolio", "补齐持有逻辑",
         ),
         _workflow_stage(
-            "ledger", 4, "交易账本", ledger_state,
+            "research", 4, "研究证据", research_state,
             (
-                "账本暂不可用"
-                if ledger_error else f"{transaction_count} 笔，收益口径{('完整' if performance_status == 'available' else '待补齐')}"
+                "研究证据源暂不可用"
+                if research.get("status") == "unavailable"
+                else f"{ready_source_count}/{len(research.get('sources') or []) or 3} 个引擎已形成持久化结果"
             ),
-            "用真实买卖、费用和现金流区分浮盈、已实现收益与资金投入效果。",
-            "ledger", "补录交易账本",
+            "Agent、机会工厂或组合情景至少有一个证据完整且哈希可核验的结果；评分本身不等于可执行建议。",
+            "agent", "生成研究证据",
         ),
         _workflow_stage(
-            "report", 5, "组合报告", report_state,
+            "validation", 5, "前瞻验证", validation_state,
             (
-                "当前报告完整且已绑定"
-                if report_complete else "等待生成或刷新当前报告"
+                f"{paper_tracking_count} 个纸面组合正在跟踪"
+                if paper_tracking_count
+                else f"{paper_pending_count} 个候选等待纸面验证"
+                if paper_pending_count
+                else "当前没有需要冻结的纸面候选"
             ),
-            "把仓位上限、重复暴露、真实回撤和持有纪律汇总为唯一行动顺序。",
-            "portfolio", "生成组合报告",
+            "把候选固定在当时价格和权重上，用后续真实行情检验，而不是反复回看历史分数。",
+            "opportunities", "进入纸面验证",
+            required_for_decision=False,
+            lane="validation",
+        ),
+        _workflow_stage(
+            "measurement", 6, "执行后复盘", measurement_state,
+            (
+                "尚无已执行交易，不阻塞研究"
+                if transaction_count == 0
+                else "账本或报告暂不可用"
+                if ledger_error or report_error
+                else f"{transaction_count} 笔，收益与报告{('已闭环' if measurement_complete else '待补齐')}"
+            ),
+            "只有实际发生交易后，才用流水、费用、现金流和当前报告衡量结果；它不再阻塞前置研究。",
+            "ledger", "复盘真实结果",
+            required_for_decision=False,
+            lane="measurement",
         ),
     ]
-    completed_count = sum(item["state"] == "complete" for item in stages)
-    next_action = next(
-        (item for item in stages if item["state"] in {"incomplete", "unavailable"}),
-        None,
-    )
+    required_stages = [item for item in stages if item["required_for_decision"]]
+    completed_count = sum(item["state"] == "complete" for item in required_stages)
+    decision_ready = completed_count == len(required_stages)
+    next_action = next((
+        item
+        for item in required_stages
+        if item["state"] in {"incomplete", "unavailable", "blocked"}
+    ), None)
+    if next_action is None:
+        next_action = next((
+            item
+            for item in stages
+            if not item["required_for_decision"]
+            and item["state"] in {"incomplete", "unavailable"}
+        ), None)
     errors = [
         {"scope": "持有纪律", "error": thesis_error},
-        {"scope": "组合报告", "error": report_error},
+        {"scope": "执行后复盘", "error": report_error},
     ]
     return {
-        "schema_version": "investment_decision_workflow.v1",
-        "status": "ready" if report_complete else "setup_required",
-        "decision_ready": report_complete,
+        "schema_version": "investment_decision_workflow.v2",
+        "status": "ready" if decision_ready else "setup_required",
+        "decision_ready": decision_ready,
+        "validation_ready": validation_state == "complete",
+        "measurement_ready": measurement_complete,
         "completed_count": completed_count,
-        "total_count": len(stages),
-        "progress_pct": round(completed_count / len(stages) * 100),
+        "total_count": len(required_stages),
+        "progress_pct": round(completed_count / len(required_stages) * 100),
         "stages": stages,
         "next_action": next_action,
+        "gates": {
+            "decision": {
+                "ready": decision_ready,
+                "required_stage_ids": [item["id"] for item in required_stages],
+            },
+            "validation": {
+                "ready": validation_state == "complete",
+                "state": validation_state,
+            },
+            "measurement": {
+                "ready": measurement_complete,
+                "state": measurement_state,
+            },
+        },
         "errors": [item for item in errors if item.get("error")],
     }
 
@@ -379,6 +453,26 @@ def _timed_out_market_snapshot() -> dict:
         "fund_candidates": [],
         "failed": [],
         "method": {},
+    }
+
+
+def _timed_out_research_snapshot() -> dict:
+    message = f"持久化研究引擎在 {_SOURCE_DEADLINE_SECONDS} 秒内未返回"
+    return {
+        "schema_version": "decision_research_sources.v1",
+        "status": "unavailable",
+        "sources": [],
+        "actions": [],
+        "errors": [{"scope": "统一研究证据", "error": message}],
+        "resolution_evidence_complete": False,
+        "summary": {
+            "source_count": 3,
+            "ready_source_count": 0,
+            "partial_source_count": 0,
+            "unavailable_source_count": 3,
+            "paper_tracking_count": 0,
+            "paper_pending_count": 0,
+        },
     }
 
 
@@ -727,9 +821,13 @@ def _market_actions(market: dict) -> list[dict]:
 def build_decision_center(*, user_id: str = "default") -> dict:
     """Build a daily review queue without inventing prices, holdings, or signals."""
     profile = storage.get_investment_profile(user_id=user_id)
-    pool = ThreadPoolExecutor(max_workers=2)
+    pool = ThreadPoolExecutor(max_workers=3)
     portfolio_future = pool.submit(_portfolio_snapshot, user_id=user_id)
     market_future = pool.submit(_market_snapshot, profile["risk"])
+    research_future = pool.submit(
+        decision_sources.build_research_snapshot,
+        user_id=user_id,
+    )
     deadline = monotonic() + _SOURCE_DEADLINE_SECONDS
     try:
         portfolio = portfolio_future.result(timeout=max(0, deadline - monotonic()))
@@ -741,14 +839,33 @@ def build_decision_center(*, user_id: str = "default") -> dict:
     except TimeoutError:
         market_future.cancel()
         market = _timed_out_market_snapshot()
+    try:
+        research = research_future.result(timeout=max(0, deadline - monotonic()))
+    except TimeoutError:
+        research_future.cancel()
+        research = _timed_out_research_snapshot()
+    except Exception as error:
+        research = _timed_out_research_snapshot()
+        research["errors"] = [
+            {"scope": "统一研究证据", "error": str(error)[:240]}
+        ]
     finally:
         # Provider calls may still be unwinding after their request timeout. Do not block
         # the HTTP response or replace unavailable data with a synthetic result.
         pool.shutdown(wait=False, cancel_futures=True)
 
-    workflow = _decision_workflow(profile, portfolio, user_id=user_id)
-    actions = _portfolio_actions(profile, portfolio) + _market_actions(market)
-    if not actions and portfolio.get("status") == "available" and market.get("status") == "available":
+    workflow = _decision_workflow(profile, portfolio, research, user_id=user_id)
+    actions = (
+        _portfolio_actions(profile, portfolio)
+        + _market_actions(market)
+        + list(research.get("actions") or [])
+    )
+    if (
+        not actions
+        and portfolio.get("status") == "available"
+        and market.get("status") == "available"
+        and research.get("status") != "unavailable"
+    ):
         actions.append(_action(
             "no-high-priority-item",
             "normal",
@@ -782,6 +899,7 @@ def build_decision_center(*, user_id: str = "default") -> dict:
         unavailable.append({"scope": "基金持仓重合度", "error": portfolio["overlap_error"]})
     for failure in market.get("failed") or []:
         unavailable.append({"scope": failure.get("source") or "市场数据源", "error": failure.get("error") or failure.get("message")})
+    unavailable.extend(research.get("errors") or [])
 
     resolution_evidence_complete = bool(
         portfolio.get("status") == "available"
@@ -792,6 +910,7 @@ def build_decision_center(*, user_id: str = "default") -> dict:
         and not portfolio.get("performance_error")
         and not portfolio.get("overlap_error")
         and not (market.get("failed") or [])
+        and research.get("resolution_evidence_complete", False)
     )
     try:
         task_inbox = storage.sync_decision_tasks(
@@ -821,11 +940,12 @@ def build_decision_center(*, user_id: str = "default") -> dict:
 
     return {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
-        "policy": "行动清单只使用用户确认持仓和已标注的真实来源；它用于风险复盘与研究排序，不提供买卖指令或收益承诺。",
+        "policy": "行动清单只使用用户确认持仓、真实市场数据和可校验的持久化研究结果；每条结论都标注证据与验证状态，不提供自动买卖或收益承诺。",
         "profile": profile,
         "workflow": workflow,
         "portfolio": portfolio,
         "market": market,
+        "research": research,
         "task_inbox": task_inbox,
         "actions": actions[:12],
         "summary": {

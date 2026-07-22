@@ -2,7 +2,6 @@ import AnalyzeTab from './AnalyzeTab'
 import WorkspaceHeader from '../components/WorkspaceHeader'
 import DiscoverTab from './DiscoverTab'
 import MultiCompareTab from './MultiCompareTab'
-import ScanTab from './ScanTab'
 import SectorTab from './SectorTab'
 
 const VIEWS = [
@@ -10,7 +9,6 @@ const VIEWS = [
   { id: 'sectors', label: '板块与概念', description: '行业热度和上涨归因' },
   { id: 'analyze', label: '个股研究', description: '走势、基本面与风险' },
   { id: 'compare', label: '多股对比', description: '收益、回撤与相关性' },
-  { id: 'scan', label: '批量筛选', description: '候选股票的横向筛选' },
 ]
 
 export default function MarketTab({ activeView, setActiveView, markets, market, setMarket, symbol, setSymbol, months, setMonths, runKey, requestRun, goAnalyze }) {
@@ -32,7 +30,6 @@ export default function MarketTab({ activeView, setActiveView, markets, market, 
       {view === 'sectors' && <SectorTab goAnalyze={goAnalyze} />}
       {view === 'analyze' && <AnalyzeTab markets={markets} market={market} setMarket={setMarket} symbol={symbol} setSymbol={setSymbol} months={months} setMonths={setMonths} runKey={runKey} requestRun={requestRun} />}
       {view === 'compare' && <MultiCompareTab markets={markets} goAnalyze={goAnalyze} />}
-      {view === 'scan' && <ScanTab markets={markets} goAnalyze={goAnalyze} />}
     </>
   )
 }

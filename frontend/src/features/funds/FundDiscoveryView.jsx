@@ -29,7 +29,7 @@ export default function FundDiscoveryView({
     <>
       <div className="panel fade-in">
         <h3 className="section-title">
-          基金机会雷达 <span className="hint">基于真实榜单筛选候选，高分只代表更值得进一步研究</span>
+          基金候选初筛 <span className="hint">基于真实榜单做固定规则排序，必须进入单基金研究后才能形成结论</span>
         </h3>
         <div className="form-row" style={{ marginBottom: 14 }}>
           <div className="field">
@@ -42,7 +42,7 @@ export default function FundDiscoveryView({
             </select>
           </div>
           <button onClick={() => loadOpportunities()} disabled={loadingOpportunities}>
-            {loadingOpportunities ? <><span className="spinner" /> 筛选中</> : '刷新机会'}
+            {loadingOpportunities ? <><span className="spinner" /> 筛选中</> : '刷新候选'}
           </button>
           {opportunities && <span className="hint">数据源: {opportunities.source} · 截至 {opportunities.as_of || '-'}</span>}
         </div>
@@ -59,7 +59,7 @@ export default function FundDiscoveryView({
                         <tr>
                           <th>代码</th>
                           <th>名称</th>
-                          <th>分数</th>
+                          <th>初筛强度</th>
                           <th>近3月</th>
                           <th>近1年</th>
                           <th>规模</th>
@@ -71,7 +71,7 @@ export default function FundDiscoveryView({
                           <tr key={row.code} className="clickable" onClick={() => loadFund(row.code, months)}>
                             <td style={{ fontWeight: 800 }}>{row.code}</td>
                             <td>{row.name}</td>
-                            <td>{num(row.opportunity_score, 1)}</td>
+                            <td>{num(row.screening_score, 1)}</td>
                             <td className={deltaClass(row.return_3m)}>{pct(row.return_3m)}</td>
                             <td className={deltaClass(row.return_1y)}>{pct(row.return_1y)}</td>
                             <td>{row.scale_yi != null ? `${num(row.scale_yi)}亿` : '-'}</td>

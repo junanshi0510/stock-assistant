@@ -40,16 +40,6 @@ export function fetchQuote(market, symbol) {
   return getJson(`/api/quote/level-history?${query.toString()}`)
 }
 
-export function fetchMl(market, symbol, horizon = 10) {
-  const query = new URLSearchParams({ market, symbol, horizon: String(horizon) })
-  return getJson(`/api/ml?${query.toString()}`)
-}
-
-export function fetchNews(market, symbol) {
-  const query = new URLSearchParams({ market, symbol })
-  return getJson(`/api/news?${query.toString()}`)
-}
-
 export function fetchCompare(market, symbol, months = 12) {
   const query = new URLSearchParams({ market, symbol, months: String(months) })
   return getJson(`/api/compare?${query.toString()}`)

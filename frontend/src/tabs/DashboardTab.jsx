@@ -24,7 +24,46 @@ function SummaryMetric({ label, value, tone = '' }) {
   return <div className="overview-metric"><span>{label}</span><b className={tone}>{value}</b></div>
 }
 
-export default function DashboardTab({ goPortfolio, goFunds, goMarket, goAgent, onTaskSummaryChange }) {
+const SOURCE_STATUS = {
+  succeeded: '完整完成',
+  completed: '完整完成',
+  complete: '完整完成',
+  partial: '部分完成',
+  running: '运行中',
+  failed: '运行失败',
+  abstained: '主动弃权',
+  empty: '尚未运行',
+  unavailable: '读取失败',
+}
+
+function ResearchSourceStrip({ research, onNavigate }) {
+  const sources = research?.sources || []
+  return (
+    <section className="research-source-strip" aria-label="统一研究证据源">
+      <div className="research-source-head">
+        <div>
+          <span className="eyebrow">统一研究证据</span>
+          <h3>研究结果只从这里进入行动与验证</h3>
+        </div>
+        <span>{research?.summary?.ready_source_count ?? 0}/{research?.summary?.source_count ?? 3} 个引擎已有可核验结果</span>
+      </div>
+      <div className="research-source-grid">
+        {sources.length > 0 ? sources.map((source) => (
+          <button type="button" key={source.id} className={`research-source-card ${source.status}`} onClick={() => onNavigate(source.target)}>
+            <span>{source.label}</span>
+            <b>{SOURCE_STATUS[source.status] || source.status}</b>
+            <small>{source.summary}</small>
+            <i>{source.evidence_status === 'verified' ? '证据已验证' : source.evidence_status === 'partial' ? '部分证据' : source.evidence_status === 'invalid' ? '完整性异常' : '等待证据'}</i>
+          </button>
+        )) : (
+          <div className="research-source-empty">正在读取 Agent、机会工厂和组合情景实验室的持久化结果。</div>
+        )}
+      </div>
+    </section>
+  )
+}
+
+export default function DashboardTab({ goPortfolio, goFunds, goMarket, goAgent, goOpportunities, onTaskSummaryChange }) {
   const [decision, setDecision] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -60,6 +99,8 @@ export default function DashboardTab({ goPortfolio, goFunds, goMarket, goAgent, 
     else if (target === 'funds') goFunds()
     else if (target === 'market') goMarket()
     else if (target === 'agent') goAgent()
+    else if (target === 'opportunities') goOpportunities()
+    else if (target === 'twin') goPortfolio('twin')
   }
 
   function taskUpdated(result) {
@@ -84,7 +125,7 @@ export default function DashboardTab({ goPortfolio, goFunds, goMarket, goAgent, 
       <section className="command-hero" aria-label="今日投资决策">
         <div>
           <span className="eyebrow">今日决策</span>
-          <h2>{next ? `先完成：${next.title}` : workflow?.decision_ready ? '决策闭环已就绪' : '正在核对决策基础'}</h2>
+          <h2>{next ? `${next.required_for_decision ? '先完成' : '下一步验证'}：${next.title}` : workflow?.decision_ready ? '决策证据门槛已就绪' : '正在核对决策基础'}</h2>
           <p>{next?.description || '先完成组合事实、风险政策和持有纪律，再研究市场机会。'}</p>
         </div>
         <div className="command-hero-status">
@@ -94,6 +135,8 @@ export default function DashboardTab({ goPortfolio, goFunds, goMarket, goAgent, 
       </section>
 
       <DecisionWorkflow workflow={workflow} onNavigate={navigate} />
+
+      <ResearchSourceStrip research={decision?.research} onNavigate={navigate} />
 
       <DecisionCenter
         data={decision}

@@ -203,7 +203,7 @@ def _fund_candidate_card(row: dict) -> dict:
         "code": row.get("code"),
         "bucket": row.get("bucket_name"),
         "label": row.get("cautions", ["观察"])[-1] if row.get("cautions") else "观察",
-        "score": row.get("opportunity_score"),
+        "score": row.get("screening_score"),
         "return_1m": row.get("return_1m"),
         "return_3m": row.get("return_3m"),
         "return_1y": row.get("return_1y"),

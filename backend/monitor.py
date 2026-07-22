@@ -5,14 +5,14 @@
 后台线程定时扫描自选股,检测打分穿越关键档位时记录提醒。
 
 档位定义(与前端徽章逻辑一致):
-    看涨(bullish): score >= 65
-    看跌(bearish): score <= 35
-    中性(neutral): 36 <= score <= 64
+    技术偏强(bullish): score >= 65
+    技术偏弱(bearish): score <= 35
+    技术中性(neutral): 36 <= score <= 64
 
 触发逻辑:
-    - 从中性/看跌 → 看涨(≥65): 发"进入看涨区"提醒
-    - 从中性/看涨 → 看跌(≤35): 发"进入看跌区"提醒
-    - 从看涨/看跌 → 中性(36-64): 发"回到中性区"提醒
+    - 技术强度跨入 ≥65: 发“进入技术偏强区”提醒
+    - 技术强度跨入 ≤35: 发“进入技术偏弱区”提醒
+    - 从两端回到 36-64: 发“回到技术中性区”提醒
 
 为避免重复提醒,在内存记录每只股票的上次打分和档位。
 启动时恢复初始状态(假设全中性,首次扫描只记录,不报)。
@@ -84,11 +84,11 @@ def _scan_once(user_id: str | None = None):
 
             # 档位变化 → 记录提醒
             if zone == "bullish":
-                msg = f"进入看涨区(打分 {score},前次 {prev['score']})"
+                msg = f"进入技术偏强区(强度 {score},前次 {prev['score']})"
             elif zone == "bearish":
-                msg = f"进入看跌区(打分 {score},前次 {prev['score']})"
+                msg = f"进入技术偏弱区(强度 {score},前次 {prev['score']})"
             else:  # neutral
-                msg = f"回到中性区(打分 {score},前次 {prev['score']})"
+                msg = f"回到技术中性区(强度 {score},前次 {prev['score']})"
 
             storage.add_alert(market, symbol, zone, score, msg, user_id=user_id)
             logger.info(f"  ⚠️ {key} 档位变化: {prev_zone} → {zone}, {msg}")

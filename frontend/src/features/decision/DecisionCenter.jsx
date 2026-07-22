@@ -47,6 +47,23 @@ const CHECK_RESULT_META = {
   failed: '执行失败',
 }
 
+const EVIDENCE_STATUS_META = {
+  verified: '证据已验证',
+  partial: '部分证据',
+  invalid: '完整性异常',
+  unavailable: '证据不可用',
+}
+
+const VALIDATION_STATE_META = {
+  paper_pending: '待冻结纸面组合',
+  paper_frozen: '待首个观察点',
+  paper_incomplete: '纸面观察待补齐',
+  paper_tracking: '纸面跟踪中',
+  decision_review_pending: '待人工复核',
+  scenario_review_pending: '待情景复核',
+  blocked: '验证受阻',
+}
+
 function actionIcon(category) {
   if (category.includes('组合') || category.includes('收益')) return WalletCards
   if (category.includes('成本') || category.includes('仓位')) return ReceiptText
@@ -301,6 +318,9 @@ export default function DecisionCenter({ data, loading, error, onRefresh, onNavi
                     <span className={`decision-priority ${action.priority}`}><PriorityIcon size={13} aria-hidden="true" />{priority.label}</span>
                     <span>{action.category}</span>
                     {task && <span className={`decision-task-state ${task.status}`}>{TASK_STATUS_META[task.status] || task.status}</span>}
+                    {action.evidence_status && <span className={`decision-proof-state ${action.evidence_status}`}>{EVIDENCE_STATUS_META[action.evidence_status] || action.evidence_status}</span>}
+                    {action.validation_state && <span className="decision-validation-state">{VALIDATION_STATE_META[action.validation_state] || action.validation_state}</span>}
+                    {action.execution_authorized === false && <span className="decision-no-execution">不授权交易</span>}
                   </div>
                   <h4>{action.title}</h4>
                   <p>{action.detail}</p>

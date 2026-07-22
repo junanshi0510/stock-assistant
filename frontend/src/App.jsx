@@ -103,6 +103,7 @@ export default function App() {
   const goFunds = () => { setTab('research'); setResearchDomain('funds') }
   const goMarket = () => { setTab('research'); setResearchDomain('market'); setMarketView('radar') }
   const goAgent = () => setTab('agent')
+  const goOpportunities = () => setTab('opportunities')
 
   async function logout() {
     try { await logoutAccount() } catch { /* session may already be invalid */ }
@@ -208,7 +209,7 @@ export default function App() {
         </div>
 
         <Suspense fallback={<div className="page-loading"><span className="spinner" />正在加载工作区</div>}>
-          {tab === 'overview' && <DashboardTab goPortfolio={goPortfolio} goFunds={goFunds} goMarket={goMarket} goAgent={goAgent} onTaskSummaryChange={setTaskSummary} />}
+          {tab === 'overview' && <DashboardTab goPortfolio={goPortfolio} goFunds={goFunds} goMarket={goMarket} goAgent={goAgent} goOpportunities={goOpportunities} onTaskSummaryChange={setTaskSummary} />}
           {tab === 'agent' && <AgentTab />}
           {tab === 'admin' && user.role === 'admin' && <AdminTab currentUser={user} />}
           {tab === 'portfolio' && <PortfolioTab goAnalyze={goAnalyze} activeView={portfolioView} onViewChange={setPortfolioView} />}

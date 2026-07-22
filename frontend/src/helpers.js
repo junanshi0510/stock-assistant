@@ -1,7 +1,7 @@
 // 方向 -> 样式类
 export function dirClass(d) {
-  if (d === '看涨') return 'up'
-  if (d === '看跌') return 'down'
+  if (d === '看涨' || d === '技术偏强') return 'up'
+  if (d === '看跌' || d === '技术偏弱') return 'down'
   return 'neutral'
 }
 
@@ -9,12 +9,5 @@ export function dirClass(d) {
 export function scoreColor(score) {
   if (score >= 65) return '#c63b4a'
   if (score <= 35) return '#087f70'
-  return '#9a6800'
-}
-
-// 概率 -> 单色状态
-export function probColor(p) {
-  if (p >= 60) return '#c63b4a'
-  if (p <= 40) return '#087f70'
   return '#9a6800'
 }

@@ -86,8 +86,8 @@ def _fetch_one(market: str, symbol: str, months: int) -> dict:
             "annual_vol": _annual_vol(close),
             "max_drawdown": _max_drawdown(close),
             "score": score["score"],
-            "probability": score["probability"],
             "direction": score["direction"],
+            "signal_integrity": score["signal_integrity"],
         }
     except Exception as e:
         return {"symbol": symbol, "error": str(e)[:120]}
@@ -114,8 +114,8 @@ def _build_row_from_df(symbol: str, df: pd.DataFrame) -> dict:
         "annual_vol": _annual_vol(close),
         "max_drawdown": _max_drawdown(close),
         "score": score["score"],
-        "probability": score["probability"],
         "direction": score["direction"],
+        "signal_integrity": score["signal_integrity"],
     }
 
 
@@ -499,8 +499,13 @@ def compare_many(market: str, symbols: list[str], months: int = 12, include_fund
             "max_drawdown": item["max_drawdown"],
             "risk_adjusted": risk_adj,
             "score": item["score"],
-            "probability": item["probability"],
             "direction": item["direction"],
+            "signal_integrity": item.get("signal_integrity") or {
+                "kind": "rule_based_technical_state",
+                "calibrated_probability": False,
+                "decision_eligible": False,
+                "validation_required": True,
+            },
         })
 
     fundamental_info = {"failed": [], "summary": {}}

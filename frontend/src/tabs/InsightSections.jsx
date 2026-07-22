@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { createChart } from 'lightweight-charts'
-import { fetchFundamentals, fetchMl, fetchNews, fetchCompare, fetchQuote } from '../api/market'
+import { fetchFundamentals, fetchCompare, fetchQuote } from '../api/market'
 import AssetLevelRecurrenceView from '../components/AssetLevelRecurrenceView'
 
 function useLazy(fetcher, market, symbol, trigger) {
@@ -16,10 +16,6 @@ function useLazy(fetcher, market, symbol, trigger) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trigger])
   return state
-}
-
-function tagClass(label) {
-  return label === '利好' ? 'up' : label === '利空' ? 'down' : 'neutral'
 }
 
 function fmtMetric(v, suffix = '') {
@@ -193,87 +189,6 @@ export function FundamentalsSection({ market, symbol, trigger }) {
               </tbody>
             </table>
           )}
-        </>
-      )}
-    </div>
-  )
-}
-
-/* ===== AI / 机器学习预测 ===== */
-export function MLSection({ market, symbol, trigger }) {
-  const { loading, error, data } = useLazy(fetchMl, market, symbol, trigger)
-  return (
-    <div className="panel">
-      <h3 className="section-title">🤖 AI 模型预测 <span className="hint">梯度提升 · 严格样本外验证</span></h3>
-      {loading && <div className="hint"><span className="spinner" /> 训练与验证中(约 1-3 秒)…</div>}
-      {error && <div className="hint">{error}</div>}
-      {data && (
-        <>
-          <div className="bt-cards" style={{ marginBottom: 14 }}>
-            <div className="bt-card">
-              <div className="k">最新上涨概率</div>
-              <div className="v" style={{ color: data.latest_up_probability >= 50 ? 'var(--up)' : 'var(--down)' }}>
-                {data.latest_up_probability}%
-              </div>
-              <div className="hint" style={{ marginTop: 6 }}>未来{data.horizon}日</div>
-            </div>
-            <div className="bt-card">
-              <div className="k">样本外准确率</div>
-              <div className="v">{data.test_accuracy}%</div>
-              <div className="hint" style={{ marginTop: 6 }}>测试集 {data.test_size} 天</div>
-            </div>
-            <div className="bt-card">
-              <div className="k">基准准确率</div>
-              <div className="v" style={{ color: 'var(--muted)' }}>{data.baseline_accuracy}%</div>
-              <div className="hint" style={{ marginTop: 6 }}>AUC {data.auc ?? '—'}</div>
-            </div>
-            <div className="bt-card">
-              <div className="k">超越基准</div>
-              <div className="v" style={{ color: data.edge_vs_baseline > 0 ? 'var(--up)' : 'var(--down)' }}>
-                {data.edge_vs_baseline > 0 ? '+' : ''}{data.edge_vs_baseline}
-              </div>
-              <div className="hint" style={{ marginTop: 6 }}>百分点</div>
-            </div>
-          </div>
-          <div className="warning" style={{ margin: 0 }}>
-            <b>判定:{data.verdict}。</b> 只有「样本外准确率」明显高于「基准」时,模型才算真的有预测力。
-            单股技术面模型通常和抛硬币差不多,请勿仅凭这个概率重仓。
-          </div>
-        </>
-      )}
-    </div>
-  )
-}
-
-/* ===== 新闻情绪 ===== */
-export function NewsSection({ market, symbol, trigger }) {
-  const { loading, error, data } = useLazy(fetchNews, market, symbol, trigger)
-  return (
-    <div className="panel">
-      <h3 className="section-title">📰 新闻情绪 <span className="hint">近期个股新闻 + 粗略情绪打分</span></h3>
-      {loading && <div className="hint"><span className="spinner" /> 加载中…</div>}
-      {error && <div className="hint">{error}</div>}
-      {data && !data.available && <div className="hint">{data.message}</div>}
-      {data && data.available && (
-        <>
-          <div style={{ display: 'flex', gap: 14, alignItems: 'center', marginBottom: 14, flexWrap: 'wrap' }}>
-            <span className={`badge ${data.score >= 60 ? 'up' : data.score <= 40 ? 'down' : 'neutral'}`}>
-              {data.mood} {data.score}
-            </span>
-            <span className="hint">利好 {data.pos_count} · 利空 {data.neg_count} · 共 {data.total} 条</span>
-          </div>
-          <div className="news-list">
-            {data.news.map((it, i) => (
-              <a className="news-item" key={i} href={it.url || '#'} target="_blank" rel="noreferrer">
-                <span className={`tag ${tagClass(it.label)}`}>{it.label}</span>
-                <span className="news-title">{it.title}</span>
-                <span className="news-meta">{it.source} {it.time?.slice(5, 16)}</span>
-              </a>
-            ))}
-          </div>
-          <p className="hint" style={{ marginTop: 10 }}>
-            ⚠️ 情绪分用关键词词典粗略统计,不理解语义/反讽,仅供参考。
-          </p>
         </>
       )}
     </div>

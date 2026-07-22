@@ -514,8 +514,8 @@ def _evaluate_candidate(item: dict[str, Any], definition: dict[str, Any]) -> dic
             },
             "technical": {
                 "score": scored.get("score"),
-                "probability_estimate": scored.get("probability"),
                 "direction": scored.get("direction"),
+                "signal_integrity": scored.get("signal_integrity"),
             },
             "fundamentals": {
                 "available": bool(fundamental_result.get("available")),

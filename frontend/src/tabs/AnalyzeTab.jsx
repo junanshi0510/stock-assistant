@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
 import { analyze, fetchPresets, searchUs } from '../api/market'
 import { addWatch, removeWatch } from '../api/portfolio'
-import { dirClass, probColor } from '../helpers'
+import { dirClass } from '../helpers'
 import ScoreRing from '../ScoreRing'
 import CandleChart from '../CandleChart'
-import { QuoteSection, FundamentalsSection, MLSection, NewsSection, CompareSection } from './InsightSections'
+import { QuoteSection, FundamentalsSection, CompareSection } from './InsightSections'
 
 const PLACEHOLDER = { 'A股': '如 600519 / 000001', '港股': '如 00700', '美股': '如 AAPL / TSLA' }
 
@@ -695,7 +695,7 @@ export default function AnalyzeTab({ markets, market, setMarket, symbol, setSymb
       {!result && !loading && (
         <div className="placeholder">
           <div className="big">📊</div>
-          选择市场、输入股票代码,点击「开始分析」获取多因子打分与走势图。
+          选择市场、输入股票代码，获取当前技术状态、基本面、相对表现和历史策略验证。
         </div>
       )}
 
@@ -715,9 +715,9 @@ export default function AnalyzeTab({ markets, market, setMarket, symbol, setSymb
                 </div>
                 <div className="stat-grid">
                   <div className="stat">
-                    <div className="k">模型估计上涨概率</div>
-                    <div className="v">{result.probability}%</div>
-                    <div className="prob-bar"><div style={{ width: `${result.probability}%`, background: probColor(result.probability) }} /></div>
+                    <div className="k">信号性质</div>
+                    <div className="v">规则技术状态</div>
+                    <div className="hint">未输出上涨概率 · 不可直接执行</div>
                   </div>
                   <div className="stat"><div className="k">最新收盘价</div><div className="v">{result.indicators['收盘价']}</div></div>
                   <div className="stat"><div className="k">20日动量</div><div className="v">{result.indicators['20日动量%']}%</div></div>
@@ -958,7 +958,7 @@ export default function AnalyzeTab({ markets, market, setMarket, symbol, setSymb
           )}
 
           <div className="panel">
-            <h3 className="section-title">🧮 打分依据 <span className="hint">每个因子加/减了多少分,透明可解释</span></h3>
+            <h3 className="section-title">🧮 技术强度依据 <span className="hint">每个因子加/减了多少分，透明可解释</span></h3>
             <table>
               <thead><tr><th style={{ width: 90 }}>因子</th><th style={{ width: 60 }}>加减分</th><th style={{ width: 160 }}>影响</th><th>说明</th></tr></thead>
               <tbody>
@@ -993,8 +993,6 @@ export default function AnalyzeTab({ markets, market, setMarket, symbol, setSymb
           <CompareSection market={result.market} symbol={result.symbol} trigger={insightKey} />
           <QuoteSection market={result.market} symbol={result.symbol} trigger={insightKey} />
           <FundamentalsSection market={result.market} symbol={result.symbol} trigger={insightKey} />
-          <MLSection market={result.market} symbol={result.symbol} trigger={insightKey} />
-          <NewsSection market={result.market} symbol={result.symbol} trigger={insightKey} />
         </div>
       )}
     </>

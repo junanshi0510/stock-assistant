@@ -64,7 +64,7 @@ export default function WatchlistTab({ goAnalyze }) {
             {alerts.slice(0, 10).map((a, i) => (
               <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 12px', background: 'var(--bg)', borderRadius: 6 }}>
                 <span className={`badge ${alertBadgeClass(a.event_type)}`} style={{ fontSize: 11, padding: '2px 8px', minWidth: 50 }}>
-                  {a.event_type === 'bullish' ? '看涨' : a.event_type === 'bearish' ? '看跌' : '中性'}
+                  {a.event_type === 'bullish' ? '技术偏强' : a.event_type === 'bearish' ? '技术偏弱' : '技术中性'}
                 </span>
                 <span style={{ fontWeight: 600 }}>{a.market} {a.symbol}</span>
                 <span className="hint" style={{ flex: 1 }}>{a.message}</span>
@@ -78,7 +78,7 @@ export default function WatchlistTab({ goAnalyze }) {
       <div className="panel">
         <div className="form-row" style={{ justifyContent: 'space-between' }}>
           <div className="hint">
-            ⭐ 你收藏的股票（本地保存,关机重开都在）· 每只显示当前看涨打分
+            ⭐ 你收藏的股票（本地保存，关机重开都在）· 每只显示当前技术强度，不输出伪概率
           </div>
           <button className="ghost" onClick={load} disabled={loading}>
             {loading ? <><span className="spinner" /> 刷新中</> : '🔄 刷新打分'}
@@ -103,7 +103,7 @@ export default function WatchlistTab({ goAnalyze }) {
             <thead>
               <tr>
                 <th>市场</th><th>代码</th><th>名称</th>
-                <th style={{ width: 220 }}>看涨打分</th><th>上涨概率</th><th>方向</th><th></th>
+                <th style={{ width: 220 }}>技术强度</th><th>技术状态</th><th></th>
               </tr>
             </thead>
             <tbody>
@@ -114,7 +114,7 @@ export default function WatchlistTab({ goAnalyze }) {
                   <td style={{ fontWeight: 600 }}>{r.symbol}</td>
                   <td className="hint" style={{ color: 'var(--text)' }}>{r.name || '—'}</td>
                   {r.error ? (
-                    <td colSpan={3} className="hint">抓取失败:{r.error}</td>
+                    <td colSpan={2} className="hint">抓取失败:{r.error}</td>
                   ) : (
                     <>
                       <td>
@@ -123,7 +123,6 @@ export default function WatchlistTab({ goAnalyze }) {
                           <div className="bar"><div style={{ width: `${r.score}%`, background: scoreColor(r.score) }} /></div>
                         </div>
                       </td>
-                      <td>{r.probability}%</td>
                       <td><span className={`badge ${dirClass(r.direction)}`} style={{ fontSize: 12, padding: '3px 10px' }}>{r.direction}</span></td>
                     </>
                   )}

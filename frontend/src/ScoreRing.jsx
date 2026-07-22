@@ -20,7 +20,7 @@ export default function ScoreRing({ score }) {
         </svg>
         <div className="score-num">
           <b style={{ color }}>{score}</b>
-          <span>看涨打分</span>
+          <span>技术强度</span>
         </div>
       </div>
     </div>

@@ -49,9 +49,27 @@ class DecisionCenterTests(unittest.TestCase):
             "sync_decision_tasks",
             side_effect=fake_sync,
         )
+        self.research_snapshot = patch.object(
+            decision_center.decision_sources,
+            "build_research_snapshot",
+            return_value={
+                "status": "available",
+                "sources": [],
+                "actions": [],
+                "errors": [],
+                "resolution_evidence_complete": True,
+                "summary": {
+                    "ready_source_count": 0,
+                    "paper_tracking_count": 0,
+                    "paper_pending_count": 0,
+                },
+            },
+        )
         self.task_sync.start()
+        self.research_snapshot.start()
 
     def tearDown(self):
+        self.research_snapshot.stop()
         self.task_sync.stop()
 
     def test_workflow_exposes_one_ordered_next_action(self):
@@ -66,14 +84,19 @@ class DecisionCenterTests(unittest.TestCase):
         with patch.object(decision_center.holding_thesis, "list_with_coverage", return_value={
             "coverage": {"active_thesis_count": 0, "verified_thesis_count": 0},
         }), patch.object(decision_center.portfolio_action_report, "load_latest_action_report", return_value=None):
-            workflow = decision_center._decision_workflow(profile, portfolio)
+            workflow = decision_center._decision_workflow(profile, portfolio, {
+                "status": "available",
+                "sources": [{"id": "agent"}],
+                "summary": {"ready_source_count": 1},
+            })
 
         states = {item["id"]: item["state"] for item in workflow["stages"]}
         self.assertEqual(states["holdings"], "complete")
         self.assertEqual(states["policy"], "incomplete")
-        self.assertEqual(states["theses"], "blocked")
+        self.assertEqual(states["theses"], "incomplete")
+        self.assertEqual(states["research"], "complete")
         self.assertEqual(workflow["next_action"]["id"], "policy")
-        self.assertEqual(workflow["progress_pct"], 20)
+        self.assertEqual(workflow["progress_pct"], 50)
 
     def test_workflow_is_ready_only_when_every_evidence_gate_is_current(self):
         profile = {
@@ -96,12 +119,86 @@ class DecisionCenterTests(unittest.TestCase):
             "binding": {"current": True},
             "integrity": {"verified": True},
         }):
-            workflow = decision_center._decision_workflow(profile, portfolio)
+            workflow = decision_center._decision_workflow(profile, portfolio, {
+                "status": "available",
+                "sources": [{"id": "agent"}, {"id": "opportunity"}, {"id": "twin"}],
+                "summary": {
+                    "ready_source_count": 2,
+                    "paper_tracking_count": 1,
+                    "paper_pending_count": 0,
+                },
+            })
 
         self.assertTrue(workflow["decision_ready"])
-        self.assertEqual(workflow["completed_count"], 5)
+        self.assertTrue(workflow["validation_ready"])
+        self.assertTrue(workflow["measurement_ready"])
+        self.assertEqual(workflow["completed_count"], 4)
         self.assertEqual(workflow["progress_pct"], 100)
         self.assertIsNone(workflow["next_action"])
+
+    def test_missing_transaction_history_does_not_block_research_decision(self):
+        profile = {
+            "configured": True,
+            "review_required": False,
+            "integrity_verified": True,
+            "version_no": 1,
+        }
+        portfolio = {
+            "status": "available",
+            "summary": {"holding_count": 1},
+            "allocation": [{"amount": 1000}],
+            "ledger_summary": {"transaction_count": 0},
+            "performance": {"status": "unavailable"},
+        }
+        research = {
+            "status": "available",
+            "sources": [{"id": "agent"}],
+            "summary": {"ready_source_count": 1},
+        }
+        with patch.object(decision_center.holding_thesis, "list_with_coverage", return_value={
+            "coverage": {"active_thesis_count": 1, "verified_thesis_count": 1},
+        }):
+            workflow = decision_center._decision_workflow(profile, portfolio, research)
+
+        states = {item["id"]: item["state"] for item in workflow["stages"]}
+        self.assertTrue(workflow["decision_ready"])
+        self.assertEqual(states["measurement"], "optional")
+        self.assertFalse(workflow["measurement_ready"])
+        self.assertIsNone(workflow["next_action"])
+
+    def test_partial_paper_observation_keeps_validation_incomplete(self):
+        profile = {
+            "configured": True,
+            "review_required": False,
+            "integrity_verified": True,
+            "version_no": 1,
+        }
+        portfolio = {
+            "status": "available",
+            "summary": {"holding_count": 1},
+            "allocation": [{"amount": 1000}],
+            "ledger_summary": {"transaction_count": 0},
+            "performance": {"status": "unavailable"},
+        }
+        research = {
+            "status": "available",
+            "sources": [{"id": "opportunity"}],
+            "summary": {
+                "ready_source_count": 1,
+                "paper_tracking_count": 0,
+                "paper_pending_count": 1,
+            },
+        }
+        with patch.object(decision_center.holding_thesis, "list_with_coverage", return_value={
+            "coverage": {"active_thesis_count": 1, "verified_thesis_count": 1},
+        }):
+            workflow = decision_center._decision_workflow(profile, portfolio, research)
+
+        states = {item["id"]: item["state"] for item in workflow["stages"]}
+        self.assertTrue(workflow["decision_ready"])
+        self.assertEqual(states["validation"], "incomplete")
+        self.assertFalse(workflow["validation_ready"])
+        self.assertEqual(workflow["next_action"]["id"], "validation")
 
     def test_real_portfolio_evidence_creates_review_queue(self):
         portfolio = {
