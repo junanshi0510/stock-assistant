@@ -15,6 +15,7 @@
 - 新增供应商熔断、连续失败计数、最近成功/失败状态、密钥与 URL 参数脱敏、数据时效和来源等级；没有专业密钥且公开接口被云 IP 限制时明确失败，不生成替代行情。
 - 新增 `GET /api/market/providers` 和前端“专业行情源”状态卡，只显示服务端是否配置、预期时效和运行状态，不读取或回传密钥。详细设计与配置见 [`docs/updates/2026-07-22-004-professional-market-provider-router.md`](docs/updates/2026-07-22-004-professional-market-provider-router.md)。
 - 后端全量回归 `443 passed`、`4 subtests passed`，前端生产构建通过。本地真实验收同时覆盖 A 股公开源失败后的可操作提示，以及 VPN 环境下美股 Yahoo 成功但仍明确标记“公开降级源”；桌面端与 `390×844` 手机端状态卡均正常，手机热门表格改为容器内滚动，页面无横向溢出或控制台错误。
+- GitHub `main` 与 `8.148.67.79` 已发布功能提交 `704bc8e`；生产 PostgreSQL/Redis/五个 Worker/私有 OSS/Nginx 全部健康，公网新前端资产返回 200。云端三市场实测已从 9 条重复底层异常收敛为 3 条脱敏市场错误；当前服务器仍未配置 `TUSHARE_TOKEN` 和 `ALPHAVANTAGE_API_KEY`，因此专业榜尚不能标记为可用，需完成账号权限与额度验收后才算数据链路闭环。
 
 ### 2026-07-22：跨市场机会工厂
 

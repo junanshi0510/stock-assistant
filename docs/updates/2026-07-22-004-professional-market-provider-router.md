@@ -152,6 +152,34 @@ HOT_STOCK_PROVIDER_CIRCUIT_SECONDS=300
 
 没有真实专业 Key 的环境只能验证“未配置—公开降级—公开失败—熔断”边界和模拟官方契约，不能声称专业源已经生产可用。上线记录必须把代码发布成功与供应商授权验收成功分开报告。
 
-## 8. 投资边界
+## 8. 生产发布与真实边界
+
+功能提交 `704bc8e` 已发布到 GitHub `main` 和 `8.148.67.79`。发布前完成一份 PostgreSQL 自定义格式备份，校验 SHA-256 后以 AES256 上传私有 OSS；旧代码和静态站点分别保存在：
+
+```text
+/opt/stock-assistant-backups/releases/20260722-025150-533b7cd
+/var/www/stock-assistant.previous-533b7cd-20260722-025320
+```
+
+生产虚拟环境不安装测试开发依赖，因此使用标准库 `unittest` 运行本轮 29 个相关测试并通过；前端在服务器重新执行 `npm ci` 和 Vite 生产构建。版本切换后验证：
+
+- PostgreSQL、Redis、私有 OSS、API、Nginx 和 `agent`、`market-data`、`llm`、`ocr`、`scheduler` 五个 Worker 全部 ready；
+- `opportunity_schema=true`，队列无积压；
+- 新 `MarketProviderStatus` 动态前端资产和公网首页均返回 200；
+- 匿名访问 `GET /api/market/providers` 返回 401，保持生产认证边界；
+- 通过真实 `market-data` 队列执行 `market.providers`，返回 `hot_stock_provider_router@1.0.0`、`secrets_exposed=false`、`active_probe=false`；
+- 通过真实 `market-data` 队列执行美股热门榜，返回单条 502 `MARKET_DATA_FAILED`，没有泄露凭据或完整请求 URL。
+
+服务器当前三项专业市场凭据均为空，因此本次生产验收不能声称专业数据已接通。三市场 bundle 的真实结果已由 9 条重复底层异常收敛为 3 条：
+
+| 市场 | 专业源状态 | 公开降级状态 | 最终边界 |
+| --- | --- | --- | --- |
+| A 股 | 未配置 `TUSHARE_TOKEN` | 东方财富连接被远端关闭/网络受限 | 单条 A 股市场错误 |
+| 港股 | 未配置 `TUSHARE_TOKEN` | 东方财富连接被远端关闭/网络受限 | 单条港股市场错误 |
+| 美股 | 未配置 `ALPHAVANTAGE_API_KEY` | Yahoo HTTP 403 | 单条美股市场错误 |
+
+下一步必须由服务器管理员把实际凭据写入权限为 `600` 的环境文件，确认 Tushare A 股、港股权限和 Alpha Vantage 榜单订阅后重启 market-data Worker，再按第 6 节执行真实专业源验收。在此之前，代码发布成功与行情可用必须分开表述。
+
+## 9. 投资边界
 
 热门榜只能说明某一时点的涨跌或成交关注度，不是未来收益预测。进入机会工厂后仍需经过历史完整度、数据新鲜度、技术、波动、回撤、基本面、因子覆盖、综合分和组合相关性门槛。即使专业源可用、榜单靠前或纸面组合后续上涨，也不构成收益保证、买入指令或自动交易授权。
