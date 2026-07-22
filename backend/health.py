@@ -65,13 +65,30 @@ def _database_readiness() -> dict[str, Any]:
                 if database_dialect(connection) == "postgresql"
                 else True
             )
+            portfolio_valuation_schema = (
+                all(
+                    table_exists(connection, table)
+                    for table in (
+                        "market_observations",
+                        "portfolio_valuation_snapshots",
+                    )
+                )
+                if database_dialect(connection) == "postgresql"
+                else True
+            )
         return {
-            "ready": bool(migrated and opportunity_schema and portfolio_twin_schema),
+            "ready": bool(
+                migrated
+                and opportunity_schema
+                and portfolio_twin_schema
+                and portfolio_valuation_schema
+            ),
             "dialect": database_dialect(target),
             "target": redact_database_url(target),
             "platform_schema": bool(migrated),
             "opportunity_schema": bool(opportunity_schema),
             "portfolio_twin_schema": bool(portfolio_twin_schema),
+            "portfolio_valuation_schema": bool(portfolio_valuation_schema),
         }
     except Exception as error:
         return {

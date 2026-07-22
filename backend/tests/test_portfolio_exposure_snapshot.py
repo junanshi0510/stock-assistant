@@ -326,6 +326,38 @@ class PortfolioExposureStorageTests(unittest.TestCase):
         self.assertEqual(result["failed_sources"][0]["error"], "provider timeout")
         self.assertTrue(result["integrity"]["verified"])
 
+    def test_current_valuation_is_required_for_exposure_decision_eligibility(self):
+        holdings = [{
+            "id": 1,
+            "asset_type": "fund",
+            "market": "基金",
+            "code": "000001",
+            "name": "测试基金",
+            "amount": 10000,
+        }]
+        valuation = {
+            "status": "available",
+            "snapshot": {"id": "valuation-old"},
+            "binding": {"current": False},
+            "runtime_gate": {
+                "risk_analysis_eligible": False,
+                "reasons": ["持仓已变化"],
+            },
+        }
+        with patch.object(
+            portfolio_exposure.portfolio_valuation,
+            "current_valued_holdings",
+            return_value=(holdings, valuation),
+        ):
+            result = portfolio_exposure.calculate_exposure_snapshot(
+                provider=lambda code: source(code),
+                observed_on=dt.date(2026, 7, 13),
+            )
+
+        self.assertEqual(result["status"], "partial")
+        self.assertFalse(result["quality"]["decision_eligible"])
+        self.assertIn("组合估值:持仓已变化", result["quality"]["reasons"])
+
 
 class PortfolioExposureApiTests(unittest.TestCase):
     def test_refresh_endpoint_pins_current_active_profile_version_server_side(self):

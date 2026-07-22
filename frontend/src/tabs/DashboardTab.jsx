@@ -88,6 +88,7 @@ export default function DashboardTab({ goPortfolio, goFunds, goMarket, goAgent, 
   const market = decision?.market
   const workflow = decision?.workflow
   const summary = portfolio?.summary || {}
+  const valuationReady = Boolean(portfolio?.valuation?.runtime_gate?.risk_analysis_eligible)
   const holdingCount = summary.holding_count ?? 0
   const next = workflow?.next_action
   const unavailableCount = decision?.summary?.unavailable_count ?? 0
@@ -126,7 +127,7 @@ export default function DashboardTab({ goPortfolio, goFunds, goMarket, goAgent, 
         <div>
           <span className="eyebrow">今日决策</span>
           <h2>{next ? `${next.required_for_decision ? '先完成' : '下一步验证'}：${next.title}` : workflow?.decision_ready ? '决策证据门槛已就绪' : '正在核对决策基础'}</h2>
-          <p>{next?.description || '先完成组合事实、风险政策和持有纪律，再研究市场机会。'}</p>
+          <p>{next?.description || '先完成组合事实、可信估值、风险政策和持有纪律，再研究市场机会。'}</p>
         </div>
         <div className="command-hero-status">
           <span>{unavailableCount > 0 ? `${unavailableCount} 个真实来源暂不可用` : '真实来源已完成汇总'}</span>
@@ -155,7 +156,7 @@ export default function DashboardTab({ goPortfolio, goFunds, goMarket, goAgent, 
           </div>
           {portfolio?.status === 'available' && holdingCount > 0 ? (
             <div className="overview-metrics compact">
-              <SummaryMetric label="确认总额" value={money(summary.total_amount)} />
+              <SummaryMetric label={valuationReady ? '可信估值总额' : '用户确认总额'} value={money(summary.total_amount)} />
               <SummaryMetric label="累计收益" value={money(summary.total_profit)} tone={deltaClass(summary.total_profit)} />
               <SummaryMetric label="加权收益率" value={pct(summary.weighted_profit_rate)} tone={deltaClass(summary.weighted_profit_rate)} />
               <SummaryMetric label="第一大持仓" value={pct(summary.top1_ratio)} />

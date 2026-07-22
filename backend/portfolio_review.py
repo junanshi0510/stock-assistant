@@ -8,6 +8,7 @@ import math
 from typing import Any
 
 import storage
+import portfolio_valuation
 
 
 _EPSILON = 1e-8
@@ -1154,10 +1155,20 @@ def snapshot_attribution(*, user_id: str = "default") -> dict:
 def rebalance_review(*, user_id: str = "default") -> dict:
     """Calculate only constraint breaches and contribution room; never emit buy/sell orders."""
     profile = storage.get_investment_profile(user_id=user_id)
-    holdings = storage.list_holdings(user_id=user_id)
+    holdings, valuation = portfolio_valuation.current_valued_holdings(user_id=user_id)
     ledger = ledger_overview(user_id=user_id)
-    valid_holdings = [row for row in holdings if (_number(row.get("amount")) or 0) > 0]
-    missing_amounts = [row for row in holdings if (_number(row.get("amount")) or 0) <= 0]
+    valuation_eligible = bool(
+        not holdings
+        or (valuation.get("runtime_gate") or {}).get("risk_analysis_eligible")
+    )
+    valid_holdings = (
+        [row for row in holdings if (_number(row.get("amount")) or 0) > 0]
+        if valuation_eligible else []
+    )
+    missing_amounts = (
+        [row for row in holdings if (_number(row.get("amount")) or 0) <= 0]
+        if valuation_eligible else []
+    )
     total_amount = sum(_number(row.get("amount")) or 0 for row in valid_holdings)
     max_single_ratio = _number(profile.get("max_single_ratio")) if profile.get("configured") else None
     monthly_budget = _number(profile.get("monthly_budget")) if profile.get("configured") else None
@@ -1191,6 +1202,15 @@ def rebalance_review(*, user_id: str = "default") -> dict:
             "level": "high",
             "title": "先确认当前持仓，再做仓位复盘",
             "detail": "没有用户确认的持仓金额，不能计算真实仓位或上限空间。",
+        })
+    if holdings and not valuation_eligible:
+        reasons = (valuation.get("runtime_gate") or {}).get("reasons") or [
+            "估值快照缺失、过期或未绑定当前持仓"
+        ]
+        actions.append({
+            "level": "high",
+            "title": "刷新可信估值后再做仓位复盘",
+            "detail": "；".join(str(item) for item in reasons),
         })
     if missing_amounts:
         actions.append({
@@ -1235,7 +1255,7 @@ def rebalance_review(*, user_id: str = "default") -> dict:
         })
 
     return {
-        "source": "用户确认持仓 / 用户投资约束 / 用户录入交易流水",
+        "source": "不可变组合估值（可用时）/ 用户确认持仓 / 用户投资约束 / 用户录入交易流水",
         "policy": "只展示已保存约束下的超限金额和上限空间，用于复盘，不生成买卖指令。",
         "profile": profile,
         "summary": {
@@ -1244,12 +1264,18 @@ def rebalance_review(*, user_id: str = "default") -> dict:
             "missing_amount_count": len(missing_amounts),
             "total_amount": _round(total_amount),
             "monthly_budget": _round(monthly_budget),
+            "valuation_eligible": valuation_eligible,
         },
         "allocations": allocations,
         "actions": actions[:12],
         "ledger_summary": ledger["summary"],
+        "valuation": {
+            "snapshot_id": (valuation.get("snapshot") or {}).get("id"),
+            "binding": valuation.get("binding") or {},
+            "runtime_gate": valuation.get("runtime_gate") or {},
+        },
         "method": {
-            "cap": "单品上限以当前确认总金额计算；上限空间不是目标仓位或买入建议。",
+            "cap": "单品上限只在当前不可变人民币估值门禁通过后计算；上限空间不是目标仓位或买入建议。",
             "budget": "月度预算只用于显示若不改变既有持仓时的比例变化，不预测收益。",
         },
     }

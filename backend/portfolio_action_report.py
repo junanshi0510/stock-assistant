@@ -14,12 +14,13 @@ from typing import Any, Callable
 import holdings as holdings_mod
 import holding_thesis
 import portfolio_review
+import portfolio_valuation
 import storage
 from portfolio_exposure import sha256_payload
 
 
 SCHEMA_VERSION = "portfolio_action_report.v2"
-RULESET_VERSION = "portfolio_action_rules.v2"
+RULESET_VERSION = "portfolio_action_rules.v3"
 MAX_FUNDS = 8
 
 _ACTION_ORDER = {
@@ -154,11 +155,8 @@ def build_action_report(
 ) -> dict[str, Any]:
     """Build a deterministic report from confirmed holdings and real providers."""
     max_funds = max(2, min(MAX_FUNDS, int(max_funds)))
-    holdings_provider = holdings_provider or (lambda: storage.list_holdings(user_id=user_id))
+    uses_runtime_valuation = holdings_provider is None
     profile_provider = profile_provider or (lambda: storage.get_investment_profile(user_id=user_id))
-    insights_provider = insights_provider or (
-        lambda limit: holdings_mod.holdings_insights(limit, user_id=user_id)
-    )
     ledger_provider = ledger_provider or (lambda: portfolio_review.ledger_overview(user_id=user_id))
     performance_provider = performance_provider or (
         lambda: portfolio_review.cashflow_performance(user_id=user_id)
@@ -168,7 +166,21 @@ def build_action_report(
     )
     theses_provider = theses_provider or (lambda: holding_thesis.latest_theses(user_id=user_id))
 
-    items = holdings_provider()
+    if uses_runtime_valuation:
+        items, valuation = portfolio_valuation.current_valued_holdings(user_id=user_id)
+    else:
+        items = holdings_provider()
+        valuation = {
+            "status": "not_requested",
+            "snapshot": None,
+            "binding": {"current": True},
+            "runtime_gate": {"risk_analysis_eligible": True},
+        }
+    if insights_provider is None:
+        def insights_provider(limit: int) -> dict[str, Any]:
+            raw = holdings_mod.holdings_insights(limit, user_id=user_id)
+            return portfolio_valuation.overlay_insights_with_valuation(raw, valuation)
+
     profile = profile_provider()
     holdings_hash = action_holdings_sha256(items)
     insights, insights_error = _safe_call(lambda: insights_provider(max_funds))
@@ -180,6 +192,17 @@ def build_action_report(
     theses_hash = holding_thesis.theses_sha256(relevant_theses)
 
     total_amount = sum(max(0.0, _number(item.get("amount")) or 0.0) for item in items)
+    valuation_snapshot = valuation.get("snapshot") or {}
+    valuation_gate = valuation.get("runtime_gate") or {}
+    valuation_required = bool(uses_runtime_valuation and items)
+    valuation_eligible = bool(
+        not valuation_required
+        or (
+            valuation.get("status") == "available"
+            and (valuation.get("binding") or {}).get("current")
+            and valuation_gate.get("risk_analysis_eligible")
+        )
+    )
     amount_complete = bool(items) and all(
         _number(item.get("amount")) is not None and (_number(item.get("amount")) or 0) > 0
         for item in items
@@ -278,9 +301,18 @@ def build_action_report(
             )
         )
 
+        amount_from_valuation = bool(item.get("valuation_snapshot_id"))
         evidence = [
-            _evidence("已确认金额", _round(amount), "用户确认持仓"),
-            _evidence("组合占比", _round(ratio), "用户确认持仓金额"),
+            _evidence(
+                "当前人民币估值" if amount_from_valuation else "已确认金额",
+                _round(amount),
+                "不可变组合估值快照" if amount_from_valuation else "用户确认持仓",
+            ),
+            _evidence(
+                "组合占比",
+                _round(ratio),
+                "不可变组合估值快照" if amount_from_valuation else "用户确认持仓金额",
+            ),
             _evidence("累计收益", _round(_number(item.get("profit"))), "用户确认持仓"),
             _evidence("累计收益率", _round(_number(item.get("profit_rate"))), "用户确认持仓"),
         ]
@@ -305,6 +337,13 @@ def build_action_report(
                 "补全金额后再决策",
                 "缺少有效持仓金额，系统拒绝计算仓位和调整额度。",
                 blockers=["holding_amount_missing"],
+            )
+        elif valuation_required and not valuation_eligible:
+            decision = _decision(
+                "data_required",
+                "刷新可信估值后再复盘仓位",
+                "当前价格、净值、汇率、时效或持仓绑定门禁未通过，系统不会继续使用旧金额生成仓位动作。",
+                blockers=["portfolio_valuation_not_current"],
             )
         elif not profile_configured:
             decision = _decision(
@@ -594,9 +633,18 @@ def build_action_report(
         {"scope": row.get("code") or "基金", "error": row.get("error")}
         for row in insights.get("fund_errors") or []
     )
+    if valuation_required and not valuation_eligible:
+        source_errors.append({
+            "scope": "组合估值",
+            "error": "；".join(
+                str(item)
+                for item in valuation_gate.get("reasons")
+                or ["估值快照缺失、过期或未绑定当前持仓"]
+            ),
+        })
     source_errors = [row for row in source_errors if row.get("error")]
 
-    blocked = not items or not amount_complete or not profile_configured
+    blocked = not items or not amount_complete or not profile_configured or not valuation_eligible
     partial = bool(
         source_errors
         or (expected_pairs > 0 and actual_pairs < expected_pairs)
@@ -607,6 +655,8 @@ def build_action_report(
     as_of_values.extend(
         str(row.get("as_of")) for row in trend_by_code.values() if row.get("as_of")
     )
+    if valuation_snapshot.get("created_at"):
+        as_of_values.append(str(valuation_snapshot["created_at"]))
     generated_at = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 
     return {
@@ -616,6 +666,8 @@ def build_action_report(
         "as_of": max(as_of_values) if as_of_values else None,
         "status": status,
         "holdings_sha256": holdings_hash,
+        "valuation_required": valuation_required,
+        "valuation_snapshot_id": valuation_snapshot.get("id"),
         "theses_sha256": theses_hash,
         "profile_version_id": profile_version_id,
         "policy": "报告只排序风险控制与证据补全动作，不承诺盈利，不把短期涨跌直接转换为买卖指令。",
@@ -638,6 +690,8 @@ def build_action_report(
         "readiness": {
             "status": status,
             "amount_complete": amount_complete,
+            "valuation_eligible": valuation_eligible,
+            "valuation_snapshot_id": valuation_snapshot.get("id"),
             "profile_configured": profile_configured,
             "thesis_status": "unavailable" if theses_error else (
                 "complete" if not missing_thesis_rows else "incomplete"
@@ -702,7 +756,7 @@ def build_action_report(
             },
         },
         "method": {
-            "allocation": "只使用用户确认的持仓金额计算，不按基金名称估算仓位。",
+            "allocation": "生产默认使用当前不可变人民币估值；门禁不通过时停止仓位动作，不按名称或模拟价格补齐。",
             "overlap": "共同持股和行业重合只来自基金定期报告；披露期会随每只基金一并展示。",
             "action_order": "数据完整性 > 用户风险边界 > 单品超限 > 中高重复暴露 > 预设持有纪律 > 回撤复核 > 保持纪律。",
             "profitability": "通过减少无意集中、重复暴露、无效换手和收益口径错误来提高长期盈利概率，而不是预测必然上涨。",
@@ -714,7 +768,17 @@ def build_action_report(
 def persist_action_report(payload: dict[str, Any], *, user_id: str = "default") -> dict[str, Any]:
     saved = storage.save_portfolio_action_report(payload, user_id=user_id)
     integrity = storage.verify_portfolio_action_report(saved["id"], user_id=user_id)
-    return {**payload, "report": saved, "integrity": integrity, "binding": {"current": True, "reasons": []}}
+    reasons = []
+    if payload.get("valuation_required") and not (payload.get("readiness") or {}).get(
+        "valuation_eligible"
+    ):
+        reasons.append("portfolio_valuation_not_current")
+    return {
+        **payload,
+        "report": saved,
+        "integrity": integrity,
+        "binding": {"current": not reasons, "reasons": reasons},
+    }
 
 
 def refresh_action_report(*, max_funds: int = MAX_FUNDS, user_id: str = "default") -> dict[str, Any]:
@@ -727,7 +791,9 @@ def load_action_report(report_id: str, *, user_id: str = "default") -> dict[str,
     if not item or not isinstance(item.get("payload"), dict):
         return None
     integrity = storage.verify_portfolio_action_report(report_id, user_id=user_id)
-    current_holdings = storage.list_holdings(user_id=user_id)
+    current_holdings, current_valuation = portfolio_valuation.current_valued_holdings(
+        user_id=user_id
+    )
     current_holdings_hash = action_holdings_sha256(current_holdings)
     current_theses_hash = holding_thesis.theses_sha256(holding_thesis.theses_for_holdings(
         holding_thesis.latest_theses(user_id=user_id),
@@ -738,6 +804,14 @@ def load_action_report(report_id: str, *, user_id: str = "default") -> dict[str,
     reasons = []
     if item.get("holdings_sha256") != current_holdings_hash:
         reasons.append("holdings_changed")
+    report_payload = item.get("payload") or {}
+    if report_payload.get("valuation_required"):
+        current_gate = current_valuation.get("runtime_gate") or {}
+        current_snapshot_id = (current_valuation.get("snapshot") or {}).get("id")
+        if not current_gate.get("risk_analysis_eligible"):
+            reasons.append("portfolio_valuation_not_current")
+        elif report_payload.get("valuation_snapshot_id") != current_snapshot_id:
+            reasons.append("portfolio_valuation_changed")
     if item.get("theses_sha256") != current_theses_hash:
         reasons.append("holding_theses_changed")
     if item.get("profile_version_id") != current_profile_version_id:

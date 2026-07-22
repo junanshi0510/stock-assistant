@@ -72,7 +72,13 @@ class PortfolioReviewTests(unittest.TestCase):
             "configured": True,
             "updated_at": "2026-01-01T00:00:00",
         }
-        with patch.object(portfolio_review.storage, "list_holdings", return_value=holdings), \
+        valuation = {
+            "status": "available",
+            "snapshot": {"id": "valuation-current"},
+            "binding": {"current": True},
+            "runtime_gate": {"risk_analysis_eligible": True},
+        }
+        with patch.object(portfolio_review.portfolio_valuation, "current_valued_holdings", return_value=(holdings, valuation)), \
              patch.object(portfolio_review.storage, "list_portfolio_transactions", return_value=[]), \
              patch.object(portfolio_review.storage, "get_investment_profile", return_value=profile):
             result = portfolio_review.rebalance_review()
@@ -84,6 +90,28 @@ class PortfolioReviewTests(unittest.TestCase):
         self.assertTrue(any("补录交易流水" in item["title"] for item in result["actions"]))
         self.assertTrue(any("超过单品上限" in item["title"] for item in result["actions"]))
         self.assertIn("不生成买卖指令", result["policy"])
+
+    def test_rebalance_blocks_amount_actions_when_valuation_is_not_current(self):
+        holdings = [
+            {"asset_type": "fund", "market": "基金", "code": "000001", "name": "基金A", "amount": 10000},
+        ]
+        valuation = {
+            "status": "available",
+            "snapshot": {"id": "valuation-old"},
+            "binding": {"current": False},
+            "runtime_gate": {
+                "risk_analysis_eligible": False,
+                "reasons": ["持仓已变化"],
+            },
+        }
+        with patch.object(portfolio_review.portfolio_valuation, "current_valued_holdings", return_value=(holdings, valuation)), \
+             patch.object(portfolio_review.storage, "list_portfolio_transactions", return_value=[]), \
+             patch.object(portfolio_review.storage, "get_investment_profile", return_value={"configured": True, "max_single_ratio": 40}):
+            result = portfolio_review.rebalance_review()
+
+        self.assertFalse(result["summary"]["valuation_eligible"])
+        self.assertEqual(result["allocations"], [])
+        self.assertTrue(any("刷新可信估值" in item["title"] for item in result["actions"]))
 
     def test_money_weighted_return_uses_confirmed_value_and_cashflows(self):
         rows = [trade("buy", 1000, 1, trade_date="2025-01-01")]

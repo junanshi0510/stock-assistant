@@ -15,6 +15,31 @@ import decision_center  # noqa: E402
 
 
 class DecisionCenterTests(unittest.TestCase):
+    @staticmethod
+    def _current_valuation(holding_count: int) -> dict:
+        return {
+            "status": "available",
+            "snapshot": {
+                "id": "valuation-current",
+                "payload": {
+                    "coverage": {
+                        "valued_count": holding_count,
+                        "count_coverage_pct": 100,
+                        "stale_count": 0,
+                        "automatic_value_pct": 100,
+                        "professional_value_pct": 100,
+                    },
+                },
+            },
+            "binding": {"current": True},
+            "runtime_gate": {
+                "risk_analysis_eligible": True,
+                "trade_amount_eligible": True,
+                "execution_authorized": False,
+                "reasons": [],
+            },
+        }
+
     def setUp(self):
         def fake_sync(actions, **kwargs):
             items = [
@@ -80,6 +105,7 @@ class DecisionCenterTests(unittest.TestCase):
             "allocation": [{"amount": 600}, {"amount": 400}],
             "ledger_summary": {"transaction_count": 0},
             "performance": {"status": "unavailable"},
+            "valuation": self._current_valuation(2),
         }
         with patch.object(decision_center.holding_thesis, "list_with_coverage", return_value={
             "coverage": {"active_thesis_count": 0, "verified_thesis_count": 0},
@@ -96,7 +122,7 @@ class DecisionCenterTests(unittest.TestCase):
         self.assertEqual(states["theses"], "incomplete")
         self.assertEqual(states["research"], "complete")
         self.assertEqual(workflow["next_action"]["id"], "policy")
-        self.assertEqual(workflow["progress_pct"], 50)
+        self.assertEqual(workflow["progress_pct"], 60)
 
     def test_workflow_is_ready_only_when_every_evidence_gate_is_current(self):
         profile = {
@@ -111,6 +137,7 @@ class DecisionCenterTests(unittest.TestCase):
             "allocation": [{"amount": 600}, {"amount": 400}],
             "ledger_summary": {"transaction_count": 4},
             "performance": {"status": "available"},
+            "valuation": self._current_valuation(2),
         }
         with patch.object(decision_center.holding_thesis, "list_with_coverage", return_value={
             "coverage": {"active_thesis_count": 2, "verified_thesis_count": 2},
@@ -132,7 +159,7 @@ class DecisionCenterTests(unittest.TestCase):
         self.assertTrue(workflow["decision_ready"])
         self.assertTrue(workflow["validation_ready"])
         self.assertTrue(workflow["measurement_ready"])
-        self.assertEqual(workflow["completed_count"], 4)
+        self.assertEqual(workflow["completed_count"], 5)
         self.assertEqual(workflow["progress_pct"], 100)
         self.assertIsNone(workflow["next_action"])
 
@@ -149,6 +176,7 @@ class DecisionCenterTests(unittest.TestCase):
             "allocation": [{"amount": 1000}],
             "ledger_summary": {"transaction_count": 0},
             "performance": {"status": "unavailable"},
+            "valuation": self._current_valuation(1),
         }
         research = {
             "status": "available",
@@ -179,6 +207,7 @@ class DecisionCenterTests(unittest.TestCase):
             "allocation": [{"amount": 1000}],
             "ledger_summary": {"transaction_count": 0},
             "performance": {"status": "unavailable"},
+            "valuation": self._current_valuation(1),
         }
         research = {
             "status": "available",
@@ -255,6 +284,8 @@ class DecisionCenterTests(unittest.TestCase):
 
         with patch.object(decision_center.storage, "get_investment_profile", return_value=profile), \
              patch.object(decision_center.holdings_mod, "holdings_insights", return_value=portfolio), \
+             patch.object(decision_center.portfolio_valuation, "latest_portfolio_valuation", return_value=self._current_valuation(2)), \
+             patch.object(decision_center.portfolio_valuation, "overlay_insights_with_valuation", side_effect=lambda data, valuation: data), \
              patch.object(decision_center.market_daily_mod, "get_market_daily", return_value=market), \
              patch.object(decision_center.portfolio_review, "ledger_overview", return_value={"summary": {"transaction_count": 2}, "integrity_issues": []}), \
              patch.object(decision_center.portfolio_review, "rebalance_review", return_value={"allocations": []}), \

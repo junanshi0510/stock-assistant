@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
 import storage
+import portfolio_valuation
 
 
 SCHEMA_VERSION = "portfolio_exposure_snapshot.v1"
@@ -516,7 +517,7 @@ def calculate_exposure_snapshot(
     provider: Callable[[str], dict[str, Any]] | None = None,
     observed_on: dt.date | None = None,
 ) -> dict[str, Any]:
-    holdings = storage.list_holdings(user_id=user_id)
+    holdings, valuation = portfolio_valuation.current_valued_holdings(user_id=user_id)
     target_code = str(target_code or "").strip() or None
     if target_code and not re.fullmatch(r"\d{6}", target_code):
         raise ValueError("目标基金代码需要是 6 位数字")
@@ -554,7 +555,7 @@ def calculate_exposure_snapshot(
                     failed.append({"code": code, "error": error or "真实披露不可用"})
 
     max_age_days = int(os.environ.get("PORTFOLIO_EXPOSURE_MAX_AGE_DAYS", DEFAULT_MAX_AGE_DAYS))
-    return build_exposure_snapshot(
+    result = build_exposure_snapshot(
         holdings,
         raw_sources,
         target_code=target_code,
@@ -563,6 +564,27 @@ def calculate_exposure_snapshot(
         observed_on=observed_on,
         max_age_days=max_age_days,
     )
+    result["valuation_binding"] = {
+        "snapshot_id": (valuation.get("snapshot") or {}).get("id"),
+        "current": (valuation.get("binding") or {}).get("current", False),
+        "risk_analysis_eligible": (valuation.get("runtime_gate") or {}).get(
+            "risk_analysis_eligible", False
+        ),
+    }
+    if holdings and not result["valuation_binding"]["risk_analysis_eligible"]:
+        reasons = (valuation.get("runtime_gate") or {}).get("reasons") or [
+            "估值快照缺失、过期或未绑定当前持仓"
+        ]
+        result["status"] = "partial"
+        result["quality"]["decision_eligible"] = False
+        result["quality"]["reasons"] = list(dict.fromkeys([
+            *(result["quality"].get("reasons") or []),
+            *(f"组合估值:{item}" for item in reasons),
+        ]))
+        result["method"]["valuation"] = (
+            "组合暴露金额必须绑定当前不可变人民币估值；门禁失败时结果只供数据修复，不能用于金额决策。"
+        )
+    return result
 
 
 def persist_exposure_snapshot(payload: dict[str, Any], *, user_id: str = "default") -> dict[str, Any]:

@@ -25,6 +25,7 @@ import fund_switch_cost_service
 import holding_level_recurrence
 import holdings as holdings_mod
 import portfolio_exposure
+import portfolio_valuation
 import storage
 
 
@@ -360,6 +361,17 @@ def _portfolio_exposure_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _portfolio_valuation_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
+    """Fetch durable prices/NAV/FX and persist a user-bound valuation snapshot."""
+    user_id = _portfolio_user(payload)
+    return portfolio_valuation.refresh_portfolio_valuation(
+        user_id=user_id,
+        tenant_id=str(payload.get("tenant_id") or "public"),
+        actor_id=str(payload.get("actor_id") or user_id),
+        force=bool(payload.get("force", False)),
+    )
+
+
 def _opportunity_observe(payload: dict[str, Any]) -> dict[str, Any]:
     from opportunity_service import observe_paper_basket
 
@@ -415,6 +427,7 @@ _OPERATIONS: dict[str, OperationHandler] = {
     "portfolio.fund_alternatives": _portfolio_fund_alternatives,
     "portfolio.exposure": _portfolio_exposure,
     "portfolio.exposure_snapshot": _portfolio_exposure_snapshot,
+    "portfolio.valuation_snapshot": _portfolio_valuation_snapshot,
     "opportunity.observe": _opportunity_observe,
 }
 

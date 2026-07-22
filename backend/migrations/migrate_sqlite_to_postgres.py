@@ -20,6 +20,7 @@ from database import is_postgres_target
 from migrations.postgres_schema import install_postgres_runtime_schema
 from migrations.opportunity_factory_v1 import install_opportunity_factory_schema
 from migrations.portfolio_decision_twin_v1 import install_portfolio_twin_schema
+from migrations.portfolio_valuation_v1 import install_portfolio_valuation_schema
 
 
 MIGRATION_ID = "sqlite-to-postgres.v1"
@@ -283,6 +284,7 @@ def migrate(
             install_postgres_runtime_schema(target_connection)
             install_opportunity_factory_schema(target_connection)
             install_portfolio_twin_schema(target_connection)
+            install_portfolio_valuation_schema(target_connection)
 
             for table in metadata.sorted_tables:
                 source_count, source_digest = _table_digest(source_connection, table)

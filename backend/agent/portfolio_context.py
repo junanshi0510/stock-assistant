@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import Any
 
 import storage
+import portfolio_valuation
 import fund_switch_execution_service
 import fund_switch_lifecycle_service
 import fund_switch_quote_service
@@ -22,7 +23,7 @@ def _number(value: Any) -> float | None:
 def get_portfolio_context(payload: dict[str, Any]) -> dict[str, Any]:
     code = str(payload.get("code") or "").strip()
     user_id = str(payload.get("user_id") or "default")
-    items = storage.list_holdings(user_id=user_id)
+    items, valuation = portfolio_valuation.current_valued_holdings(user_id=user_id)
     requested_profile_version_id = str(payload.get("profile_version_id") or "").strip() or None
     if requested_profile_version_id:
         profile = storage.get_investment_profile_version(
@@ -52,6 +53,8 @@ def get_portfolio_context(payload: dict[str, Any]) -> dict[str, Any]:
     as_of_values = [str(item.get("updated_at") or "") for item in items if item.get("updated_at")]
     if profile.get("updated_at"):
         as_of_values.append(str(profile["updated_at"]))
+    if (valuation.get("snapshot") or {}).get("created_at"):
+        as_of_values.append(str(valuation["snapshot"]["created_at"]))
     switch_quotes = fund_switch_quote_service.agent_quote_summary(
         user_id,
         target_code=code,
@@ -74,10 +77,12 @@ def get_portfolio_context(payload: dict[str, Any]) -> dict[str, Any]:
         gaps.append("holdings_not_imported")
     elif not amount_complete:
         gaps.append("holding_amount_incomplete")
+    if items and not (valuation.get("runtime_gate") or {}).get("risk_analysis_eligible"):
+        gaps.append("portfolio_valuation_not_current")
 
     return {
         "status": "available",
-        "source": "用户已确认持仓与投资约束",
+        "source": "不可变组合估值（可用时）/ 用户已确认持仓与投资约束",
         "as_of": max(as_of_values) if as_of_values else None,
         "data_classification": "private_financial",
         "profile": {
@@ -110,6 +115,11 @@ def get_portfolio_context(payload: dict[str, Any]) -> dict[str, Any]:
             "amount_complete": amount_complete,
             "total_amount": round(total_amount, 2) if total_amount > 0 else None,
             "holdings_sha256": holdings_sha256(items),
+            "valuation_snapshot_id": (valuation.get("snapshot") or {}).get("id"),
+            "valuation_current": (valuation.get("binding") or {}).get("current", False),
+            "valuation_risk_eligible": (valuation.get("runtime_gate") or {}).get(
+                "risk_analysis_eligible", False
+            ),
         },
         "target_holding": {
             "exists": target is not None,
@@ -142,7 +152,7 @@ def get_portfolio_context(payload: dict[str, Any]) -> dict[str, Any]:
         "method": {
             "scope": "single_user_migration_storage",
             "profile_binding": "exact_version_id_from_agent_run" if requested_profile_version_id else "active_version_at_tool_call",
-            "amounts": "only_user_confirmed_holding_amounts",
+            "amounts": "current_immutable_cny_valuation_when_eligible_else_user_confirmed_amounts",
             "target_match": "asset_type_fund_and_exact_six_digit_code",
             "switch_quote_scope": "latest_user_confirmed_quote_per_candidate_with_audit_status",
             "switch_execution_scope": "latest_immutable_pretrade_review_with_current_binding_status",

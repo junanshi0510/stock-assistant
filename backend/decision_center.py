@@ -13,6 +13,7 @@ import holding_thesis
 import market_daily as market_daily_mod
 import portfolio_action_report
 import portfolio_review
+import portfolio_valuation
 import decision_sources
 import storage
 
@@ -130,6 +131,15 @@ def _decision_workflow(
         (_number(item.get("amount")) or 0) > 0 for item in allocation
     )
     holdings_complete = portfolio.get("status") == "available" and amount_complete
+    valuation = portfolio.get("valuation") or {}
+    valuation_binding = valuation.get("binding") or {}
+    valuation_gate = valuation.get("runtime_gate") or {}
+    valuation_complete = bool(
+        holdings_complete
+        and valuation.get("status") == "available"
+        and valuation_binding.get("current")
+        and valuation_gate.get("risk_analysis_eligible")
+    )
     policy_complete = bool(
         profile.get("configured")
         and not profile.get("review_required")
@@ -195,6 +205,24 @@ def _decision_workflow(
     policy_state = "complete" if policy_complete else "incomplete"
 
     if not holdings_complete:
+        valuation_state = "blocked"
+        valuation_metric = "等待持仓事实"
+    elif valuation.get("status") != "available":
+        valuation_state = "incomplete"
+        valuation_metric = "尚未生成可信估值"
+    elif not valuation_binding.get("current"):
+        valuation_state = "incomplete"
+        valuation_metric = "持仓已变化，估值待刷新"
+    elif valuation_complete:
+        coverage = (((valuation.get("snapshot") or {}).get("payload") or {}).get("coverage") or {})
+        valuation_state = "complete"
+        valuation_metric = f"{coverage.get('valued_count') or 0}/{holding_count} 项，时效与汇率已核验"
+    else:
+        coverage = (((valuation.get("snapshot") or {}).get("payload") or {}).get("coverage") or {})
+        valuation_state = "incomplete"
+        valuation_metric = f"覆盖 {coverage.get('count_coverage_pct') or 0}% · 过期 {coverage.get('stale_count') or 0} 项"
+
+    if not holdings_complete:
         thesis_state = "blocked"
     elif thesis_error:
         thesis_state = "unavailable"
@@ -235,7 +263,12 @@ def _decision_workflow(
             "portfolio", "确认真实持仓",
         ),
         _workflow_stage(
-            "policy", 2, "投资政策", policy_state,
+            "valuation", 2, "可信估值", valuation_state, valuation_metric,
+            "按份额、确认净值或未复权收盘价估值，并统一换算人民币；过期、缺价或缺汇率会阻断风险研判。",
+            "portfolio", "刷新组合估值",
+        ),
+        _workflow_stage(
+            "policy", 3, "投资政策", policy_state,
             (
                 f"V{profile.get('version_no')} 已激活"
                 if policy_complete else "等待确认风险与仓位上限"
@@ -244,7 +277,7 @@ def _decision_workflow(
             "profile", "设置投资政策",
         ),
         _workflow_stage(
-            "theses", 3, "持有纪律", thesis_state,
+            "theses", 4, "持有纪律", thesis_state,
             (
                 "版本库暂不可用"
                 if thesis_error else f"{active_thesis_count}/{holding_count} 项已建立"
@@ -253,7 +286,7 @@ def _decision_workflow(
             "portfolio", "补齐持有逻辑",
         ),
         _workflow_stage(
-            "research", 4, "研究证据", research_state,
+            "research", 5, "研究证据", research_state,
             (
                 "研究证据源暂不可用"
                 if research.get("status") == "unavailable"
@@ -263,7 +296,7 @@ def _decision_workflow(
             "agent", "生成研究证据",
         ),
         _workflow_stage(
-            "validation", 5, "前瞻验证", validation_state,
+            "validation", 6, "前瞻验证", validation_state,
             (
                 f"{paper_tracking_count} 个纸面组合正在跟踪"
                 if paper_tracking_count
@@ -277,7 +310,7 @@ def _decision_workflow(
             lane="validation",
         ),
         _workflow_stage(
-            "measurement", 6, "执行后复盘", measurement_state,
+            "measurement", 7, "执行后复盘", measurement_state,
             (
                 "尚无已执行交易，不阻塞研究"
                 if transaction_count == 0
@@ -311,7 +344,7 @@ def _decision_workflow(
         {"scope": "执行后复盘", "error": report_error},
     ]
     return {
-        "schema_version": "investment_decision_workflow.v2",
+        "schema_version": "investment_decision_workflow.v3",
         "status": "ready" if decision_ready else "setup_required",
         "decision_ready": decision_ready,
         "validation_ready": validation_state == "complete",
@@ -342,6 +375,8 @@ def _decision_workflow(
 def _portfolio_snapshot(*, user_id: str = "default") -> dict:
     try:
         data = holdings_mod.holdings_insights(max_funds=6, user_id=user_id)
+        valuation = portfolio_valuation.latest_portfolio_valuation(user_id=user_id)
+        data = portfolio_valuation.overlay_insights_with_valuation(data, valuation)
         ledger = {}
         rebalance = {}
         performance = {}
@@ -379,6 +414,7 @@ def _portfolio_snapshot(*, user_id: str = "default") -> dict:
             "rebalance_error": rebalance_error,
             "performance": performance,
             "performance_error": performance_error,
+            "valuation": valuation,
         }
     except Exception as error:
         return {
@@ -397,6 +433,11 @@ def _portfolio_snapshot(*, user_id: str = "default") -> dict:
             "rebalance_error": None,
             "performance": {},
             "performance_error": None,
+            "valuation": {
+                "status": "unavailable",
+                "binding": {"current": False},
+                "runtime_gate": {"risk_analysis_eligible": False},
+            },
         }
 
 
@@ -441,6 +482,11 @@ def _timed_out_portfolio_snapshot() -> dict:
         "rebalance_error": None,
         "performance": {},
         "performance_error": None,
+        "valuation": {
+            "status": "unavailable",
+            "binding": {"current": False},
+            "runtime_gate": {"risk_analysis_eligible": False},
+        },
     }
 
 
@@ -509,6 +555,65 @@ def _portfolio_actions(profile: dict, portfolio: dict) -> list[dict]:
             "用户确认持仓",
         ))
         return actions
+
+    valuation = portfolio.get("valuation") or {}
+    valuation_binding = valuation.get("binding") or {}
+    valuation_gate = valuation.get("runtime_gate") or {}
+    valuation_snapshot = valuation.get("snapshot") or {}
+    valuation_payload = valuation_snapshot.get("payload") or {}
+    valuation_coverage = valuation_payload.get("coverage") or {}
+    if valuation.get("status") != "available":
+        actions.append(_action(
+            "create-portfolio-valuation",
+            "high",
+            "数据完整性",
+            "生成第一份可信组合估值",
+            "当前配置比例仍来自手工金额；生成估值后，系统才会用份额、确认净值、收盘价和汇率统一核对组合市值。",
+            [f"当前持仓：{holding_count} 项", "尚无不可变估值快照"],
+            "portfolio",
+            "刷新组合估值",
+            "用户确认份额 + 真实价格/净值 + 参考汇率",
+        ))
+    elif not valuation_binding.get("current"):
+        actions.append(_action(
+            "refresh-portfolio-valuation-binding",
+            "high",
+            "数据时效",
+            "持仓已经变化，重新生成组合估值",
+            "最近估值绑定的是旧持仓版本，系统不会把旧比例套用到当前组合。",
+            [f"快照：{valuation_snapshot.get('id') or '-'}", "持仓哈希不一致"],
+            "portfolio",
+            "重新估值",
+            "不可变组合估值快照",
+        ))
+    elif not valuation_gate.get("risk_analysis_eligible"):
+        reasons = valuation_gate.get("reasons") or ["估值覆盖或时效门禁未通过"]
+        actions.append(_action(
+            "refresh-incomplete-portfolio-valuation",
+            "high",
+            "数据时效",
+            "组合估值不完整，暂停精确风险结论",
+            "缺价、缺汇率或过期数据不会被模拟值补齐；刷新后仍失败的持仓需要补全份额或市场代码。",
+            [str(item) for item in reasons[:3]],
+            "portfolio",
+            "修复组合估值",
+            "价格/NAV/FX 持久观察",
+        ))
+    elif not valuation_gate.get("trade_amount_eligible"):
+        actions.append(_action(
+            "improve-automatic-valuation-coverage",
+            "medium",
+            "数据完整性",
+            "补全份额，提高自动估值覆盖",
+            "风险比例已经可以复盘，但部分市值仍来自用户手工金额，因此不能据此生成精确交易金额。",
+            [
+                f"自动估值：{valuation_coverage.get('automatic_value_pct') or 0}%",
+                f"专业/确认来源：{valuation_coverage.get('professional_value_pct') or 0}%",
+            ],
+            "portfolio",
+            "补全持仓份额",
+            "不可变组合估值快照",
+        ))
 
     missing_amounts = [row for row in allocation if (_number(row.get("amount")) or 0) <= 0]
     if total_amount <= 0 or missing_amounts:
@@ -897,6 +1002,22 @@ def build_decision_center(*, user_id: str = "default") -> dict:
         unavailable.append({"scope": "现金流收益", "error": portfolio["performance_error"]})
     if portfolio.get("overlap_error"):
         unavailable.append({"scope": "基金持仓重合度", "error": portfolio["overlap_error"]})
+    valuation_gate = (portfolio.get("valuation") or {}).get("runtime_gate") or {}
+    portfolio_holding_count = int(
+        ((portfolio.get("summary") or {}).get("holding_count") or 0)
+    )
+    if (
+        portfolio.get("status") == "available"
+        and portfolio_holding_count > 0
+        and not valuation_gate.get("risk_analysis_eligible")
+    ):
+        unavailable.append({
+            "scope": "组合估值",
+            "error": "；".join(
+                str(item)
+                for item in valuation_gate.get("reasons") or ["估值门禁未通过"]
+            ),
+        })
     for failure in market.get("failed") or []:
         unavailable.append({"scope": failure.get("source") or "市场数据源", "error": failure.get("error") or failure.get("message")})
     unavailable.extend(research.get("errors") or [])
@@ -909,6 +1030,10 @@ def build_decision_center(*, user_id: str = "default") -> dict:
         and not portfolio.get("rebalance_error")
         and not portfolio.get("performance_error")
         and not portfolio.get("overlap_error")
+        and (
+            portfolio_holding_count == 0
+            or valuation_gate.get("risk_analysis_eligible")
+        )
         and not (market.get("failed") or [])
         and research.get("resolution_evidence_complete", False)
     )

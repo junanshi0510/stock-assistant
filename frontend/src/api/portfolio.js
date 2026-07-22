@@ -339,6 +339,22 @@ export function createPortfolioSnapshot(reason = 'manual') {
   })
 }
 
+export function fetchLatestPortfolioValuation() {
+  return getJson('/api/portfolio/valuations/latest')
+}
+
+export function refreshPortfolioValuation(force = true) {
+  return getJson('/api/portfolio/valuations/refresh', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ force }),
+  })
+}
+
+export function fetchPortfolioValuations(limit = 20) {
+  return getJson(`/api/portfolio/valuations?limit=${encodeURIComponent(limit)}`)
+}
+
 export function saveHoldings(items) {
   return getJson('/api/holdings', {
     method: 'POST',

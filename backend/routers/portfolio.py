@@ -24,6 +24,7 @@ import portfolio_exposure
 import portfolio_decision_twin
 import portfolio_action_report
 import portfolio_review
+import portfolio_valuation
 import storage
 import transaction_import
 from background_jobs import BackgroundJobRepository, sanitize_worker_error
@@ -44,6 +45,10 @@ from portfolio_twin_repository import (
     PortfolioTwinNotFoundError,
     PortfolioTwinRepository,
 )
+from portfolio_valuation_repository import (
+    PortfolioValuationNotFoundError,
+    PortfolioValuationRepository,
+)
 from task_queue import (
     TaskQueueUnavailableError,
     enqueue_background_job,
@@ -53,6 +58,7 @@ from task_queue import (
 
 router = APIRouter(tags=["我的组合"])
 portfolio_twin_repository = PortfolioTwinRepository()
+portfolio_valuation_repository = PortfolioValuationRepository()
 
 
 def _subject_id(principal: object) -> str:
@@ -114,6 +120,10 @@ class HoldingRequest(BaseModel):
 
 class HoldingBulkRequest(BaseModel):
     items: list[HoldingRequest]
+
+
+class PortfolioValuationRefreshRequest(BaseModel):
+    force: bool = False
 
 
 class HoldingTextRequest(BaseModel):
@@ -643,6 +653,72 @@ def get_portfolio_twin_presets():
     }
 
 
+@router.get("/api/portfolio/valuations/latest")
+def get_latest_portfolio_valuation(
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    return portfolio_valuation.latest_portfolio_valuation(
+        tenant_id=_tenant_id(principal),
+        user_id=_subject_id(principal),
+        repository=portfolio_valuation_repository,
+    )
+
+
+@router.post("/api/portfolio/valuations/refresh")
+def refresh_portfolio_valuation(
+    req: PortfolioValuationRefreshRequest,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    return _call_portfolio_data(
+        "portfolio.valuation_snapshot",
+        {
+            "tenant_id": _tenant_id(principal),
+            "actor_id": _actor_id(principal),
+            "force": req.force,
+        },
+        principal=principal,
+        error_prefix="可信组合估值刷新失败",
+    )
+
+
+@router.get("/api/portfolio/valuations")
+def get_portfolio_valuations(
+    limit: int = Query(default=20, ge=1, le=100),
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    items = portfolio_valuation_repository.list_snapshots(
+        tenant_id=_tenant_id(principal),
+        user_id=_subject_id(principal),
+        limit=limit,
+    )
+    return {"items": items, "count": len(items)}
+
+
+@router.get("/api/portfolio/valuations/{snapshot_id}")
+def get_portfolio_valuation(
+    snapshot_id: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    tenant_id = _tenant_id(principal)
+    user_id = _subject_id(principal)
+    item = portfolio_valuation_repository.get_snapshot(
+        snapshot_id,
+        tenant_id=tenant_id,
+        user_id=user_id,
+    )
+    if item is None:
+        raise HTTPException(status_code=404, detail="组合估值快照不存在")
+    try:
+        item["integrity"] = portfolio_valuation_repository.verify_snapshot(
+            snapshot_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+        )
+    except PortfolioValuationNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return item
+
+
 @router.post("/api/portfolio/decision-twin/runs")
 def create_portfolio_twin_run(
     req: PortfolioTwinRunRequest,
@@ -650,13 +726,29 @@ def create_portfolio_twin_run(
 ):
     user_id = _subject_id(principal)
     profile = storage.get_investment_profile(user_id=user_id)
+    holdings, valuation = portfolio_valuation.current_valued_holdings(
+        user_id=user_id,
+        tenant_id=_tenant_id(principal),
+        repository=portfolio_valuation_repository,
+    )
+    if holdings and not (valuation.get("runtime_gate") or {}).get(
+        "risk_analysis_eligible"
+    ):
+        reasons = (valuation.get("runtime_gate") or {}).get("reasons") or [
+            "估值快照缺失、过期或未绑定当前持仓"
+        ]
+        raise HTTPException(
+            status_code=409,
+            detail="组合数字孪生需要先刷新可信估值:" + "；".join(
+                str(item) for item in reasons
+            ),
+        )
     exposure = _call_portfolio_data(
         "portfolio.exposure_snapshot",
         {"profile_version_id": profile.get("profile_version_id")},
         principal=principal,
         error_prefix="组合数字孪生的真实暴露快照生成失败",
     )
-    holdings = storage.list_holdings(user_id=user_id)
     try:
         result = portfolio_decision_twin.build_decision_twin(
             holdings=holdings,

@@ -34,10 +34,10 @@ export default function DecisionWorkflow({ workflow, onNavigate }) {
         <div>
           <span className="eyebrow">投资决策闭环</span>
           <h3>{workflow?.decision_ready ? '决策前证据已经完整' : '先补齐决策前证据门槛'}</h3>
-          <p>前四项决定能否形成个人研判；纸面验证和执行复盘用于证明结果，不再反向阻塞研究。</p>
+          <p>前五项决定能否形成个人研判；可信估值会阻止旧金额进入风险结论，纸面验证和执行复盘用于证明结果。</p>
         </div>
         <div className="decision-workflow-progress" aria-label={`已完成 ${progress}%`}>
-          <b>{workflow?.completed_count ?? 0}/{workflow?.total_count ?? 4}</b>
+          <b>{workflow?.completed_count ?? 0}/{workflow?.total_count ?? 5}</b>
           <span>决策门槛</span>
           <div><i style={{ width: `${Math.max(0, Math.min(100, progress))}%` }} /></div>
         </div>

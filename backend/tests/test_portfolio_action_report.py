@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -159,6 +160,43 @@ class PortfolioActionReportTests(unittest.TestCase):
         self.assertEqual(result["holdings"], [])
         self.assertEqual(result["strategy"]["steps"][0]["id"], "confirm-holdings")
 
+    def test_runtime_report_blocks_position_actions_without_current_valuation(self):
+        items = [holding("000001", 1000)]
+        valuation = {
+            "status": "available",
+            "snapshot": {"id": "valuation-old"},
+            "binding": {"current": False},
+            "runtime_gate": {
+                "risk_analysis_eligible": False,
+                "reasons": ["持仓已变化"],
+            },
+        }
+        with patch.object(
+            portfolio_action_report.portfolio_valuation,
+            "current_valued_holdings",
+            return_value=(items, valuation),
+        ):
+            result = portfolio_action_report.build_action_report(
+                profile_provider=lambda: profile(),
+                insights_provider=lambda _max_funds: {
+                    "summary": {}, "allocation": [], "fund_trends": [], "fund_errors": [],
+                },
+                ledger_provider=lambda: {"summary": {}, "positions": []},
+                performance_provider=lambda: {"status": "unavailable", "summary": {}, "reasons": []},
+                rebalance_provider=lambda: {"allocations": []},
+                theses_provider=lambda: [],
+            )
+
+        self.assertTrue(result["valuation_required"])
+        self.assertFalse(result["readiness"]["valuation_eligible"])
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["holdings"][0]["decision"]["action"], "data_required")
+        self.assertIn(
+            "portfolio_valuation_not_current",
+            result["holdings"][0]["decision"]["blockers"],
+        )
+        self.assertIn("组合估值", str(result["readiness"]["source_errors"]))
+
 
 class PortfolioActionReportStorageTests(unittest.TestCase):
     def setUp(self):
@@ -198,6 +236,38 @@ class PortfolioActionReportStorageTests(unittest.TestCase):
         loaded = portfolio_action_report.load_action_report(saved["id"])
         self.assertFalse(loaded["binding"]["current"])
         self.assertIn("holdings_changed", loaded["binding"]["reasons"])
+
+    def test_report_binding_tracks_the_exact_valuation_snapshot(self):
+        item = holding("000001", 1000)
+        storage.upsert_holding(item)
+        stored_holdings = storage.list_holdings()
+        payload = {
+            "schema_version": portfolio_action_report.SCHEMA_VERSION,
+            "ruleset_version": portfolio_action_report.RULESET_VERSION,
+            "holdings_sha256": portfolio_action_report.action_holdings_sha256(stored_holdings),
+            "valuation_required": True,
+            "valuation_snapshot_id": "valuation-before",
+            "theses_sha256": holding_thesis.theses_sha256([]),
+            "profile_version_id": None,
+            "status": "reviewable",
+            "holdings": [],
+        }
+        saved = storage.save_portfolio_action_report(payload)
+        current_valuation = {
+            "status": "available",
+            "snapshot": {"id": "valuation-after"},
+            "binding": {"current": True},
+            "runtime_gate": {"risk_analysis_eligible": True},
+        }
+        with patch.object(
+            portfolio_action_report.portfolio_valuation,
+            "current_valued_holdings",
+            return_value=(stored_holdings, current_valuation),
+        ):
+            loaded = portfolio_action_report.load_action_report(saved["id"])
+
+        self.assertFalse(loaded["binding"]["current"])
+        self.assertIn("portfolio_valuation_changed", loaded["binding"]["reasons"])
 
 
 if __name__ == "__main__":

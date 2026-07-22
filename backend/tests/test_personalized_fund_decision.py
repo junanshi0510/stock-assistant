@@ -163,6 +163,24 @@ class PersonalizedFundDecisionTests(unittest.TestCase):
         self.assertIsNone(result["portfolio"]["max_single_ratio"])
         self.assertIn("investment_profile", result["missing_requirements"])
 
+    def test_current_portfolio_valuation_is_required_before_personalized_amount(self):
+        context = _context()
+        context["portfolio"].update({
+            "valuation_snapshot_id": "valuation-old",
+            "valuation_current": False,
+            "valuation_risk_eligible": False,
+        })
+        result = evaluate_personalized_fund_decision(
+            _analysis(), context, _market(), _exposure(), _governance(), planned_amount=2000
+        )
+
+        self.assertEqual(result["status"], "abstained")
+        self.assertEqual(result["decision"]["action"], "setup_required")
+        self.assertIsNone(result["budget"]["allowed_full_amount"])
+        self.assertIn("portfolio_valuation", result["missing_requirements"])
+        valuation_gate = next(item for item in result["gates"] if item["code"] == "portfolio_valuation")
+        self.assertEqual(valuation_gate["status"], "block")
+
     def test_unconfigured_storage_defaults_are_not_treated_as_user_choices(self):
         holdings = []
         profile = {
@@ -334,7 +352,7 @@ class PersonalizedFundDecisionTests(unittest.TestCase):
         self.assertIsNone(result["budget"]["allowed_full_amount"])
         self.assertIn("fund_market_identification", result["missing_requirements"])
 
-    def test_portfolio_context_only_reads_confirmed_storage_fields(self):
+    def test_portfolio_context_only_reads_confirmed_storage_fields_and_exposes_valuation_gap(self):
         holdings = [{
             "asset_type": "fund",
             "market": "基金",
@@ -363,7 +381,7 @@ class PersonalizedFundDecisionTests(unittest.TestCase):
         self.assertEqual(result["status"], "available")
         self.assertEqual(result["data_classification"], "private_financial")
         self.assertEqual(result["target_holding"]["ratio"], 100)
-        self.assertEqual(result["data_gaps"], [])
+        self.assertEqual(result["data_gaps"], ["portfolio_valuation_not_current"])
 
 
 if __name__ == "__main__":

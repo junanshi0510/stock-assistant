@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { FileSpreadsheet, ImageUp, X } from 'lucide-react'
 import PortfolioActionCenter from '../features/portfolio/PortfolioActionCenter'
+import PortfolioValuationPanel from '../features/portfolio/PortfolioValuationPanel'
 import {
   createPortfolioActionReport,
   deleteHolding,
@@ -14,6 +15,8 @@ import {
   saveHoldingThesis,
   uploadHoldingScreenshot,
   fetchHoldingOcrJob,
+  fetchLatestPortfolioValuation,
+  refreshPortfolioValuation,
 } from '../api/portfolio'
 
 const blankCandidate = {
@@ -56,6 +59,9 @@ export default function HoldingsTab() {
   const [importOpen, setImportOpen] = useState(false)
   const [ocrLoading, setOcrLoading] = useState(false)
   const [fileLoading, setFileLoading] = useState(false)
+  const [valuation, setValuation] = useState(null)
+  const [valuationLoading, setValuationLoading] = useState(false)
+  const [valuationError, setValuationError] = useState('')
   const [text, setText] = useState('')
   const [parsed, setParsed] = useState([])
   const [warnings, setWarnings] = useState([])
@@ -108,11 +114,34 @@ export default function HoldingsTab() {
     }
   }
 
+  async function loadValuation() {
+    try {
+      setValuation(await fetchLatestPortfolioValuation())
+      setValuationError('')
+    } catch (e) {
+      setValuationError(e.message || '组合估值读取失败')
+    }
+  }
+
+  async function refreshValuation() {
+    setValuationLoading(true)
+    setValuationError('')
+    try {
+      await refreshPortfolioValuation(true)
+      setValuation(await fetchLatestPortfolioValuation())
+    } catch (e) {
+      setValuationError(e.message || '真实组合估值刷新失败')
+    } finally {
+      setValuationLoading(false)
+    }
+  }
+
   useEffect(() => {
     loadHoldings()
     loadLatestActionReport()
     loadLevelRecurrence()
     loadTheses()
+    loadValuation()
   }, [])
 
   function updateParsed(index, key, value) {
@@ -209,7 +238,7 @@ export default function HoldingsTab() {
       const result = await saveHoldings(rows)
       setData({ items: result.items, summary: result.summary })
       resetMaintenance()
-      await Promise.all([loadLatestActionReport(), loadLevelRecurrence(), loadTheses()])
+      await Promise.all([loadLatestActionReport(), loadLevelRecurrence(), loadTheses(), loadValuation()])
     } catch (e) {
       setError(e.message)
     }
@@ -219,7 +248,7 @@ export default function HoldingsTab() {
     setError('')
     try {
       await deleteHolding(id)
-      await Promise.all([loadHoldings(), loadLatestActionReport(), loadLevelRecurrence(), loadTheses()])
+      await Promise.all([loadHoldings(), loadLatestActionReport(), loadLevelRecurrence(), loadTheses(), loadValuation()])
     } catch (e) {
       setError(e.message)
       throw e
@@ -255,6 +284,13 @@ export default function HoldingsTab() {
 
   return (
     <>
+      <PortfolioValuationPanel
+        data={valuation}
+        loading={valuationLoading}
+        error={valuationError}
+        onRefresh={refreshValuation}
+      />
+
       <PortfolioActionCenter
         report={actionReport}
         items={items}

@@ -12,6 +12,8 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
+from fastapi import HTTPException
+
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
@@ -287,9 +289,14 @@ class PortfolioDecisionTwinApiTests(unittest.TestCase):
                 return_value=exposure,
             ) as exposure_mock,
             patch.object(
-                portfolio_router.storage,
-                "list_holdings",
-                return_value=holdings,
+                portfolio_router.portfolio_valuation,
+                "current_valued_holdings",
+                return_value=(holdings, {
+                    "status": "available",
+                    "snapshot": {"id": "valuation-route"},
+                    "binding": {"current": True},
+                    "runtime_gate": {"risk_analysis_eligible": True},
+                }),
             ) as holdings_mock,
             patch.object(
                 portfolio_router.portfolio_twin_repository,
@@ -304,7 +311,11 @@ class PortfolioDecisionTwinApiTests(unittest.TestCase):
 
         self.assertEqual(result, persisted)
         profile_mock.assert_called_once_with(user_id="portfolio-owner-a")
-        holdings_mock.assert_called_once_with(user_id="portfolio-owner-a")
+        holdings_mock.assert_called_once_with(
+            user_id="portfolio-owner-a",
+            tenant_id="public",
+            repository=portfolio_router.portfolio_valuation_repository,
+        )
         exposure_mock.assert_called_once_with(
             "portfolio.exposure_snapshot",
             {"profile_version_id": "ips-route"},
@@ -319,6 +330,44 @@ class PortfolioDecisionTwinApiTests(unittest.TestCase):
         self.assertEqual(frozen["exposure"], exposure)
         self.assertEqual(frozen["profile"], policy)
         self.assertEqual(frozen["result"]["method_version"], twin.METHOD_VERSION)
+
+    def test_create_route_rejects_stale_valuation_before_fetching_exposure(self):
+        request = portfolio_router.PortfolioTwinRunRequest(
+            name="过期估值门禁",
+            market_shocks=[{"market": "mainland", "shock_pct": -10}],
+            loss_budget_pct=15,
+        )
+        valuation = {
+            "status": "available",
+            "snapshot": {"id": "valuation-old"},
+            "binding": {"current": False},
+            "runtime_gate": {
+                "risk_analysis_eligible": False,
+                "reasons": ["持仓已变化"],
+            },
+        }
+        with (
+            patch.object(
+                portfolio_router.storage,
+                "get_investment_profile",
+                return_value=profile(),
+            ),
+            patch.object(
+                portfolio_router.portfolio_valuation,
+                "current_valued_holdings",
+                return_value=([{"id": 1, "amount": 1000}], valuation),
+            ),
+            patch.object(portfolio_router, "_call_portfolio_data") as exposure_mock,
+            self.assertRaises(HTTPException) as caught,
+        ):
+            portfolio_router.create_portfolio_twin_run(
+                request,
+                principal=self.principal(),
+            )
+
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertIn("持仓已变化", str(caught.exception.detail))
+        exposure_mock.assert_not_called()
 
 
 class PortfolioDecisionTwinMigrationTests(unittest.TestCase):

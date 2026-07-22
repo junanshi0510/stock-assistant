@@ -7688,6 +7688,88 @@ button.research-source-card:hover { border-color: #9abbb7; background: #f3f9f8; 
   .opp-allocation-list strong { grid-column: 2; grid-row: 1; }
 }
 
+/* Trusted portfolio valuation */
+.portfolio-valuation {
+  margin-bottom: 18px;
+  overflow: hidden;
+  border: 1px solid #dce8e5;
+  background: linear-gradient(145deg, #fbfefd 0%, #f4faf8 100%);
+}
+.portfolio-valuation.ready { border-color: #b9dfd2; }
+.portfolio-valuation.review { border-color: #d6dfb5; }
+.portfolio-valuation.stale { border-color: #ecd8b8; }
+.portfolio-valuation-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 20px 22px 16px;
+}
+.portfolio-valuation-head h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 5px;
+}
+.portfolio-valuation-head p { max-width: 720px; margin: 0; color: #687d78; }
+.portfolio-valuation-head > button { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+.portfolio-valuation-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  margin: 0 22px 16px;
+  overflow: hidden;
+  border: 1px solid #dfeae7;
+  border-radius: 12px;
+  background: #dfeae7;
+}
+.portfolio-valuation-metrics > div { display: grid; gap: 4px; padding: 13px 15px; background: #fff; }
+.portfolio-valuation-metrics span { color: #71837f; font-size: 11px; font-weight: 750; }
+.portfolio-valuation-metrics b { color: #203b35; font-size: 18px; font-variant-numeric: tabular-nums; }
+.portfolio-valuation-metrics small { color: #8a9a96; font-size: 10.5px; }
+.portfolio-valuation-gate {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+  margin: 0 22px 12px;
+  padding: 12px 14px;
+  border-radius: 11px;
+  background: #fff8ec;
+  color: #7c5d28;
+}
+.portfolio-valuation-gate.passed { background: #eaf8f2; color: #286554; }
+.portfolio-valuation-gate > div { display: grid; gap: 2px; }
+.portfolio-valuation-gate span, .portfolio-valuation-gate small { font-size: 11px; }
+.portfolio-valuation-gate small { color: inherit; opacity: .76; text-align: right; }
+.portfolio-valuation-reasons { display: flex; flex-wrap: wrap; gap: 7px; margin: 0 22px 13px; }
+.portfolio-valuation-reasons span { padding: 5px 8px; border-radius: 999px; background: #fff; color: #6f7e7a; font-size: 10.5px; }
+.portfolio-valuation-table-wrap { margin: 0 22px; border: 1px solid #e2ebe8; border-radius: 11px; }
+.portfolio-valuation-table td { vertical-align: top; font-variant-numeric: tabular-nums; }
+.portfolio-valuation-table td:first-child, .portfolio-valuation-table td:nth-child(2), .portfolio-valuation-table td:last-child { min-width: 140px; }
+.portfolio-valuation-table td b, .portfolio-valuation-table td small { display: block; }
+.portfolio-valuation-table td small { max-width: 230px; margin-top: 3px; overflow: hidden; color: #879792; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.portfolio-valuation-table tr.stale td { background: #fffaf3; }
+.valuation-method { display: inline-flex; padding: 4px 7px; border-radius: 999px; background: #edf5f2; color: #396d5f; font-size: 10.5px; font-weight: 800; }
+.valuation-method.manual_confirmed_amount { background: #f5f1e8; color: #806b3e; }
+.valuation-method.unavailable { background: #f9ece9; color: #9b5145; }
+.portfolio-valuation-footnote, .portfolio-valuation-empty { margin: 14px 22px 18px; color: #7d8f8a; font-size: 11px; line-height: 1.6; }
+.portfolio-valuation-empty { padding: 14px; border: 1px dashed #ccdcd7; border-radius: 10px; background: rgba(255,255,255,.72); }
+
+@media (max-width: 900px) {
+  .portfolio-valuation-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .portfolio-valuation-gate { grid-template-columns: auto minmax(0, 1fr); }
+  .portfolio-valuation-gate > small { grid-column: 2; text-align: left; }
+}
+
+@media (max-width: 620px) {
+  .portfolio-valuation-head { flex-direction: column; padding: 16px; }
+  .portfolio-valuation-head > button { width: 100%; justify-content: center; }
+  .portfolio-valuation-metrics, .portfolio-valuation-gate, .portfolio-valuation-reasons, .portfolio-valuation-table-wrap { margin-right: 16px; margin-left: 16px; }
+  .portfolio-valuation-metrics { grid-template-columns: minmax(0, 1fr); }
+  .portfolio-valuation-footnote, .portfolio-valuation-empty { margin-right: 16px; margin-left: 16px; }
+}
+
 /* Portfolio Decision Twin */
 .twin-workspace { display: flex; flex-direction: column; gap: 14px; }
 .twin-product-banner { display: grid; grid-template-columns: auto minmax(0, 1fr) minmax(260px, .48fr); align-items: center; gap: 16px; padding: 20px 22px; border: 1px solid #cfe2df; border-radius: 9px; background: linear-gradient(120deg, #f6fbfa 0%, #fff 56%, #f8faf9 100%); }

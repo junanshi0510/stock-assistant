@@ -137,6 +137,26 @@ def evaluate_personalized_fund_decision(
     })
     if not holdings_ready:
         missing.append("confirmed_holding_amounts")
+    valuation_declared = "valuation_risk_eligible" in portfolio
+    valuation_required = bool(int(_number(portfolio.get("holding_count")) or 0))
+    valuation_ready = bool(portfolio.get("valuation_risk_eligible"))
+    if valuation_declared:
+        gates.append({
+            "code": "portfolio_valuation",
+            "status": (
+                "pass" if not valuation_required or valuation_ready else "block"
+            ),
+            "label": "可信组合估值",
+            "detail": (
+                "当前持仓已绑定未过期估值快照"
+                if valuation_ready else
+                "当前没有持仓，不需要组合估值"
+                if not valuation_required else
+                "估值缺失、过期或未绑定当前持仓，不能生成个性化金额"
+            ),
+        })
+        if valuation_required and not valuation_ready:
+            missing.append("portfolio_valuation")
 
     market_resolution = str(market_profile.get("resolution_status") or "insufficient")
     market_primary = str(market.get("primary") or "unknown_cross_border")
@@ -467,7 +487,7 @@ def evaluate_personalized_fund_decision(
     elif setup_missing:
         action = "setup_required"
         label = "先补齐个人决策资料"
-        rationale = "缺少真实投资约束或完整持仓金额，系统拒绝生成个性化金额。"
+        rationale = "缺少真实投资约束、完整持仓金额或当前可信估值，系统拒绝生成个性化金额。"
     elif "portfolio_exposure_snapshot" in missing:
         action = "exposure_data_required"
         label = "等待组合穿透证据"
@@ -706,6 +726,7 @@ def evaluate_personalized_fund_decision(
             "cross_market": "market_permission_and_fx_acknowledgement_are_required_before_amount",
             "drawdown_capacity": "historical_fund_max_drawdown_must_not_exceed_user_confirmed_ips_limit",
             "portfolio_exposure": "new_money_is_allowed_only_when_an_immutable_fresh_snapshot_proves_equity_and_industry_limits",
+            "portfolio_valuation": "current_holdings_require_an_integrity_verified_unexpired_cny_valuation_snapshot",
             "strategy_release": "unregistered_shadow_paused_retired_or_unverified_strategy_versions_cannot_influence_money",
             "batch_allocation": "batch_children_only_emit_eligibility_and_capacity_then_one_portfolio_allocator_assigns_the_shared_budget",
         },
