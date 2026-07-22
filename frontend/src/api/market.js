@@ -76,6 +76,14 @@ export function fetchMarketProviders() {
   return getJson('/api/market/providers')
 }
 
+export function probeMarketProvider(market) {
+  return getJson('/api/market/providers/probe', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ market }),
+  })
+}
+
 export function fetchSectors(market = 'A股', sectorLimit = 12, stockLimit = 8, includeConcepts = true) {
   const query = new URLSearchParams({
     market,

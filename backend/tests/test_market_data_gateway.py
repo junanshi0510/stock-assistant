@@ -22,6 +22,21 @@ class MarketDataGatewayTests(unittest.TestCase):
         provider.assert_called_once_with()
         self.assertIn("market.providers", market_data_operations.allowed_operations())
 
+    def test_provider_probe_is_an_allowlisted_diagnostic_operation(self):
+        expected = {"market": "美股", "available": True, "provider": "massive_eod_us"}
+        with patch.object(
+            market_data_operations.hot_stocks,
+            "probe_provider",
+            return_value=expected,
+        ) as provider:
+            result = market_data_operations.execute_operation(
+                "market.providers_probe", {"market": "美股"}
+            )
+
+        self.assertEqual(result, expected)
+        provider.assert_called_once_with("美股")
+        self.assertIn("market.providers_probe", market_data_operations.allowed_operations())
+
     def test_embedded_mode_executes_allowlisted_operation(self):
         expected = {"code": "013403", "estimate": 1.2345}
         with (

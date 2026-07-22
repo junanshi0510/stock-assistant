@@ -152,7 +152,7 @@ def _fetch_a_tx_one(symbol: str, months: int) -> dict:
 
 
 def _fetch_a_fast(symbols: list[str], months: int) -> list[dict]:
-    """A股多股快路:腾讯并行;个别失败再用通用稳定路径(BaoStock/东财/新浪)兜底。"""
+    """A股多股快路：腾讯并行；个别失败再用专业源/BaoStock/东财兜底。"""
     with ThreadPoolExecutor(max_workers=min(8, len(symbols))) as pool:
         rows = list(pool.map(lambda s: _fetch_a_tx_one(s, months), symbols))
 

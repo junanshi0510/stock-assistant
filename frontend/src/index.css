@@ -666,6 +666,49 @@ tbody tr:hover { background: rgba(255,255,255,0.03); }
 .provider-status-card small { color: var(--muted); font-size: 9px; }
 .provider-status-card code { overflow: hidden; color: #d8a13b; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .provider-status-card p { overflow: hidden; margin: 1px 0 0; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.provider-status-card > .provider-route-list {
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 5px;
+  overflow-x: auto;
+  padding: 2px 0;
+}
+.provider-status-card > .provider-route-list .provider-route {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 1px;
+  min-width: 96px;
+  padding: 5px 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 9px;
+  font-weight: 750;
+}
+.provider-route i { color: var(--muted); font-size: 8px; font-style: normal; font-weight: 650; }
+.provider-route.state-ready { border-color: color-mix(in srgb, #269978 55%, var(--border)); background: color-mix(in srgb, #269978 8%, transparent); }
+.provider-route.state-configured_unverified { border-color: color-mix(in srgb, #4a8dc8 55%, var(--border)); }
+.provider-probe-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 29px;
+  margin-top: 2px;
+  padding: 5px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--panel) 92%, #17676a 8%);
+  color: var(--text);
+  font-size: 9px;
+  font-weight: 750;
+}
+.provider-probe-button:disabled { cursor: not-allowed; opacity: 0.55; }
+.provider-probe-button .spin { animation: spin 0.9s linear infinite; }
+.provider-status-card > .provider-probe-result { white-space: normal; }
+.provider-probe-result.ok { color: #269978; }
+.provider-probe-result.failed { color: #d8a13b; }
 .provider-status-card.state-ready > div span,
 .provider-status-card.state-configured_unverified > div span { color: #269978; }
 .provider-status-card.state-configuration_required > div span,

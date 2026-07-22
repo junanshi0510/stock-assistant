@@ -3,6 +3,7 @@
 
 import json
 import sys
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -50,6 +51,9 @@ class HotStocksTests(unittest.TestCase):
         hot_stocks._cache.clear()
         hot_stocks._name_cache.clear()
         hot_stocks._provider_runtime.clear()
+        hot_stocks._provider_bundle_cache.clear()
+        hot_stocks._massive_day_cache.clear()
+        hot_stocks._probe_cache.clear()
 
     def test_unconfigured_professional_source_uses_explicit_degraded_fallback(self):
         item = {
@@ -68,7 +72,7 @@ class HotStocksTests(unittest.TestCase):
         self.assertIn("TUSHARE_TOKEN", result["warning"])
         self.assertEqual(
             [attempt["status"] for attempt in result["provider_attempts"]],
-            ["not_configured", "success"],
+            ["not_configured", "not_configured", "success"],
         )
 
     def test_tushare_bundle_sorts_all_three_lists_from_one_daily_snapshot(self):
@@ -141,7 +145,7 @@ class HotStocksTests(unittest.TestCase):
         self.assertNotIn("very-secret-token", serialized)
         self.assertIn("TUSHARE_TOKEN", str(caught.exception))
         self.assertIn("不会回退新浪", str(caught.exception))
-        self.assertEqual(len(caught.exception.attempts), 2)
+        self.assertEqual(len(caught.exception.attempts), 3)
 
     def test_circuit_breaker_stops_repeated_calls_after_threshold(self):
         with patch.object(hot_stocks.config, "TUSHARE_TOKEN", "configured"), \
@@ -156,7 +160,126 @@ class HotStocksTests(unittest.TestCase):
                 hot_stocks.get_hot_stock_bundle("A股", ["gainers"], 10)
 
         self.assertEqual(provider.call_count, 2)
-        self.assertEqual(caught.exception.attempts[0]["status"], "circuit_open")
+        tushare_attempt = next(
+            item for item in caught.exception.attempts if item["provider"] == "tushare_pro_a"
+        )
+        self.assertEqual(tushare_attempt["status"], "circuit_open")
+
+    def test_massive_builds_full_market_us_rankings_from_two_grouped_days(self):
+        current = [
+            {"T": "AAA", "c": 12, "v": 20000, "vw": 11.5, "n": 100},
+            {"T": "BBB", "c": 8, "v": 90000, "vw": 8.2, "n": 300},
+            {"T": "PENNY", "c": 0.5, "v": 500000, "vw": 0.5, "n": 400},
+        ]
+        previous = [
+            {"T": "AAA", "c": 10, "v": 10000},
+            {"T": "BBB", "c": 10, "v": 10000},
+            {"T": "PENNY", "c": 0.4, "v": 10000},
+        ]
+        with patch.object(hot_stocks.config, "FUTU_OPEND_HOST", ""), \
+             patch.object(hot_stocks.config, "MASSIVE_API_KEY", "massive-key"), \
+             patch.object(hot_stocks.config, "POLYGON_API_KEY", ""), \
+             patch.object(hot_stocks.config, "HOT_STOCK_US_MIN_PRICE", 1.0), \
+             patch.object(hot_stocks.config, "HOT_STOCK_US_MIN_VOLUME", 10000), \
+             patch.object(hot_stocks, "_massive_candidate_dates", return_value=["2026-07-21", "2026-07-20"]), \
+             patch.object(hot_stocks, "_massive_grouped_day", side_effect=[current, previous]) as grouped:
+            result = hot_stocks.get_hot_stock_bundle(
+                "美股", ["gainers", "losers", "active"], 10
+            )
+
+        self.assertEqual(grouped.call_count, 2)
+        self.assertEqual(result["provider"], "massive_eod_us")
+        self.assertEqual(result["as_of"], "2026-07-21")
+        self.assertEqual(result["rankings"]["gainers"][0]["symbol"], "AAA")
+        self.assertEqual(result["rankings"]["losers"][0]["symbol"], "BBB")
+        self.assertEqual(result["rankings"]["active"][0]["symbol"], "BBB")
+        self.assertEqual(result["data_quality"]["eligible_rows"], 2)
+        self.assertEqual(result["data_quality"]["excluded_rows"], 1)
+
+    def test_massive_candidate_date_uses_current_session_only_after_eod_cutoff(self):
+        eastern = hot_stocks.ZoneInfo("America/New_York")
+        before_cutoff = hot_stocks.dt.datetime(2026, 7, 21, 17, 59, tzinfo=eastern)
+        after_cutoff = hot_stocks.dt.datetime(2026, 7, 21, 18, 0, tzinfo=eastern)
+
+        self.assertEqual(hot_stocks._massive_candidate_dates(before_cutoff)[0], "2026-07-20")
+        self.assertEqual(hot_stocks._massive_candidate_dates(after_cutoff)[0], "2026-07-21")
+
+    def test_unconfigured_massive_multiday_makes_no_network_request(self):
+        with patch.object(hot_stocks.config, "MASSIVE_API_KEY", ""), \
+             patch.object(hot_stocks.config, "POLYGON_API_KEY", ""), \
+             patch.object(hot_stocks, "_massive_grouped_day") as grouped:
+            with self.assertRaises(hot_stocks.ProviderNotConfigured):
+                hot_stocks._massive_multiday_bundle(7, "gainers", 10)
+
+        grouped.assert_not_called()
+
+    def test_futu_snapshot_is_normalized_and_ranked_without_leaking_opend_details(self):
+        class QuoteContext:
+            def __init__(self, **_kwargs):
+                self.closed = False
+
+            def get_stock_basicinfo(self, _market, _security_type):
+                return 0, FakeFrame([
+                    {"code": "SH.600519", "name": "贵州茅台"},
+                    {"code": "SH.600000", "name": "浦发银行"},
+                ])
+
+            def get_market_snapshot(self, _codes):
+                return 0, FakeFrame([
+                    {"code": "SH.600519", "name": "贵州茅台", "last_price": 1500,
+                     "prev_close_price": 1450, "volume": 20, "turnover": 30000,
+                     "update_time": "2026-07-22 10:30:00", "suspension": False},
+                    {"code": "SH.600000", "name": "浦发银行", "last_price": 10,
+                     "prev_close_price": 11, "volume": 1000, "turnover": 10000,
+                     "update_time": "2026-07-22 10:30:01", "suspension": False},
+                ])
+
+            def close(self):
+                self.closed = True
+
+        fake_futu = types.SimpleNamespace(
+            OpenQuoteContext=QuoteContext,
+            Market=types.SimpleNamespace(SH="SH", SZ="SZ", HK="HK", US="US"),
+            SecurityType=types.SimpleNamespace(STOCK="STOCK"),
+            RET_OK=0,
+        )
+        with patch.dict(sys.modules, {"futu": fake_futu}), \
+             patch.object(hot_stocks.importlib.util, "find_spec", return_value=object()), \
+             patch.object(hot_stocks.config, "FUTU_OPEND_HOST", "127.0.0.1"), \
+             patch.object(hot_stocks.config, "FUTU_OPEND_MARKETS", "A"), \
+             patch.object(hot_stocks.config, "FUTU_OPEND_PORT", 11111), \
+             patch.object(hot_stocks.config, "FUTU_SNAPSHOT_BATCH_SIZE", 400):
+            result = hot_stocks.get_hot_stock_bundle("A股", ["gainers", "losers"], 10)
+
+        self.assertEqual(result["provider"], "futu_opend_a")
+        self.assertEqual(result["rankings"]["gainers"][0]["symbol"], "600519")
+        self.assertEqual(result["rankings"]["losers"][0]["symbol"], "600000")
+        self.assertEqual(result["data_freshness"], "realtime")
+
+    def test_massive_multiday_path_is_full_market_and_never_calls_yahoo(self):
+        bundle = {
+            "source": "Massive（原 Polygon.io）",
+            "provider": "massive_eod_us",
+            "provider_tier": "professional",
+            "data_freshness": "latest_completed_eod",
+            "as_of": "2026-07-21",
+            "scope": "全美股·7 个真实交易日·流动性过滤",
+            "methodology": "真实交易日全市场计算",
+            "data_quality": {"status": "pass", "eligible_rows": 5000},
+            "rankings": {"gainers": [{"symbol": "AAA", "change_pct": 20.0}]},
+            "retrieved_at": "2026-07-22T10:00:00+08:00",
+        }
+        with patch.object(hot_stocks.config, "MASSIVE_API_KEY", "massive-key"), \
+             patch.object(hot_stocks.config, "POLYGON_API_KEY", ""), \
+             patch.object(hot_stocks, "_massive_multiday_bundle", return_value=bundle) as massive, \
+             patch.object(hot_stocks, "_yahoo_us_period_returns") as yahoo:
+            result = hot_stocks.get_hot_stocks("美股", "7d", "gainers", 10)
+
+        massive.assert_called_once_with(7, "gainers", 10)
+        yahoo.assert_not_called()
+        self.assertTrue(result["full_market_multiday"])
+        self.assertEqual(result["scope"], bundle["scope"])
+        self.assertEqual(result["items"][0]["symbol"], "AAA")
 
     def test_provider_status_never_exposes_keys(self):
         with patch.object(hot_stocks.config, "TUSHARE_TOKEN", "tushare-secret"), \

@@ -97,12 +97,23 @@ POSTGRES_ADMIN_URL=postgresql://stockassistant_backup:URL编码密码@127.0.0.1:
 REDIS_URL=redis://:URL编码密码@127.0.0.1:6379/0
 TASK_QUEUE_MODE=celery
 
-# 生产热门榜：A/港股使用 Tushare Pro，美股使用 Alpha Vantage。
-# Key 只写入本文件；不要写入 Git、前端或 systemd unit。
+# 生产热门榜支持多专业源接力。Key 只写入本文件；不要写入 Git、前端或 systemd unit。
 TUSHARE_TOKEN=服务端Token
+MASSIVE_API_KEY=服务端Key
+MASSIVE_API_BASE_URL=https://api.massive.com
+# 旧 Polygon Key 仍兼容；新部署优先使用 MASSIVE_API_KEY。
+POLYGON_API_KEY=
 ALPHAVANTAGE_API_KEY=服务端Key
 # 留空为日终；只有订阅明确授权时才设置 delayed 或 realtime。
 ALPHAVANTAGE_MARKET_DATA_ENTITLEMENT=
+
+# 可选富途实时源：只有同机或内网 OpenD 已安全运行并登录后才填写 HOST。
+FUTU_OPEND_HOST=
+FUTU_OPEND_PORT=11111
+FUTU_OPEND_MARKETS=A,H,US
+FUTU_SNAPSHOT_BATCH_SIZE=400
+HOT_STOCK_US_MIN_PRICE=1
+HOT_STOCK_US_MIN_VOLUME=10000
 HOT_STOCK_PUBLIC_FALLBACK_ENABLED=true
 HOT_STOCK_PROVIDER_FAILURE_THRESHOLD=2
 HOT_STOCK_PROVIDER_CIRCUIT_SECONDS=300
@@ -129,7 +140,7 @@ DEEPSEEK_API_KEY=服务端Key
 
 纯 IP HTTP 阶段使用 `AUTH_COOKIE_SECURE=false`。配置域名和 HTTPS 后改为 `true` 并重启 API。任何 Key 都不能写入 Git、前端变量或命令输出。
 
-`TUSHARE_TOKEN` 必须实际拥有所用 A 股日线权限；港股日线/基础资料可能需要单独开通。Alpha Vantage 留空 entitlement 时按日终榜使用，不能把免费或日终权限标记为实时。公开降级默认开启只用于迁移期；它没有 SLA，云服务器 IP 被拒绝时系统会明确失败。专业源验收稳定后可设 `HOT_STOCK_PUBLIC_FALLBACK_ENABLED=false`，以严格阻止公开网页依赖。修改这些变量后至少重启 `stock-assistant-market-worker`，否则 Worker 子进程仍持有旧配置。
+`TUSHARE_TOKEN` 必须实际拥有所用 A 股日线权限；港股日线/基础资料可能需要单独开通。Massive 免费档提供最近完整日终全市场聚合，不能标记为盘中实时；默认价格/成交量门槛用于避免极低流动性标的污染榜首。Alpha Vantage 留空 entitlement 时按日终榜使用，不能把免费或日终权限标记为实时。富途路线只有在 FutuOpenD 常驻、登录有效、行情权限与 `FUTU_OPEND_MARKETS` 一致时才算配置完成；OpenD 端口只允许本机或受控内网访问，不能直接暴露公网。公开降级默认开启只用于迁移期；专业源验收稳定后可设 `HOT_STOCK_PUBLIC_FALLBACK_ENABLED=false`。修改这些变量后至少重启 `stock-assistant-market-worker`。
 
 ## 5. 初始化 PostgreSQL 与 Redis
 
@@ -280,7 +291,7 @@ sudo -u postgres psql stock_assistant -Atqc \
 
 `/health/ready` 只有在数据库、Redis、OSS 和五个队列 Worker 全部可用时才返回 `200`。公网未登录访问业务 API 必须返回 `401`。
 
-登录后还应在“机会工厂”或“发现股票”检查专业行情源卡片。`GET /api/market/providers` 只返回配置状态，不会泄露 Key，也不会主动消耗供应商额度。随后分别执行 A 股、港股、美股三榜冒烟；必须确认 `provider_tier=professional`、`degraded=false`、`as_of`/`data_freshness` 符合订阅，不能只以 HTTP 200 作为验收成功。
+登录后还应在“机会工厂”或“发现股票”检查专业行情数据中台。`GET /api/market/providers` 只返回每市场全部候选路线的配置状态，不会泄露 Key，也不会主动消耗供应商额度。点击“真实连通性验证”会调用 `POST /api/market/providers/probe`，仅尝试专业源并在 30 秒内复用探测结果，不会偷偷回退公开网页。随后分别执行 A 股、港股、美股三榜冒烟；必须确认 `provider_tier=professional`、`degraded=false`、`as_of`/`data_freshness` 和 `data_quality` 符合订阅。美股 7/30 日榜还应确认 `full_market_multiday=true`，否则只是明确标记的活跃候选池降级计算。
 
 ## 11. 备份与恢复演练
 

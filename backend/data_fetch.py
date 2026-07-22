@@ -23,7 +23,7 @@ import io
 # 不在列表里,仍按系统代理走 —— 在国内访问海外源往往正需要代理。
 # (BaoStock 走自有 socket 协议,不读代理环境变量,不受影响。)
 os.environ["NO_PROXY"] = (
-    "eastmoney.com,sina.com.cn,sina.com,sinajs.cn,"
+    "eastmoney.com,"
     "tushare.pro,waditu.com,baostock.com,"
     "sse.com.cn,szse.cn,127.0.0.1,localhost"
 )
@@ -31,7 +31,6 @@ os.environ["no_proxy"] = os.environ["NO_PROXY"]
 # ──────────────────────────────────────────────────────────────────
 
 import functools
-import json
 import re
 import time
 import datetime
@@ -130,42 +129,49 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
 
 @functools.lru_cache(maxsize=1)
 def _us_spot_table() -> pd.DataFrame:
-    """美股代码映射表。优先用新浪真实美股列表,避免东财全市场表偶发卡死。"""
-    rows = []
-    url = "https://stock.finance.sina.com.cn/usstock/api/jsonp.php/var%20x=/US_CategoryService.getList"
-    for page in range(1, 4):  # 新浪每页最多约 20 条;搜索框保持轻量,避免冷启动卡住
-        resp = requests.get(url, params={
-            "page": page,
-            "num": 20,
-            "sort": "marketvalue",
-            "asc": 0,
-            "market": "",
-            "id": "",
-        }, timeout=12)
-        resp.raise_for_status()
-        m = re.search(r"var\s+x=\((.*)\);\s*$", resp.text, re.S)
-        if not m:
-            break
-        payload = json.loads(m.group(1))
-        data = payload.get("data") or []
-        if not data:
-            break
-        for it in data:
-            symbol = str(it.get("symbol") or "").upper()
-            if not symbol:
-                continue
-            rows.append({
-                "代码": symbol,
-                "名称": it.get("cname") or it.get("name") or symbol,
-            })
-    if rows:
-        return pd.DataFrame(rows).drop_duplicates("代码").reset_index(drop=True)
-
-    # 真实备选源;如果也失败,由调用方抛错。
+    """无专业 Key 时的美股代码表降级源；不使用新浪。"""
     table = ak.stock_us_spot_em()
     out = table[["代码", "名称"]].copy()
     out["代码"] = out["代码"].astype(str).str.split(".").str[-1].str.upper()
     return out
+
+
+def _massive_us_symbol_search(keyword: str) -> pd.DataFrame:
+    """使用 Massive/Polygon 官方 ticker reference 搜索代码和公司名称。"""
+    api_key = str(config.MASSIVE_API_KEY or config.POLYGON_API_KEY or "").strip()
+    if not api_key:
+        raise SourceUnavailable("未配置 MASSIVE_API_KEY 或 POLYGON_API_KEY")
+    base_url = (
+        str(config.MASSIVE_API_BASE_URL).rstrip("/")
+        if str(config.MASSIVE_API_KEY or "").strip()
+        else "https://api.polygon.io"
+    )
+    response = requests.get(
+        f"{base_url}/v3/reference/tickers",
+        params={
+            "market": "stocks",
+            "active": "true",
+            "search": keyword,
+            "order": "asc",
+            "limit": 20,
+            "sort": "ticker",
+            "apiKey": api_key,
+        },
+        timeout=12,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if str(payload.get("status") or "").upper() in {"ERROR", "NOT_AUTHORIZED"}:
+        raise RuntimeError(payload.get("error") or payload.get("message") or "Massive 搜索失败")
+    rows = [
+        {
+            "代码": str(item.get("ticker") or "").upper(),
+            "名称": str(item.get("name") or item.get("ticker") or ""),
+        }
+        for item in (payload.get("results") or [])
+        if item.get("ticker")
+    ]
+    return pd.DataFrame(rows, columns=["代码", "名称"])
 
 
 def search_us_symbol(keyword: str) -> pd.DataFrame:
@@ -174,6 +180,12 @@ def search_us_symbol(keyword: str) -> pd.DataFrame:
     返回包含 '代码'(ticker,如 AAPL) 和 '名称' 的若干行。
     """
     kw = keyword.strip().upper()
+    try:
+        professional = _massive_us_symbol_search(keyword.strip())
+        if not professional.empty:
+            return professional.head(20).reset_index(drop=True)
+    except Exception:
+        pass
     # 用户已经输入明显 ticker 时,无需全市场搜索;直接允许使用该代码。
     # 名称只在真实列表命中时补充,否则保留为代码本身。
     if re.fullmatch(r"[A-Z.]{1,8}", kw):
@@ -212,8 +224,8 @@ def _resolve_us_code(symbol: str) -> str:
     raise ValueError(f"找不到美股代码: {symbol}")
 
 
-def _sina_a_symbol(code: str) -> str:
-    """A股代码转新浪格式:6/9 开头→sh,4/8 开头→bj(北交所),其余→sz。"""
+def _a_exchange_prefixed_symbol(code: str) -> str:
+    """A股代码转交易所前缀格式：sh/sz/bj。"""
     code = code.strip()
     if code.startswith(("6", "9")):
         return "sh" + code
@@ -261,7 +273,7 @@ def _src_a_baostock(symbol, start, end):
 
 def _src_a_tencent(symbol, start, end):
     """腾讯证券 A股前复权日线。真实行情源,带 timeout,作为 A股默认快路。"""
-    tx_symbol = _sina_a_symbol(symbol)  # sh600519 / sz000001 / bjxxxxxx
+    tx_symbol = _a_exchange_prefixed_symbol(symbol)  # sh600519 / sz000001 / bjxxxxxx
     today = datetime.date.today().strftime("%Y%m%d")
     e = min(end, today)
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
@@ -310,12 +322,14 @@ def _src_hk_tushare(symbol, start, end):
 
 # —— Polygon.io(美股,需 API Key)——
 def _src_us_polygon(symbol, start, end):
-    if not config.POLYGON_API_KEY:
-        raise SourceUnavailable("未配置 POLYGON_API_KEY")
-    url = (f"https://api.polygon.io/v2/aggs/ticker/{symbol.upper()}"
+    api_key = str(config.MASSIVE_API_KEY or config.POLYGON_API_KEY or "").strip()
+    if not api_key:
+        raise SourceUnavailable("未配置 MASSIVE_API_KEY 或 POLYGON_API_KEY")
+    base_url = str(config.MASSIVE_API_BASE_URL).rstrip("/") if config.MASSIVE_API_KEY else "https://api.polygon.io"
+    url = (f"{base_url}/v2/aggs/ticker/{symbol.upper()}"
            f"/range/1/day/{_ymd_dash(start)}/{_ymd_dash(end)}")
     r = requests.get(url, params={"adjusted": "true", "sort": "asc",
-                                  "limit": 50000, "apiKey": config.POLYGON_API_KEY},
+                                  "limit": 50000, "apiKey": api_key},
                      timeout=15)
     r.raise_for_status()
     js = r.json()
@@ -468,7 +482,7 @@ def _src_a_tushare_raw(symbol, start, end):
 def _src_a_tencent_raw(symbol, start, end):
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         df = ak.stock_zh_a_hist_tx(
-            symbol=_sina_a_symbol(symbol),
+            symbol=_a_exchange_prefixed_symbol(symbol),
             start_date=start,
             end_date=min(end, datetime.date.today().strftime("%Y%m%d")),
             adjust="",
@@ -516,13 +530,15 @@ def _src_hk_em_raw(symbol, start, end):
 
 
 def _src_us_polygon_raw(symbol, start, end):
-    if not config.POLYGON_API_KEY:
-        raise SourceUnavailable("未配置 POLYGON_API_KEY")
-    url = (f"https://api.polygon.io/v2/aggs/ticker/{symbol.upper()}"
+    api_key = str(config.MASSIVE_API_KEY or config.POLYGON_API_KEY or "").strip()
+    if not api_key:
+        raise SourceUnavailable("未配置 MASSIVE_API_KEY 或 POLYGON_API_KEY")
+    base_url = str(config.MASSIVE_API_BASE_URL).rstrip("/") if config.MASSIVE_API_KEY else "https://api.polygon.io"
+    url = (f"{base_url}/v2/aggs/ticker/{symbol.upper()}"
            f"/range/1/day/{_ymd_dash(start)}/{_ymd_dash(end)}")
     response = requests.get(
         url,
-        params={"adjusted": "false", "sort": "asc", "limit": 50000, "apiKey": config.POLYGON_API_KEY},
+        params={"adjusted": "false", "sort": "asc", "limit": 50000, "apiKey": api_key},
         timeout=15,
     )
     response.raise_for_status()

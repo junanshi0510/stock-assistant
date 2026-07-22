@@ -164,19 +164,33 @@ export default function DiscoverTab({ markets, goAnalyze }) {
             </span>
           </h3>
           <p className="hint" style={{ marginTop: -6, marginBottom: 12 }}>
-            数据源：{data.source || '未知'} · {data.provider_tier === 'professional' ? '专业源' : '公开降级源'}
+            数据源：{data.source || '未知'} · {data.provider_tier === 'professional' ? '专业源' : data.provider_tier === 'mixed_fallback' ? '专业主源+降级计算' : '公开降级源'}
             {data.data_freshness ? ` · 时效：${data.data_freshness}` : ''}{data.as_of ? ` · 截止 ${data.as_of}` : ''}
             {retrievedAt ? ` · 获取于 ${retrievedAt}` : ''}
             {data.scope ? ` · 范围：${data.scope}` : ''}
+            {data.source_cache_hit ? ' · 供应商缓存命中' : ''}
           </p>
+          {data.data_quality?.status && (
+            <p className="hint" style={{ marginTop: -8, marginBottom: 12 }}>
+              数据质量：{data.data_quality.status}
+              {Number.isFinite(data.data_quality.rows_received) ? ` · 原始 ${data.data_quality.rows_received} 行` : ''}
+              {Number.isFinite(data.data_quality.eligible_rows) ? ` · 合格 ${data.data_quality.eligible_rows} 行` : ''}
+              {Number.isFinite(data.data_quality.prior_close_coverage) ? ` · 昨收匹配 ${(data.data_quality.prior_close_coverage * 100).toFixed(1)}%` : ''}
+            </p>
+          )}
           {(data.stale || data.degraded) && (
             <div className="warning" style={{ marginBottom: 12 }}>
               ⚠️ {data.warning || '专业行情源当前未生效，请核对服务端配置。'}
             </div>
           )}
-          {period !== '1d' && type !== 'active' && (
+          {period !== '1d' && type !== 'active' && !data.full_market_multiday && (
             <p className="hint" style={{ marginTop: -6, marginBottom: 12 }}>
               ⚠️ {PERIOD_LABELS[period]}涨跌榜是在「成交最活跃的股票」范围内按 {period === '7d' ? '7' : '30'} 日真实涨幅排序,不是全市场排名(全市场多日榜需付费数据源)。
+            </p>
+          )}
+          {period !== '1d' && data.full_market_multiday && (
+            <p className="hint" style={{ marginTop: -6, marginBottom: 12 }}>
+              ✓ 已使用 Massive 全市场日线和真实交易日序列计算，不是活跃候选池近似榜。
             </p>
           )}
           {period !== '1d' && type === 'active' && (

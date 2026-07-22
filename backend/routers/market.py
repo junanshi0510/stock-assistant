@@ -25,6 +25,10 @@ class MultiCompareRequest(BaseModel):
     include_fundamentals: bool = False
 
 
+class ProviderProbeRequest(BaseModel):
+    market: str
+
+
 def _validate_market(market: str):
     if market not in data_fetch.MARKETS:
         raise HTTPException(status_code=400, detail=f"不支持的市场:{market}")
@@ -232,6 +236,16 @@ def market_providers():
         "market.providers",
         {},
         "行情源状态读取失败",
+    )
+
+
+@router.post("/api/market/providers/probe")
+def probe_market_provider(req: ProviderProbeRequest):
+    _validate_market(req.market)
+    return _call_market_operation(
+        "market.providers_probe",
+        {"market": req.market},
+        "专业行情源验证失败",
     )
 
 

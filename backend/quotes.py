@@ -43,7 +43,7 @@ def _num(v):
 def _tencent_code(market: str, symbol: str) -> str:
     s = symbol.strip()
     if market == "A股":
-        return data_fetch._sina_a_symbol(s)
+        return data_fetch._a_exchange_prefixed_symbol(s)
     if market == "港股":
         return "hk" + s.zfill(5)
     if market == "美股":
