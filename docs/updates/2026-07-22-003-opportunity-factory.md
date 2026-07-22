@@ -303,6 +303,21 @@ sudo bash -lc '
 - 前端静态资源包含机会工厂 chunk；
 - 本地、GitHub、云端提交哈希一致。
 
+### 实际生产发布验证
+
+2026-07-22 已完成提交 `44e4ed601e26380f2fa6d5aae4987ba0844b92bd` 的生产发布：
+
+- 发布前 PostgreSQL 自定义格式备份完成本地 SHA-256 校验，并成功上传启用 AES256 的私有 OSS；
+- `opportunity-factory.v1` 在生产 PostgreSQL 成功提交，数据库核对为 6 张 `opportunity_*` 表和 5 个非系统触发器；
+- API、market-data、agent、llm、ocr、scheduler、Celery Beat、Nginx、PostgreSQL 和 Redis 全部为 `active`；
+- `/health/ready` 返回 `ready=true`、`platform_schema=true`、`opportunity_schema=true`，五类 Worker 队列无缺失；
+- market-data Worker 已注册 `stock_assistant.market.execute_opportunity_scan`；
+- 生产 OpenAPI 为 151 个操作、11 条机会工厂路径；
+- 外网首页与 `OpportunityTab-CpW2AibC.js` 均返回 HTTP 200，机会 chunk 为 41,559 bytes；
+- npm 生产依赖审计为 0 个已知漏洞；
+- 旧静态发布保存在 `/opt/stock-assistant-backups/releases/20260722-093312-778edeb`，数据库备份与静态回滚点都没有被删除；
+- Chrome 验证生产登录边界正常。由于验收会话没有用户登录凭据，未代替用户登录或向生产账户写入测试策略；登录后的完整策略/扫描/纸面链路已在本地真实数据环境完成。
+
 ## 16. 尚未解决的边界
 
 - 没有授权的全市场实时/历史证券主数据、退市股票和历史指数成分，因此不能消除幸存者偏差；
