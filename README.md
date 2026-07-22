@@ -16,6 +16,7 @@
 - 页面新增稳健性总门槛、四张压力卡、60/40 留出表、四时段表、参数净期望分布和可展开的全部参数矩阵，并明确显示 `baseline_not_positive`、`insufficient_evidence`、`chronological_holdout_failed`、`cost_stress_failed`、`parameter_fragile` 或 `time_inconsistent` 等具体否决原因。
 - 时间留出段并非可反复使用的“永久样本外”数据：用户看过结果后继续调参会污染该后段；系统也未完成多重检验、幸存者偏差或实盘前瞻验证，因此通过只表示历史假设较不容易被简单压力击穿，不代表未来盈利。详细设计见 [`docs/updates/2026-07-22-002-stock-robustness-validation.md`](docs/updates/2026-07-22-002-stock-robustness-validation.md)。
 - 后端全量回归 `430 tests` 与前端生产构建通过。真实 A 股 `600519`、港股 `00700` 的基线均被否决；美股 `AAPL` 虽然完整历史基线为正，但较晚 40% 只有 15 笔交易、净期望 `-0.030%`、盈利因子 `0.988`，因此返回 `chronological_holdout_failed`。Chrome 桌面端和 `390×844` 手机端无页面横向溢出或控制台错误。
+- 生产 PostgreSQL → Redis/Celery → market-data Worker 已用 `600519` 验证新版本和 27 组参数矩阵；同一云端上的 `AAPL` 抓取仍被 Yahoo Finance `403` 与东方财富连接中断同时阻断，系统明确失败且不回退模拟数据。云端美股专业数据源可用性仍是待解决的 P0 运行缺口。
 
 ### 2026-07-22：股票信号成本后执行回测
 

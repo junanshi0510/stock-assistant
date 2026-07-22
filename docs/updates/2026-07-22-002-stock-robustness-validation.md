@@ -129,6 +129,7 @@
 - 真实港股 `00700` 形成 918 个方向样本和 44 笔交易，基线同样为 `non_positive_expectancy`；27 组参数均可评估，其中 25.9% 为历史正期望，总门槛仍固定返回 `baseline_not_positive`。
 - 真实美股 `AAPL` 形成 940 个方向样本和 44 笔交易。完整历史基线为 `historically_positive`，27 组邻域也全部为历史正期望，但较晚 40% 只有 15 笔交易、净期望 `-0.030%`、盈利因子 `0.988`，最终被 `chronological_holdout_failed` 否决。这一结果验证了稳健性门槛不会让全样本正收益覆盖时间失效证据。
 - Chrome 桌面端确认 27 组参数全部可展开且只有 1 组标记当前参数；`390×844` 手机端页面整体无横向溢出，4 个宽表均限制在局部滚动容器，浏览器控制台无错误或警告。
+- 生产环境通过 PostgreSQL、Redis/Celery 和独立 market-data Worker 成功执行 `600519`，返回 `stock_signal_robustness@1.0.0`、27 组参数和 `baseline_not_positive`。同一生产 Worker 的 `AAPL` 请求因 Yahoo Finance 返回 `403`、东方财富中断连接而明确失败；没有切换新浪或生成模拟结果。该问题属于云端美股外部源可达性，仍需后续接入可授权的专业供应商并建立供应商级健康门禁。
 
 ## 10. 仍未解决的边界
 
