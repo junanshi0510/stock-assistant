@@ -159,4 +159,38 @@ cd /opt/stock-assistant/backend
 
 ## 11. 生产发布结果
 
-本节在 GitHub 推送、数据库备份与迁移、云端部署、公网接口和临时测试账户验收完成后更新。
+### 11.1 发布与回滚点
+
+- 功能提交 `d4b0e63` 已推送到 GitHub `main`，生产目录 `/opt/stock-assistant` 与该提交一致且工作树干净；
+- 发布前 PostgreSQL 自定义格式备份为 `backups/postgresql/2026/07/stock-assistant-iZn4ai1fm0tr284w21h4kmZ-20260722T155336Z.dump`，SHA-256 为 `42b62b65a9614ecf7d82a61d6218c11aaf8f474ca0b95da7ec2ad31fc18d8993`，大小 `1,382,575` 字节，使用 AES256 保存到私有 OSS；
+- 旧代码保存在 `/opt/stock-assistant-backups/releases/d4b0e63-predeploy-2fa14e0`；旧静态站和切换时静态站分别保存在 `/var/www/stock-assistant.previous-2fa14e0-before-d4b0e63` 与 `/var/www/stock-assistant.cutover-2fa14e0-to-d4b0e63`；
+- 生产迁移返回 `applied portfolio-valuation.v1`，新增两张估值表和两个不可变触发器。数据库最终为 `60` 张 public 表、`5` 个迁移标记，其中估值迁移标记恰好一条。
+
+### 11.2 服务与公网验收
+
+- 服务器定向回归 `79 tests` 通过；生产前端 `npm ci`、`npm audit` 和 Vite 构建通过，审计结果为 `0 vulnerabilities`，共转换 `1848` 个模块；
+- API、PostgreSQL、Redis、私有 OSS、scheduler、agent、market-data、llm 和 ocr 运行链路均正常，`/health/ready` 返回 ready，且 `portfolio_valuation_schema=true`；
+- 公网页面和本次 CSS/主 JS/资产页/决策页静态资源均返回 `200`；未登录访问 `/api/portfolio/valuations/latest` 返回 `401`；
+- 服务重启后的结构化日志没有真实 `ERROR`、Traceback 或 critical 事件。浏览器可以读取已有登录会话和生产页面；本机 VPN/Chrome 控制通道在进一步导航时持续超时，因此没有把未完成的资产页视觉导航写成通过项，视觉组件由生产静态资源检查、前端构建和 API 端到端结果共同覆盖。
+
+### 11.3 临时账户端到端验收
+
+临时普通用户按真实公开数据链路保存四项持仓，分别覆盖 A 股、港股、美股和基金。验收结果如下：
+
+- 第一次和第二次刷新都生成 `complete` 快照，四项持仓均得到自动估值；自动金额覆盖 `100%`，专业/确认来源金额覆盖 `100%`，过期项为 `0`；
+- 修改一项持仓金额后，第一份快照的 `holdings_binding.current` 立即变为 `false`；重新刷新后生成新的当前快照，证明决策消费者不会继续读取旧持仓绑定；
+- 历史列表返回两份不可变快照，旧快照 SHA-256 完整性校验通过；再平衡读取同一估值并返回 eligible，今日决策中的可信估值阶段为 complete；
+- 整体决策门禁保持未通过是预期结果，因为临时用户没有配置投资政策、持仓论点和完整研究证据；系统没有把“估值可用”错误解释为“可以买卖”；
+- 验收结束后通过 `AuthService.update_user` 停用该临时用户，账户状态为 `disabled`、活跃会话为 `0`，变更进入认证审计链。
+
+### 11.4 部署后可恢复性
+
+最终状态再次执行生产备份和隔离恢复：
+
+- 私有 OSS 对象：`backups/postgresql/2026/07/stock-assistant-iZn4ai1fm0tr284w21h4kmZ-20260722T161829Z.dump`；
+- SHA-256：`0e466c7eb7b859a4b470d427364ee20657ba2e53e0702180285791e7f2e234f8`；
+- 大小：`1,397,605` 字节；服务端加密：AES256；
+- `stock-assistant-backup.service` 与 `stock-assistant-backup-verify.service` 均返回 `Result=success`、`ExecMainStatus=0`；
+- 备份先通过 checksum 和 `pg_restore --list`，随后恢复到临时数据库并核对 `60` 张表、`5` 个迁移标记，临时验证库由脚本清理。
+
+至此，本版本完成“代码提交 → GitHub → 发布前备份 → 生产迁移 → 定向测试/构建 → 静态切换 → 服务重启 → 公网门禁 → 跨市场真实账户 E2E → 账号清理 → 发布后备份与隔离恢复”的闭环。它提升了数据和决策链的可用性，但仍不授权交易、不承诺收益。

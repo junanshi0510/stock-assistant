@@ -17,6 +17,9 @@
 - “我的资产”新增可信估值面板，展示人民币总值、持仓/自动/专业来源覆盖、门禁、有效期和逐项行情凭据；即使精确金额门禁通过，`execution_authorized` 仍固定为 `false`。
 - 新增 4 个用户隔离 API、2 张 PostgreSQL/SQLite 不可变表、`portfolio-valuation.v1` 迁移和 `portfolio_valuation_schema` readiness 检查。当前 OpenAPI 共 `161` 个操作。
 - 后端全量回归 `481 passed`、`4 subtests passed`，前端完整 `npm audit` 为 `0 vulnerabilities`，Vite 生产构建完成 `1848` 个模块转换。
+- 功能提交 `d4b0e63` 已推送 GitHub `main` 并发布到 `http://8.148.67.79/`。生产 PostgreSQL、Redis、私有 OSS、五类 Worker、估值迁移/readiness、不可变触发器、新静态资源、公网 `200` 和匿名估值接口 `401` 均通过验收。
+- 临时测试账户以 A 股、港股、美股和基金各一项持仓生成两份完整估值快照，自动金额和专业/确认来源覆盖均为 `100%`、过期项为 `0`；修改持仓后旧快照按 SHA-256 正确失效，历史快照完整性、再平衡和决策估值门禁均通过。账号随后已停用且活跃会话清零。
+- 部署后 PostgreSQL 备份已使用 AES256 上传私有 OSS，并在隔离数据库完整恢复核对 `60` 张表和 `5` 个迁移标记。
 - 设计、数据口径、门禁、迁移和验收记录见 [`docs/updates/2026-07-22-008-trusted-portfolio-valuation.md`](docs/updates/2026-07-22-008-trusted-portfolio-valuation.md)。
 
 ### 2026-07-22：统一投资决策操作系统与信号可信度治理
