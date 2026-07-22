@@ -70,6 +70,14 @@ class TaskQueueProtocolTests(unittest.TestCase):
                 },
                 task_queue.TASK_OCR,
             ),
+            (
+                {
+                    "id": "job-opportunity",
+                    "job_type": "opportunity_scan",
+                    "queue_name": task_queue.QUEUE_MARKET,
+                },
+                task_queue.TASK_OPPORTUNITY_SCAN,
+            ),
         )
         for job, expected_task in cases:
             with self.subTest(job=job["id"]):

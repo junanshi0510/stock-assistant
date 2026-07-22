@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
-import { Bot, BriefcaseBusiness, Info, LayoutDashboard, Search, Shield, TrendingUp } from 'lucide-react'
+import { Bot, BriefcaseBusiness, Info, LayoutDashboard, Search, Shield, Telescope, TrendingUp } from 'lucide-react'
 import { fetchAuthSession, logoutAccount } from './api/auth'
 import { fetchMarkets } from './api/market'
 import { fetchDecisionTaskSummary } from './api/portfolio'
@@ -13,11 +13,13 @@ const AgentTab = lazy(() => import('./tabs/AgentTab'))
 const DashboardTab = lazy(() => import('./tabs/DashboardTab'))
 const PortfolioTab = lazy(() => import('./tabs/PortfolioTab'))
 const ResearchTab = lazy(() => import('./tabs/ResearchTab'))
+const OpportunityTab = lazy(() => import('./tabs/OpportunityTab'))
 
 const BASE_TABS = [
   { id: 'overview', label: '今日决策', icon: LayoutDashboard },
   { id: 'portfolio', label: '我的资产', icon: BriefcaseBusiness },
   { id: 'research', label: '研究中心', icon: Search },
+  { id: 'opportunities', label: '机会工厂', icon: Telescope },
   { id: 'agent', label: '投资 Agent', icon: Bot },
 ]
 
@@ -216,6 +218,7 @@ export default function App() {
             market={market} setMarket={setMarket} symbol={symbol} setSymbol={setSymbol}
             months={months} setMonths={setMonths} runKey={runKey} requestRun={requestRun} goAnalyze={goAnalyze}
           />}
+          {tab === 'opportunities' && <OpportunityTab goAnalyze={goAnalyze} />}
         </Suspense>
       </main>
     </>

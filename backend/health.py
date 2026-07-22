@@ -45,11 +45,27 @@ def _database_readiness() -> dict[str, Any]:
                 if database_dialect(connection) == "postgresql"
                 else True
             )
+            opportunity_schema = (
+                all(
+                    table_exists(connection, table)
+                    for table in (
+                        "opportunity_strategies",
+                        "opportunity_strategy_versions",
+                        "opportunity_runs",
+                        "opportunity_run_events",
+                        "opportunity_paper_baskets",
+                        "opportunity_paper_observations",
+                    )
+                )
+                if database_dialect(connection) == "postgresql"
+                else True
+            )
         return {
-            "ready": bool(migrated),
+            "ready": bool(migrated and opportunity_schema),
             "dialect": database_dialect(target),
             "target": redact_database_url(target),
             "platform_schema": bool(migrated),
+            "opportunity_schema": bool(opportunity_schema),
         }
     except Exception as error:
         return {
@@ -141,4 +157,3 @@ def readiness(*, use_cache: bool = True) -> dict[str, Any]:
     with _cache_lock:
         _cached = (now, result)
     return result
-

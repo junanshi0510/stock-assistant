@@ -21,6 +21,7 @@ from task_queue import (
     TASK_DISPATCH_QUEUED,
     TASK_LLM_TOOL,
     TASK_MARKET_DATA,
+    TASK_OPPORTUNITY_SCAN,
     TASK_MARKET_TOOL,
     TASK_OBJECT_CLEANUP,
     TASK_OCR,
@@ -161,10 +162,10 @@ def execute_market_data_job(self, job_id: str):
         payload = job.get("payload") or {}
         operation = str(payload.get("operation") or "")
         operation_input = dict(payload.get("input") or {})
-        if operation.startswith("portfolio.") and str(
+        if operation.startswith(("portfolio.", "opportunity.")) and str(
             operation_input.get("user_id") or ""
         ) != str(job.get("user_id") or ""):
-            raise ValueError("portfolio task user scope does not match job owner")
+            raise ValueError("user-scoped market task does not match job owner")
         with _job_heartbeat(jobs, str(job_id), worker_id, lease_seconds):
             result = execute_operation(
                 operation,
@@ -207,6 +208,75 @@ def execute_market_data_job(self, job_id: str):
         )
     if updated["status"] == "queued":
         raise self.retry(countdown=15)
+    return {"job_id": str(job_id), "status": updated["status"]}
+
+
+@celery_app.task(bind=True, name=TASK_OPPORTUNITY_SCAN, ignore_result=True)
+def execute_opportunity_scan_job(self, job_id: str):
+    """Run one durable Opportunity Factory campaign on the market-data worker."""
+    jobs = BackgroundJobRepository()
+    worker_id = _worker_id(self)
+    lease_seconds = int(os.getenv("OPPORTUNITY_JOB_LEASE_SECONDS", "1200"))
+    job = jobs.claim_job(str(job_id), worker_id, lease_seconds=lease_seconds)
+    if job is None:
+        return {"job_id": str(job_id), "status": "not_claimed"}
+    if job["status"] in {"succeeded", "partial", "failed", "cancelled"}:
+        return {"job_id": str(job_id), "status": job["status"]}
+    if (
+        job.get("queue_name") != QUEUE_MARKET
+        or job.get("job_type") != "opportunity_scan"
+    ):
+        jobs.fail_job(
+            str(job_id),
+            worker_id,
+            error_code="TASK_ROUTE_MISMATCH",
+            error_message="opportunity scan task route mismatch",
+            retryable=False,
+        )
+        return {"job_id": str(job_id), "status": "failed"}
+
+    payload = job.get("payload") or {}
+    run_id = str(payload.get("run_id") or "")
+    user_id = str(payload.get("user_id") or "")
+    if not run_id or not user_id or user_id != str(job.get("user_id") or ""):
+        jobs.fail_job(
+            str(job_id),
+            worker_id,
+            error_code="OPPORTUNITY_SCOPE_INVALID",
+            error_message="opportunity scan user scope is missing or invalid",
+            retryable=False,
+        )
+        return {"job_id": str(job_id), "status": "failed"}
+    try:
+        from opportunity_service import execute_run
+
+        with _job_heartbeat(jobs, str(job_id), worker_id, lease_seconds):
+            run = execute_run(
+                run_id,
+                user_id=user_id,
+                actor_id=worker_id,
+            )
+        output = {"run_id": run_id, "run_status": run.get("status")}
+        jobs.complete_job(str(job_id), worker_id, output)
+        return {"job_id": str(job_id), "status": "succeeded", **output}
+    except SoftTimeLimitExceeded:
+        updated = jobs.fail_job(
+            str(job_id),
+            worker_id,
+            error_code="OPPORTUNITY_SCAN_TIMEOUT",
+            error_message="opportunity scan reached its execution limit",
+            retryable=False,
+        )
+    except BackgroundJobLeaseError:
+        return {"job_id": str(job_id), "status": "lease_lost"}
+    except Exception as error:
+        updated = jobs.fail_job(
+            str(job_id),
+            worker_id,
+            error_code="OPPORTUNITY_SCAN_FAILED",
+            error_message=str(error),
+            retryable=False,
+        )
     return {"job_id": str(job_id), "status": updated["status"]}
 
 

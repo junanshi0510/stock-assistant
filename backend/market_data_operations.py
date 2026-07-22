@@ -338,6 +338,16 @@ def _portfolio_exposure(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _opportunity_observe(payload: dict[str, Any]) -> dict[str, Any]:
+    from opportunity_service import observe_paper_basket
+
+    user_id = _portfolio_user(payload)
+    return observe_paper_basket(
+        str(payload["basket_id"]),
+        user_id=user_id,
+    )
+
+
 _OPERATIONS: dict[str, OperationHandler] = {
     "fund.hot": lambda payload: _fund(funds_mod.get_hot_funds, payload),
     "fund.categories": lambda payload: _fund(funds_mod.get_fund_categories, payload),
@@ -380,6 +390,7 @@ _OPERATIONS: dict[str, OperationHandler] = {
     "portfolio.insights": _portfolio_insights,
     "portfolio.fund_alternatives": _portfolio_fund_alternatives,
     "portfolio.exposure": _portfolio_exposure,
+    "opportunity.observe": _opportunity_observe,
 }
 
 

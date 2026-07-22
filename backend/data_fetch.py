@@ -610,6 +610,10 @@ def get_history(market: str, symbol: str, start: str = "20230101",
             raw = _retry(src, symbol, start, end, attempts=2)
             df = _filter_dates(_normalize(raw), start, end)
             if not df.empty:
+                df.attrs["source"] = name
+                df.attrs["retrieved_at"] = datetime.datetime.now(
+                    datetime.timezone.utc
+                ).isoformat(timespec="seconds")
                 _cache_put(cache_key, df)
                 return df.copy()
             errors.append(f"{name}: 返回空数据")
@@ -637,7 +641,10 @@ def get_history_months(market: str, symbol: str, months: int,
         return full
     cutoff = pd.to_datetime(end - datetime.timedelta(days=months * 31))
     sliced = full[full["date"] >= cutoff].reset_index(drop=True)
-    return sliced if not sliced.empty else full
+    if not sliced.empty:
+        sliced.attrs.update(full.attrs)
+        return sliced
+    return full
 
 
 def get_price_level_history_months(
