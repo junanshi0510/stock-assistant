@@ -17,6 +17,7 @@
 - 每次运行永久冻结情景、持仓、暴露快照、投资政策和结果，并分别保存 SHA-256；SQLite/PostgreSQL 都使用 UPDATE/DELETE 拒绝触发器，历史列表只返回轻量摘要，打开详情后才验证完整五段载荷。
 - 产品设计参考 Interactive Brokers Risk Navigator、BlackRock Aladdin Wealth、Bloomberg PORT、Koyfin、Morningstar Direct 和 Composer 的官方能力说明；本项目的差异化闭环是“真实披露区间 → 可编辑情景 → 反向破线 → 最小降险 → 不可变证据”，不是未来涨跌预测器。
 - 后端全量回归 `457 passed`、`4 subtests passed`，组合孪生/路由/网关定向回归 `21 tests` 通过，前端生产构建通过；本地真实接口已验证两次不可变运行、WHAT-IF 历史回放、桌面端与 `390×844` 响应式布局，浏览器控制台无 warning/error。
+- 功能提交 `b52830f` 已发布到 GitHub `main` 和 `8.148.67.79`。生产迁移标记、20 列运行表、不可变触发器、18 项服务器定向测试、前端新资产、七个应用进程、五个队列、私有 OSS、readiness、公网 `200` 与匿名 `401` 均通过；迁移后备份已上传私有 OSS，并在隔离库恢复核对 `58` 张表和 `4` 个迁移标记。
 - 详细竞品映射、公式、接口、数据边界和验收记录见 [`docs/updates/2026-07-22-006-portfolio-decision-twin.md`](docs/updates/2026-07-22-006-portfolio-decision-twin.md)。
 
 ### 2026-07-22：专业行情数据中台 v2 与免费全市场美股榜

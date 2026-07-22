@@ -256,4 +256,28 @@ cd /opt/stock-assistant/backend
 
 代码回滚与数据回滚分开：新表是追加式不可变记录，代码回退时通常保留 PostgreSQL 数据和迁移标记；只有管理员明确决定丢弃发布后数据时才允许恢复数据库备份。旧静态站和旧 Git 提交必须使用独立目录保留，不能用未验证构建覆盖回滚点。
 
-生产发布结果将在完成云端迁移和验收后追加到本记录，不能把“本地测试通过”写成“云端已上线”。
+## 11. 生产发布结果
+
+功能提交 `b52830f` 已推送 GitHub `main` 并发布到 `8.148.67.79`。
+
+发布前状态与恢复保护：
+
+- 旧提交为 `c8f4c22ec706d506bf33aee0145fc1bd11d738ca`，工作树干净，磁盘剩余约 41 GiB；
+- API、Nginx、PostgreSQL、Redis、Celery Beat 和 `agent`、`market-data`、`llm`、`ocr`、`scheduler` 五个 Worker 全部健康；
+- 发布前 PostgreSQL 自定义格式备份完成 SHA-256 校验并以 AES256 上传私有 OSS，隔离恢复核对 `57` 张表和 `3` 个迁移标记；
+- 旧代码与静态包归档于 `/opt/stock-assistant-backups/releases/20260722-080411-c8f4c22`；
+- 旧静态站完整副本位于 `/var/www/stock-assistant.previous-c8f4c22-20260722-080411`，切流时的原目录另保留于 `/var/www/stock-assistant.cutover-c8f4c22-20260722-080747`。
+
+迁移与应用验收：
+
+- `portfolio-decision-twin.v1` 通过独立 systemd transient unit 注入 root 持有的环境变量，事务迁移成功；
+- PostgreSQL 实查得到迁移标记、`portfolio_twin_runs` 的 `20` 列和 `trg_portfolio_twin_runs_immutable_pg`；
+- 事务内插入探针后尝试 UPDATE，数据库返回 `portfolio_twin_runs is immutable`；连接退出后探针行数为 `0`，没有留下测试数据；
+- 服务器执行组合孪生、路由契约和 readiness 共 `18` 项定向测试并全部通过；
+- 服务器 `npm ci` 与 Vite 生产构建完成 `1864` 个模块转换；新 `PortfolioTab` 动态资产和决策孪生 CSS 通过 Nginx 返回 `200`，生产依赖 `npm audit --omit=dev` 为 `0 vulnerabilities`；
+- API、五个 Worker 与 Celery Beat 重启后全部 `active`，五个队列深度均为 `0`；
+- `/health/ready` 返回 `portfolio_twin_schema=true`，PostgreSQL、Redis、私有 OSS 和全部 Worker 同时 ready；
+- 公网首页与新前端资产返回 `200`，匿名访问组合孪生 GET/POST 均返回 `401`，最近 API 日志无 ERROR、Traceback 或 CRITICAL；
+- 为避免污染用户真实组合，本次没有在生产账号下创建合成持仓或测试运行；完整 WHAT-IF 写入/回放已经在本地独立数据库端到端验收，云端验证聚焦迁移、权限、服务和静态资产。
+
+迁移后再次执行 PostgreSQL 备份，OSS 对象 SHA-256 为 `800082394796b0b4bf66fcd3cd393437a547926a4c5236fb4f6746584e93a56e`；隔离恢复最终核对到 `58` 张表和 `4` 个迁移标记，证明新表已进入现有灾备链路。
