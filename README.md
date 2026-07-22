@@ -17,6 +17,7 @@
 - `GET /api/market/providers` 现在返回每市场全部专业候选路线；新增 `POST /api/market/providers/probe` 和页面“真实连通性验证”，只探测专业源、30 秒防重复、结果脱敏，不会为了验证偷偷使用公开网页数据。
 - 美股代码/名称搜索优先使用 Massive 官方 ticker reference；无 Key 时才降级东方财富。已删除 `_us_spot_table()` 中残留的新浪 JSONP 调用，并把误导性的新浪格式函数重命名为通用交易所前缀转换。
 - 后端全量回归 `449 passed`、`4 subtests passed`，专业路由定向回归 `30 tests` 通过，Python 3.13 下 `futu-api 10.9` 可导入，依赖检查和前端生产构建通过；桌面端及 `390×844` 手机端已验证三市场状态卡、配置门禁与响应式布局，无页面级横向溢出或控制台错误。
+- 功能提交 `f2021d5` 已发布到 GitHub `main` 和 `8.148.67.79`。生产 Python 3.12 已安装并导入 `futu-api 10.9`，30 项服务器定向测试、前端重建、真实 market-data 队列、readiness、公网新资产和匿名 401 边界均通过；发布前 PostgreSQL 备份已上传私有 OSS 并恢复核对 57 张表。服务器仍未配置 Tushare、Massive、Alpha Vantage Key 或 FutuOpenD，因此代码已上线不等于专业行情已授权。
 - 配置、实现边界和验证方法见 [`docs/updates/2026-07-22-005-professional-market-data-hub-v2.md`](docs/updates/2026-07-22-005-professional-market-data-hub-v2.md)。
 
 ### 2026-07-22：专业行情源路由与热门榜故障隔离

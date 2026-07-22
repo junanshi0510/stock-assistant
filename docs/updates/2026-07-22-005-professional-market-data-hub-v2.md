@@ -161,3 +161,23 @@ OpenD 端口不得暴露公网。Key 和 OpenD 配置只进入 root 持有、权
 - `390×844` 手机端三张市场卡自动单列，页面级 `scrollWidth` 与可视宽度一致；候选漏斗和宽表只在各自容器内滚动；
 - 浏览器控制台无 warning/error；
 - 未向本地或仓库写入任何供应商 Key，因此本轮只验证了未配置门禁、路由接力、数据归一化、脱敏和错误边界，未声称真实专业供应商已经授权。
+
+## 11. 生产发布结果
+
+功能提交 `f2021d5` 已推送 GitHub `main` 并发布到 `8.148.67.79`。发布前执行了三层可恢复保护：
+
+- PostgreSQL 自定义格式备份完成 SHA-256 校验，以 AES256 上传私有 OSS；隔离恢复核对到 57 张表和 3 个迁移标记；
+- 旧提交和旧静态站归档于 `/opt/stock-assistant-backups/releases/20260722-120251-385de57`；
+- 切换前静态站保留于 `/var/www/stock-assistant.previous-385de57-20260722-121353`。
+
+服务器验证结果：
+
+- Python `3.12` 安装并实际导入 `futu-api 10.9.6908`，`pip check` 无冲突；
+- 标准库 `unittest` 运行本轮 30 项专业行情相关测试并通过；
+- 服务器重新执行 `npm ci` 与 Vite 生产构建，新入口 CSS、JS 和 `MarketProviderStatus` 动态资产通过公网返回 200；
+- API、Nginx、PostgreSQL、Redis、私有 OSS、Celery Beat 和 `agent`、`market-data`、`llm`、`ocr`、`scheduler` 五个 Worker 全部 ready，所有队列深度为 0；
+- 匿名访问 `GET /api/market/providers` 和 `POST /api/market/providers/probe` 均返回 401；
+- 通过真实 `market-data` 队列读取状态，返回 `hot_stock_provider_router@2.0.0`、`secrets_exposed=false`、`sina_fallback=false`；
+- 真实队列执行美股主动探测时，富途、Massive、Alpha Vantage 三条路线均返回 `not_configured`，没有调用公开降级源，也没有泄露完整 URL 或凭据。
+
+生产环境当前 `TUSHARE_TOKEN`、`MASSIVE_API_KEY`、兼容变量 `POLYGON_API_KEY`、`ALPHAVANTAGE_API_KEY` 和 `FUTU_OPEND_HOST` 均为空。因此本次已经完成“专业数据中台代码与运行框架上线”，但没有完成“专业供应商账号与行情权限授权”。配置任一真实路线后，必须在页面点击“真实连通性验证”，核对 `provider_tier=professional`、`degraded=false`、截止日期、时效和质量摘要，才能把对应市场标记为生产可用。
