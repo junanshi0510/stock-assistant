@@ -213,4 +213,27 @@ p = 1 / (1 + exp(-0.045 * (score - 50)))
 6. 搜索生产日志中没有新增 ERROR、Traceback 或 CRITICAL；
 7. 旧静态目录和旧提交可独立回滚。
 
-生产发布结果将在实际完成备份、推送、部署和公网验收后补充，不能用本地测试代替。
+以下结果来自实际备份、推送、部署和公网验收，不以本地测试替代生产验证。
+
+## 11. 生产发布结果
+
+功能提交 `17e2df1` 与前端工具链安全升级提交 `0f00a1e` 已推送 GitHub `main` 并发布到 `http://8.148.67.79/`。本轮没有数据库迁移。
+
+发布前保护：
+
+- 旧提交为 `1ac1fa4dcfe78fd7897cae212bf925ec023d6650`，工作树干净，根分区剩余约 41 GiB；
+- API、Nginx、PostgreSQL、Redis、Celery Beat 和五个队列 Worker 在发布前均为 `active`，readiness 为 `ready=true`；
+- PostgreSQL 自定义格式备份大小为 `1,367,507` 字节，以 AES256 上传私有 OSS：`backups/postgresql/2026/07/stock-assistant-iZn4ai1fm0tr284w21h4kmZ-20260722T093134Z.dump`；
+- 备份 SHA-256 为 `45a5f48677314e6961acf4ccf8e739da5b727ee03bffb1535ee21f2c4c41d28c`，隔离恢复实查通过，核对到 58 张表和 4 个迁移标记；
+- 旧代码归档位于 `/opt/stock-assistant-backups/releases/17e2df1-predeploy-1ac1fa4`，Vite 安全升级前代码归档位于 `/opt/stock-assistant-backups/releases/0f00a1e-predeploy-17e2df1`；
+- 静态回滚点包括 `/var/www/stock-assistant.previous-1ac1fa4-before-17e2df1`、`/var/www/stock-assistant.cutover-1ac1fa4-to-17e2df1`、`/var/www/stock-assistant.previous-17e2df1-before-0f00a1e` 和 `/var/www/stock-assistant.cutover-17e2df1-to-0f00a1e`。
+
+服务器与公网验收：
+
+- 服务器使用生产虚拟环境的 `unittest` 执行统一研究源、信号完整性、决策中心和机会工厂共 24 项目标测试，全部通过；
+- 云端 Node `20.20.2` 满足 Vite 8 引擎要求；`npm ci`、完整 `npm audit` 和 Vite `8.1.5` 构建成功，审计为 `0 vulnerabilities`，构建完成 1847 个模块转换；
+- 生产真实库只读探针返回 `decision_research_sources.v1`、`status=available`、`resolution_evidence_complete=true`；被抽查活动账户如实显示机会工厂 `empty`、Agent `partial`、组合情景实验室 `empty`，没有把部分结果伪装成 ready；
+- 探针生成的研究复核动作全部为 `execution_authorized=false`。为避免提取登录密钥或污染真实任务状态，本次没有伪造生产登录会话，也没有在真实账户下创建测试 Run；
+- API、五个 Worker、Celery Beat、Nginx、PostgreSQL、Redis 全部 `active`，失败单元数为 0；readiness 同时确认 PostgreSQL、Redis、私有 OSS、机会工厂 Schema、组合孪生 Schema 与五个队列 Worker 全部 ready；
+- 公网首页、主包 `index-BWMcq6_k.js` 和决策中心分包 `DashboardTab-CbcRSvQY.js` 均返回 200，匿名访问 `/api/decision-center` 返回 401；
+- 发布窗口内 API 与全部 Worker 日志没有新增 `ERROR`、`Traceback` 或 `CRITICAL`。
