@@ -132,6 +132,26 @@ export function fetchHoldingsExposureSnapshots(limit = 20, targetCode = '') {
   return getJson(`/api/holdings/exposure-snapshots?${query.toString()}`)
 }
 
+export function fetchPortfolioTwinPresets() {
+  return getJson('/api/portfolio/decision-twin/presets')
+}
+
+export function createPortfolioTwinRun(payload) {
+  return getJson('/api/portfolio/decision-twin/runs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export function fetchPortfolioTwinRuns(limit = 20) {
+  return getJson(`/api/portfolio/decision-twin/runs?limit=${encodeURIComponent(limit)}`)
+}
+
+export function fetchPortfolioTwinRun(runId) {
+  return getJson(`/api/portfolio/decision-twin/runs/${encodeURIComponent(runId)}`)
+}
+
 export function fetchInvestmentProfile() {
   return getJson('/api/investment-profile')
 }

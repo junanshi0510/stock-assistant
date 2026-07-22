@@ -21,6 +21,7 @@ import holdings_import
 import holdings as holdings_mod
 import monitor
 import portfolio_exposure
+import portfolio_decision_twin
 import portfolio_action_report
 import portfolio_review
 import storage
@@ -39,6 +40,10 @@ from object_storage import (
     AliyunObjectStorage,
     ObjectStorageConfigurationError,
 )
+from portfolio_twin_repository import (
+    PortfolioTwinNotFoundError,
+    PortfolioTwinRepository,
+)
 from task_queue import (
     TaskQueueUnavailableError,
     enqueue_background_job,
@@ -47,6 +52,7 @@ from task_queue import (
 
 
 router = APIRouter(tags=["我的组合"])
+portfolio_twin_repository = PortfolioTwinRepository()
 
 
 def _subject_id(principal: object) -> str:
@@ -167,6 +173,47 @@ class PortfolioSnapshotRequest(BaseModel):
 
 class PortfolioExposureSnapshotRequest(BaseModel):
     target_code: str | None = Field(default=None, pattern=r"^\d{6}$")
+
+
+class PortfolioTwinMarketShockRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    market: Literal["mainland", "hong_kong", "united_states", "global", "unknown"]
+    shock_pct: float = Field(ge=-80, le=50)
+
+
+class PortfolioTwinIndustryShockRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    industry: str = Field(min_length=1, max_length=80)
+    shock_pct: float = Field(ge=-50, le=50)
+
+
+class PortfolioTwinPositionShockRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    holding_id: int = Field(gt=0)
+    shock_pct: float = Field(ge=-95, le=100)
+
+
+class PortfolioTwinHypotheticalPositionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    holding_id: int = Field(gt=0)
+    target_amount: float = Field(ge=0, le=1_000_000_000)
+
+
+class PortfolioTwinRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(default="自定义组合压力情景", min_length=1, max_length=80)
+    preset_id: str = Field(default="custom", max_length=80)
+    market_shocks: list[PortfolioTwinMarketShockRequest] = Field(min_length=1, max_length=5)
+    industry_shocks: list[PortfolioTwinIndustryShockRequest] = Field(default_factory=list, max_length=12)
+    position_shocks: list[PortfolioTwinPositionShockRequest] = Field(default_factory=list, max_length=30)
+    hypothetical_positions: list[PortfolioTwinHypotheticalPositionRequest] = Field(default_factory=list, max_length=100)
+    loss_budget_pct: float = Field(ge=1, le=50)
+    minimum_trade_amount: float = Field(default=0, ge=0, le=10_000_000)
 
 
 class FundSwitchQuoteRequest(BaseModel):
@@ -582,6 +629,91 @@ def get_holdings_exposure_snapshot(
     if item is None:
         raise HTTPException(status_code=404, detail="组合穿透快照不存在")
     item["integrity"] = storage.verify_portfolio_exposure_snapshot(snapshot_id, user_id=user_id)
+    return item
+
+
+@router.get("/api/portfolio/decision-twin/presets")
+def get_portfolio_twin_presets():
+    items = portfolio_decision_twin.scenario_presets()
+    return {
+        "items": items,
+        "count": len(items),
+        "method_version": portfolio_decision_twin.METHOD_VERSION,
+        "policy": "预设是可编辑的说明性假设，不是历史校准、行情预测或收益承诺。",
+    }
+
+
+@router.post("/api/portfolio/decision-twin/runs")
+def create_portfolio_twin_run(
+    req: PortfolioTwinRunRequest,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    user_id = _subject_id(principal)
+    profile = storage.get_investment_profile(user_id=user_id)
+    exposure = _call_portfolio_data(
+        "portfolio.exposure_snapshot",
+        {"profile_version_id": profile.get("profile_version_id")},
+        principal=principal,
+        error_prefix="组合数字孪生的真实暴露快照生成失败",
+    )
+    holdings = storage.list_holdings(user_id=user_id)
+    try:
+        result = portfolio_decision_twin.build_decision_twin(
+            holdings=holdings,
+            exposure=exposure,
+            profile=profile,
+            scenario=req.model_dump(mode="json"),
+        )
+        return portfolio_twin_repository.create_run(
+            tenant_id=_tenant_id(principal),
+            user_id=user_id,
+            actor_id=_actor_id(principal),
+            method_version=portfolio_decision_twin.METHOD_VERSION,
+            status=result["status"],
+            scenario=result["scenario"],
+            holdings=holdings,
+            exposure=exposure,
+            profile=profile,
+            result=result,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.get("/api/portfolio/decision-twin/runs")
+def get_portfolio_twin_runs(
+    limit: int = Query(default=20, ge=1, le=100),
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    items = portfolio_twin_repository.list_runs(
+        tenant_id=_tenant_id(principal),
+        user_id=_subject_id(principal),
+        limit=limit,
+    )
+    return {"items": items, "count": len(items)}
+
+
+@router.get("/api/portfolio/decision-twin/runs/{run_id}")
+def get_portfolio_twin_run(
+    run_id: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    item = portfolio_twin_repository.get_run(
+        run_id,
+        tenant_id=_tenant_id(principal),
+        user_id=_subject_id(principal),
+        include_evidence=True,
+    )
+    if item is None:
+        raise HTTPException(status_code=404, detail="组合数字孪生运行不存在")
+    try:
+        item["integrity"] = portfolio_twin_repository.verify_run(
+            run_id,
+            tenant_id=_tenant_id(principal),
+            user_id=_subject_id(principal),
+        )
+    except PortfolioTwinNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
     return item
 
 

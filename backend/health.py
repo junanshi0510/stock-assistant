@@ -60,12 +60,18 @@ def _database_readiness() -> dict[str, Any]:
                 if database_dialect(connection) == "postgresql"
                 else True
             )
+            portfolio_twin_schema = (
+                table_exists(connection, "portfolio_twin_runs")
+                if database_dialect(connection) == "postgresql"
+                else True
+            )
         return {
-            "ready": bool(migrated and opportunity_schema),
+            "ready": bool(migrated and opportunity_schema and portfolio_twin_schema),
             "dialect": database_dialect(target),
             "target": redact_database_url(target),
             "platform_schema": bool(migrated),
             "opportunity_schema": bool(opportunity_schema),
+            "portfolio_twin_schema": bool(portfolio_twin_schema),
         }
     except Exception as error:
         return {

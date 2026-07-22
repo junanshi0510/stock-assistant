@@ -351,7 +351,7 @@ cd /opt/stock-assistant
 git pull --ff-only
 /opt/stock-assistant/venv/bin/pip install -r backend/requirements.txt
 
-# 首次发布“机会工厂”时，必须先完成一份 PostgreSQL + OSS 备份，
+# 首次发布包含数据库结构升级的版本时，必须先完成一份 PostgreSQL + OSS 备份，
 # 再由 root 只把环境变量注入迁移进程；命令不会打印数据库凭据。
 sudo systemctl start stock-assistant-backup.service
 sudo bash -lc '
@@ -360,6 +360,7 @@ sudo bash -lc '
   set +a
   cd /opt/stock-assistant/backend
   /opt/stock-assistant/venv/bin/python -m migrations.opportunity_factory_v1
+  /opt/stock-assistant/venv/bin/python -m migrations.portfolio_decision_twin_v1
 '
 
 cd frontend
@@ -380,7 +381,7 @@ sudo nginx -t && sudo systemctl reload nginx
 curl -fsS http://127.0.0.1:8000/health/ready
 ```
 
-`opportunity-factory.v1` 会在单个 PostgreSQL 事务和 advisory lock 内建立 6 张机会工厂表、不可变触发器和迁移标记；失败会整体回滚。首次成功后无需在无数据库变更的日常发布中重复执行。数据库结构升级必须先备份并执行对应迁移，不能依赖应用启动时自动建表；readiness 必须同时返回 `opportunity_schema=true` 才能接流量。
+`opportunity-factory.v1` 会在单个 PostgreSQL 事务和 advisory lock 内建立 6 张机会工厂表、不可变触发器和迁移标记；`portfolio-decision-twin.v1` 会建立用户隔离的 `portfolio_twin_runs` 表、UPDATE/DELETE 拒绝触发器和独立迁移标记。失败会整体回滚，首次成功后无需在无数据库变更的日常发布中重复执行。数据库结构升级必须先备份并执行对应迁移，不能依赖应用启动时自动建表；readiness 必须同时返回 `opportunity_schema=true` 和 `portfolio_twin_schema=true` 才能接流量。
 
 ## 14. 回滚
 

@@ -24,6 +24,7 @@ import sentiment as sentiment_mod
 import fund_switch_cost_service
 import holding_level_recurrence
 import holdings as holdings_mod
+import portfolio_exposure
 import storage
 
 
@@ -346,6 +347,14 @@ def _portfolio_exposure(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _portfolio_exposure_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
+    """Fetch disclosures and persist evidence inside the market-data worker."""
+    return portfolio_exposure.refresh_exposure_snapshot(
+        profile_version_id=str(payload.get("profile_version_id") or "") or None,
+        user_id=_portfolio_user(payload),
+    )
+
+
 def _opportunity_observe(payload: dict[str, Any]) -> dict[str, Any]:
     from opportunity_service import observe_paper_basket
 
@@ -400,6 +409,7 @@ _OPERATIONS: dict[str, OperationHandler] = {
     "portfolio.insights": _portfolio_insights,
     "portfolio.fund_alternatives": _portfolio_fund_alternatives,
     "portfolio.exposure": _portfolio_exposure,
+    "portfolio.exposure_snapshot": _portfolio_exposure_snapshot,
     "opportunity.observe": _opportunity_observe,
 }
 
