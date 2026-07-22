@@ -187,7 +187,8 @@ p = 1 / (1 + exp(-0.045 * (score - 50)))
 - 更新决策中心测试：覆盖四项决策门槛、纸面/测量门禁和“没有交易历史不阻塞研究”；
 - 机会工厂、决策中心和信号定向回归 `24 passed`；
 - 后端全量回归 `466 passed`、`5 warnings`、`4 subtests passed`；
-- Vite 生产构建通过，`1863` 个模块完成转换；
+- Vite 从 `5.4.21` 升级到 `8.1.5`，`@vitejs/plugin-react` 升级到 `5.2.0`，移除旧开发服务器的已知路径读取风险；
+- 完整 `npm audit` 为 `0 vulnerabilities`；Vite 8 生产构建通过，`1847` 个模块完成转换；
 - 本地默认库只读验收成功识别：机会工厂 `succeeded`、结果哈希已验证、纸面组合 `paper_tracking`，Agent/Twin 无运行时明确显示 `empty`，没有生成虚假结果。
 
 ## 9. 明确不做什么
