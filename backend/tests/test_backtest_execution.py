@@ -130,6 +130,11 @@ class ExecutionBacktestTests(unittest.TestCase):
         )
         self.assertGreater(result["execution"]["trade_count"], 0)
         self.assertEqual(result["methodology"]["execution_entry"], "next_trading_day_open")
+        self.assertTrue(result["methodology"]["execution_requires_full_horizon"])
+        self.assertEqual(
+            result["robustness"]["policy_version"],
+            "stock_signal_robustness@1.0.0",
+        )
 
     def test_execution_parameters_are_bounded(self):
         frame = execution_frame([
@@ -142,6 +147,89 @@ class ExecutionBacktestTests(unittest.TestCase):
                 {0: 70},
                 risk_per_trade_pct=9,
             )
+
+    def test_robustness_checks_parameter_time_and_cost_stress(self):
+        dates = pd.bdate_range("2025-01-02", periods=360)
+        close = np.linspace(100, 180, len(dates))
+        frame = pd.DataFrame({
+            "date": dates,
+            "open": close - 0.05,
+            "high": close + 0.25,
+            "low": close - 0.25,
+            "close": close,
+            "volume": np.linspace(1_000_000, 1_300_000, len(dates)),
+        })
+
+        with patch.object(analysis, "_evaluate", return_value=(70.0, [])):
+            result = backtest.backtest(
+                frame,
+                horizon=10,
+                entry_score=65,
+                stop_atr=2,
+                target_atr=3,
+                commission_bps=5,
+                slippage_bps=5,
+                sell_tax_bps=0,
+            )
+
+        robustness = result["robustness"]
+        neighborhood = robustness["parameter_neighborhood"]
+        self.assertEqual(neighborhood["summary"]["scenario_count"], 27)
+        self.assertEqual(
+            sum(item["is_baseline"] for item in neighborhood["scenarios"]),
+            1,
+        )
+        self.assertEqual(robustness["time_consistency"]["period_count"], 4)
+        self.assertEqual(robustness["time_consistency"]["evaluable_count"], 4)
+        self.assertGreaterEqual(
+            robustness["chronological_holdout"]["holdout"]["trade_count"],
+            10,
+        )
+        self.assertEqual(
+            robustness["cost_stress"]["assumptions"],
+            {
+                "commission_bps_per_side": 10.0,
+                "slippage_bps_per_side": 10.0,
+                "sell_tax_bps": 5.0,
+            },
+        )
+        self.assertEqual(robustness["gate"]["status"], "historically_robust")
+
+    def test_score_windows_require_the_full_holding_period(self):
+        scores = {index: 70 for index in range(60, 100)}
+        selected = backtest._score_window(
+            scores,
+            start_index=60,
+            end_index=100,
+            horizon=10,
+        )
+
+        self.assertEqual(min(selected), 60)
+        self.assertEqual(max(selected), 89)
+        self.assertNotIn(90, selected)
+
+    def test_holdout_failure_cannot_be_hidden_by_other_positive_checks(self):
+        gate = backtest._robustness_gate(
+            {"research_gate": {"historically_positive": True}},
+            {
+                "scenario_count": 27,
+                "evaluable_count": 27,
+                "minimum_evaluable_count": 17,
+                "positive_rate_pct": 100.0,
+            },
+            {"trade_count": 15, "historically_positive": False},
+            {"trade_count": 30, "historically_positive": True},
+            {"evaluable_count": 4, "positive_rate_pct": 100.0},
+        )
+
+        self.assertEqual(gate["status"], "chronological_holdout_failed")
+        self.assertFalse(gate["historically_robust"])
+
+    def test_cost_stress_increases_assumptions_without_exceeding_bounds(self):
+        self.assertEqual(backtest._stress_cost(0, 100), 5.0)
+        self.assertEqual(backtest._stress_cost(5, 100), 10.0)
+        self.assertEqual(backtest._stress_cost(70, 100), 100.0)
+        self.assertEqual(backtest._stress_cost(200, 200), 200.0)
 
 
 if __name__ == "__main__":

@@ -18,6 +18,15 @@ import analysis
 
 
 EXECUTION_POLICY_VERSION = "stock_signal_execution_backtest@1.0.0"
+ROBUSTNESS_POLICY_VERSION = "stock_signal_robustness@1.0.0"
+
+PARAMETER_MIN_TRADES = 20
+HOLDOUT_MIN_TRADES = 10
+PERIOD_MIN_TRADES = 5
+MIN_PARAMETER_COVERAGE_PCT = 60.0
+MIN_PARAMETER_PASS_RATE_PCT = 70.0
+MIN_EVALUABLE_PERIODS = 3
+MIN_PERIOD_PASS_RATE_PCT = 50.0
 
 
 def _finite(value) -> float | None:
@@ -292,7 +301,7 @@ def simulate_long_execution(
         "仅模拟多头交易；看跌信号不会被当作可做空许可。",
         "佣金、滑点和卖出税费是用户场景假设，不代表任何券商的实际收费。",
         "未模拟停牌、涨跌停排队、整手限制、分红拆股、汇率、融资成本和市场冲击。",
-        "当前只检验所选单组参数；历史正期望仍可能来自参数选择偏差，不能替代滚动样本外验证。",
+        "单组执行结果不能单独证明策略稳健；必须同时查看参数邻域、后段时间、成本和分阶段压力结果。",
     ]
     if ambiguous_bars:
         warnings.append(
@@ -348,6 +357,395 @@ def simulate_long_execution(
         "trades": trades[-30:],
         "trade_history_truncated": trade_count > 30,
         "warnings": warnings,
+    }
+
+
+def _execution_snapshot(result: dict, *, min_trades: int) -> dict:
+    """Return the compact, comparable part of one execution simulation."""
+    trade_count = int(result.get("trade_count") or 0)
+    expectancy = _finite(result.get("net_expectancy_pct"))
+    profit_factor = _finite(result.get("profit_factor"))
+    evaluable = trade_count >= int(min_trades)
+    historically_positive = bool(
+        evaluable
+        and expectancy is not None
+        and expectancy > 0
+        and (profit_factor is None or profit_factor > 1)
+    )
+    return {
+        "trade_count": trade_count,
+        "win_rate": _rounded(result.get("win_rate"), 1),
+        "net_expectancy_pct": _rounded(expectancy, 3),
+        "profit_factor": _rounded(profit_factor, 3),
+        "strategy_return_pct": _rounded(result.get("strategy_return_pct"), 3),
+        "max_drawdown_pct": _rounded(result.get("max_drawdown_pct"), 3),
+        "evaluable": evaluable,
+        "historically_positive": historically_positive,
+        "minimum_trades": int(min_trades),
+    }
+
+
+def _score_window(
+    scores: dict[int, float],
+    *,
+    start_index: int,
+    end_index: int,
+    horizon: int,
+) -> dict[int, float]:
+    """Keep only signals whose full maximum holding period stays in [start, end)."""
+    latest_signal_index = int(end_index) - int(horizon) - 1
+    if latest_signal_index < int(start_index):
+        return {}
+    return {
+        int(index): float(score)
+        for index, score in scores.items()
+        if int(start_index) <= int(index) <= latest_signal_index
+    }
+
+
+def _date_text(df: pd.DataFrame, index: int) -> str:
+    return str(df.iloc[int(index)]["date"])[:10]
+
+
+def _simulate_window(
+    df: pd.DataFrame,
+    scores: dict[int, float],
+    *,
+    window_id: str,
+    label: str,
+    start_index: int,
+    end_index: int,
+    horizon: int,
+    min_trades: int,
+    execution_kwargs: dict,
+) -> dict:
+    window_scores = _score_window(
+        scores,
+        start_index=start_index,
+        end_index=end_index,
+        horizon=horizon,
+    )
+    result = simulate_long_execution(df, window_scores, horizon=horizon, **execution_kwargs)
+    return {
+        "id": window_id,
+        "label": label,
+        "date_range": [_date_text(df, start_index), _date_text(df, end_index - 1)],
+        "eligible_signal_count": len(window_scores),
+        **_execution_snapshot(result, min_trades=min_trades),
+    }
+
+
+def _grid_values(
+    center: float,
+    offsets: tuple[float, ...],
+    *,
+    lower: float,
+    upper: float,
+) -> list[float]:
+    values = {
+        round(min(upper, max(lower, float(center) + float(offset))), 6)
+        for offset in offsets
+    }
+    return sorted(values)
+
+
+def _stress_cost(value: float, upper: float) -> float:
+    """Raise a cost assumption while respecting the public API bounds."""
+    return round(min(float(upper), max(float(value) * 2, float(value) + 5)), 2)
+
+
+def _robustness_gate(
+    baseline_execution: dict,
+    parameter_summary: dict,
+    holdout: dict,
+    cost_stress: dict,
+    time_consistency: dict,
+) -> dict:
+    baseline_positive = bool(
+        baseline_execution.get("research_gate", {}).get("historically_positive")
+    )
+    if not baseline_positive:
+        return {
+            "status": "baseline_not_positive",
+            "label": "基线尚未通过",
+            "historically_robust": False,
+            "detail": "当前单组参数在完整历史样本上的成本后净期望尚未通过，稳健性检查不应覆盖这一否决结果。",
+        }
+
+    evidence_gaps = []
+    if parameter_summary["evaluable_count"] < parameter_summary["minimum_evaluable_count"]:
+        evidence_gaps.append(
+            f"参数邻域仅 {parameter_summary['evaluable_count']}/{parameter_summary['scenario_count']} 组达到样本门槛"
+        )
+    if holdout["trade_count"] < HOLDOUT_MIN_TRADES:
+        evidence_gaps.append(
+            f"较晚时间段只有 {holdout['trade_count']} 笔交易（至少需 {HOLDOUT_MIN_TRADES} 笔）"
+        )
+    if cost_stress["trade_count"] < PARAMETER_MIN_TRADES:
+        evidence_gaps.append(
+            f"高成本场景只有 {cost_stress['trade_count']} 笔交易（至少需 {PARAMETER_MIN_TRADES} 笔）"
+        )
+    if time_consistency["evaluable_count"] < MIN_EVALUABLE_PERIODS:
+        evidence_gaps.append(
+            f"仅 {time_consistency['evaluable_count']}/4 个时间段达到样本门槛"
+        )
+    if evidence_gaps:
+        return {
+            "status": "insufficient_evidence",
+            "label": "稳健性证据不足",
+            "historically_robust": False,
+            "detail": "；".join(evidence_gaps) + "。扩大历史区间后再判断，不应把缺少样本视作通过。",
+        }
+
+    if not holdout["historically_positive"]:
+        return {
+            "status": "chronological_holdout_failed",
+            "label": "后段时间未通过",
+            "historically_robust": False,
+            "detail": "同一组参数在较晚 40% 历史时间段的成本后净期望或盈利因子未通过，存在时间失效风险。",
+        }
+    if not cost_stress["historically_positive"]:
+        return {
+            "status": "cost_stress_failed",
+            "label": "高成本压力未通过",
+            "historically_robust": False,
+            "detail": "提高佣金、滑点和卖出税费后，历史净期望或盈利因子未通过，策略对成交成本较敏感。",
+        }
+    if (parameter_summary.get("positive_rate_pct") or 0) < MIN_PARAMETER_PASS_RATE_PCT:
+        return {
+            "status": "parameter_fragile",
+            "label": "参数邻域脆弱",
+            "historically_robust": False,
+            "detail": f"只有 {parameter_summary.get('positive_rate_pct') or 0:.1f}% 的可评估邻近参数保持历史正期望，低于 {MIN_PARAMETER_PASS_RATE_PCT:.0f}% 门槛。",
+        }
+    if (time_consistency.get("positive_rate_pct") or 0) < MIN_PERIOD_PASS_RATE_PCT:
+        return {
+            "status": "time_inconsistent",
+            "label": "分阶段表现不一致",
+            "historically_robust": False,
+            "detail": f"只有 {time_consistency.get('positive_rate_pct') or 0:.1f}% 的可评估时间段保持历史正期望，低于 {MIN_PERIOD_PASS_RATE_PCT:.0f}% 门槛。",
+        }
+    return {
+        "status": "historically_robust",
+        "label": "通过历史稳健性门槛",
+        "historically_robust": True,
+        "detail": "基线、较晚时间段、邻近参数、高成本和分阶段检查均达到预设历史门槛；这仍不是买入指令或未来收益承诺。",
+    }
+
+
+def build_execution_robustness(
+    df: pd.DataFrame,
+    scores: dict[int, float],
+    baseline_execution: dict,
+    *,
+    horizon: int,
+    entry_score: float,
+    stop_atr: float,
+    target_atr: float,
+    commission_bps: float,
+    slippage_bps: float,
+    sell_tax_bps: float,
+    risk_per_trade_pct: float,
+    max_position_pct: float,
+) -> dict:
+    """Stress one user-selected strategy without selecting a historical winner."""
+    row_count = len(df)
+    score_start = min(scores) if scores else 60
+    complete_scores = _score_window(
+        scores,
+        start_index=score_start,
+        end_index=row_count,
+        horizon=horizon,
+    )
+    execution_kwargs = {
+        "entry_score": float(entry_score),
+        "stop_atr": float(stop_atr),
+        "target_atr": float(target_atr),
+        "commission_bps": float(commission_bps),
+        "slippage_bps": float(slippage_bps),
+        "sell_tax_bps": float(sell_tax_bps),
+        "risk_per_trade_pct": float(risk_per_trade_pct),
+        "max_position_pct": float(max_position_pct),
+    }
+
+    entry_values = _grid_values(entry_score, (-5, 0, 5), lower=50, upper=90)
+    stop_values = _grid_values(stop_atr, (-0.5, 0, 0.5), lower=0.5, upper=6)
+    target_values = _grid_values(target_atr, (-0.5, 0, 0.5), lower=0.5, upper=12)
+    parameter_scenarios = []
+    for scenario_entry in entry_values:
+        for scenario_stop in stop_values:
+            for scenario_target in target_values:
+                is_baseline = bool(
+                    abs(scenario_entry - float(entry_score)) < 1e-9
+                    and abs(scenario_stop - float(stop_atr)) < 1e-9
+                    and abs(scenario_target - float(target_atr)) < 1e-9
+                )
+                scenario_result = baseline_execution if is_baseline else simulate_long_execution(
+                    df,
+                    complete_scores,
+                    horizon=horizon,
+                    entry_score=scenario_entry,
+                    stop_atr=scenario_stop,
+                    target_atr=scenario_target,
+                    commission_bps=commission_bps,
+                    slippage_bps=slippage_bps,
+                    sell_tax_bps=sell_tax_bps,
+                    risk_per_trade_pct=risk_per_trade_pct,
+                    max_position_pct=max_position_pct,
+                )
+                parameter_scenarios.append({
+                    "entry_score": scenario_entry,
+                    "stop_atr": scenario_stop,
+                    "target_atr": scenario_target,
+                    "is_baseline": is_baseline,
+                    **_execution_snapshot(scenario_result, min_trades=PARAMETER_MIN_TRADES),
+                })
+
+    evaluable_scenarios = [item for item in parameter_scenarios if item["evaluable"]]
+    positive_scenarios = [item for item in evaluable_scenarios if item["historically_positive"]]
+    evaluable_expectancies = [
+        item["net_expectancy_pct"]
+        for item in evaluable_scenarios
+        if item["net_expectancy_pct"] is not None
+    ]
+    scenario_count = len(parameter_scenarios)
+    minimum_evaluable_count = int(np.ceil(scenario_count * MIN_PARAMETER_COVERAGE_PCT / 100))
+    parameter_summary = {
+        "scenario_count": scenario_count,
+        "evaluable_count": len(evaluable_scenarios),
+        "minimum_evaluable_count": minimum_evaluable_count,
+        "coverage_pct": _rounded(len(evaluable_scenarios) / scenario_count * 100, 1),
+        "positive_count": len(positive_scenarios),
+        "positive_rate_pct": _rounded(
+            len(positive_scenarios) / len(evaluable_scenarios) * 100
+            if evaluable_scenarios else None,
+            1,
+        ),
+        "net_expectancy_distribution_pct": {
+            "minimum": _rounded(min(evaluable_expectancies), 3) if evaluable_expectancies else None,
+            "median": _rounded(np.median(evaluable_expectancies), 3) if evaluable_expectancies else None,
+            "maximum": _rounded(max(evaluable_expectancies), 3) if evaluable_expectancies else None,
+        },
+    }
+
+    split_index = score_start + int((row_count - score_start) * 0.60)
+    development = _simulate_window(
+        df,
+        scores,
+        window_id="development",
+        label="较早 60%（开发段）",
+        start_index=score_start,
+        end_index=split_index,
+        horizon=horizon,
+        min_trades=HOLDOUT_MIN_TRADES,
+        execution_kwargs=execution_kwargs,
+    )
+    holdout = _simulate_window(
+        df,
+        scores,
+        window_id="later_holdout",
+        label="较晚 40%（时间留出段）",
+        start_index=split_index,
+        end_index=row_count,
+        horizon=horizon,
+        min_trades=HOLDOUT_MIN_TRADES,
+        execution_kwargs=execution_kwargs,
+    )
+
+    boundaries = np.linspace(score_start, row_count, 5, dtype=int).tolist()
+    periods = []
+    for index in range(4):
+        periods.append(_simulate_window(
+            df,
+            scores,
+            window_id=f"period_{index + 1}",
+            label=f"时间段 {index + 1}",
+            start_index=boundaries[index],
+            end_index=boundaries[index + 1],
+            horizon=horizon,
+            min_trades=PERIOD_MIN_TRADES,
+            execution_kwargs=execution_kwargs,
+        ))
+    evaluable_periods = [item for item in periods if item["evaluable"]]
+    positive_periods = [item for item in evaluable_periods if item["historically_positive"]]
+    time_consistency = {
+        "period_count": 4,
+        "evaluable_count": len(evaluable_periods),
+        "positive_count": len(positive_periods),
+        "positive_rate_pct": _rounded(
+            len(positive_periods) / len(evaluable_periods) * 100
+            if evaluable_periods else None,
+            1,
+        ),
+        "periods": periods,
+    }
+
+    stressed_costs = {
+        "commission_bps_per_side": _stress_cost(commission_bps, 100),
+        "slippage_bps_per_side": _stress_cost(slippage_bps, 100),
+        "sell_tax_bps": _stress_cost(sell_tax_bps, 200),
+    }
+    stressed_result = simulate_long_execution(
+        df,
+        complete_scores,
+        horizon=horizon,
+        entry_score=entry_score,
+        stop_atr=stop_atr,
+        target_atr=target_atr,
+        commission_bps=stressed_costs["commission_bps_per_side"],
+        slippage_bps=stressed_costs["slippage_bps_per_side"],
+        sell_tax_bps=stressed_costs["sell_tax_bps"],
+        risk_per_trade_pct=risk_per_trade_pct,
+        max_position_pct=max_position_pct,
+    )
+    cost_stress = {
+        "assumptions": stressed_costs,
+        **_execution_snapshot(stressed_result, min_trades=PARAMETER_MIN_TRADES),
+    }
+
+    gate = _robustness_gate(
+        baseline_execution,
+        parameter_summary,
+        holdout,
+        cost_stress,
+        time_consistency,
+    )
+    return {
+        "policy_version": ROBUSTNESS_POLICY_VERSION,
+        "gate": gate,
+        "criteria": {
+            "parameter_min_trades": PARAMETER_MIN_TRADES,
+            "parameter_min_coverage_pct": MIN_PARAMETER_COVERAGE_PCT,
+            "parameter_min_positive_rate_pct": MIN_PARAMETER_PASS_RATE_PCT,
+            "holdout_min_trades": HOLDOUT_MIN_TRADES,
+            "period_min_trades": PERIOD_MIN_TRADES,
+            "minimum_evaluable_periods": MIN_EVALUABLE_PERIODS,
+            "period_min_positive_rate_pct": MIN_PERIOD_PASS_RATE_PCT,
+        },
+        "parameter_neighborhood": {
+            "axes": {
+                "entry_score": entry_values,
+                "stop_atr": stop_values,
+                "target_atr": target_values,
+            },
+            "summary": parameter_summary,
+            "scenarios": parameter_scenarios,
+        },
+        "chronological_holdout": {
+            "method": "fixed_parameter_60_40_chronological_holdout",
+            "split_date": _date_text(df, split_index),
+            "development": development,
+            "holdout": holdout,
+        },
+        "cost_stress": cost_stress,
+        "time_consistency": time_consistency,
+        "warnings": [
+            "时间留出段使用的是当前用户参数；若反复查看结果后继续调参，该后段也会被人为污染，不能再视为真正未见样本。",
+            "参数邻域只检查入场分数 ±5、止损 ATR ±0.5、止盈 ATR ±0.5，不代表穷举了所有策略，也不挑选历史最佳组合。",
+            "当前没有进行多重检验校正、幸存者偏差校正或按牛熊/流动性状态重新训练。",
+            "所有交易均要求在各自时间窗口内走完最长持有期，避免跨越分割边界或被数据末端提前截断。",
+            "通过历史稳健性门槛只说明这组假设较不容易被简单压力击穿，不代表未来会盈利。",
+        ],
     }
 
 
@@ -450,9 +848,29 @@ def backtest(
                 "win_rate": round(float((g["fwd"] > 0).mean() * 100), 1),
             })
 
+    complete_execution_scores = _score_window(
+        scores,
+        start_index=60,
+        end_index=n,
+        horizon=horizon,
+    )
     execution = simulate_long_execution(
         df,
+        complete_execution_scores,
+        horizon=horizon,
+        entry_score=entry_score,
+        stop_atr=stop_atr,
+        target_atr=target_atr,
+        commission_bps=commission_bps,
+        slippage_bps=slippage_bps,
+        sell_tax_bps=sell_tax_bps,
+        risk_per_trade_pct=risk_per_trade_pct,
+        max_position_pct=max_position_pct,
+    )
+    robustness = build_execution_robustness(
+        df,
         scores,
+        execution,
         horizon=horizon,
         entry_score=entry_score,
         stop_atr=stop_atr,
@@ -475,10 +893,13 @@ def backtest(
         "directional_count": dir_count,
         "buckets": bucket_stats,
         "execution": execution,
+        "robustness": robustness,
         "methodology": {
             "direction_samples_overlap": True,
             "execution_trades_overlap": False,
             "signal_known_at_close": True,
             "execution_entry": "next_trading_day_open",
+            "execution_requires_full_horizon": True,
+            "robustness_selection": "fixed_user_parameters_no_best_scenario_selection",
         },
     }

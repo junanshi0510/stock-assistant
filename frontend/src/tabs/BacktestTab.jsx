@@ -36,6 +36,11 @@ function number(value, digits = 2) {
   return Number(value).toFixed(digits)
 }
 
+function rate(value, digits = 1) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return '—'
+  return `${Number(value).toFixed(digits)}%`
+}
+
 function EquityCurve({ points }) {
   if (!points?.length) return <div className="hint">暂无可绘制的交易净值。</div>
   const width = 820
@@ -99,12 +104,21 @@ export default function BacktestTab({ markets }) {
   const execution = bt?.execution
   const gate = execution?.research_gate
   const gateTone = gate?.historically_positive ? 'up' : gate?.status === 'insufficient_samples' ? 'neutral' : 'down'
+  const robustness = bt?.robustness
+  const robustGate = robustness?.gate
+  const robustTone = robustGate?.historically_robust ? 'up' : robustGate?.status === 'insufficient_evidence' ? 'neutral' : 'down'
+  const parameterSummary = robustness?.parameter_neighborhood?.summary
+  const holdout = robustness?.chronological_holdout?.holdout
+  const costStress = robustness?.cost_stress
+  const timeConsistency = robustness?.time_consistency
+  const chronologicalWindows = robustness ? [robustness.chronological_holdout.development, holdout] : []
 
   return (
     <>
       <div className="warning">
         <b>历史验证分两层</b>:方向统计检查过去每天的信号,执行仿真则只在下一交易日开盘买入,
         不重叠持仓,并扣除你设定的佣金、滑点和卖出税费。它用于排除“看起来很准、实际无法赚钱”的参数,
+        稳健性体检还会检查较晚时间段、邻近参数、高成本和四段时间一致性。
         仍不包含停牌、涨跌停排队、整手、公司行为和实际券商规则,<b>不代表未来表现</b>。
       </div>
 
@@ -180,6 +194,134 @@ export default function BacktestTab({ markets }) {
                   <span>仓位上限 {execution.assumptions.max_position_pct}%</span>
                 </div>
               </div>
+
+              {robustness && (
+                <>
+                  <div className={`panel bt-gate-panel bt-robustness-gate ${robustTone}`}>
+                    <div className="bt-gate-head">
+                      <div>
+                        <span className={`badge ${robustTone}`}>{robustGate?.label || '未评估'}</span>
+                        <h3>策略稳健性体检</h3>
+                        <p>{robustGate?.detail}</p>
+                      </div>
+                      <div className="bt-policy-version">{robustness.policy_version}</div>
+                    </div>
+                    <div className="bt-assumption-summary">
+                      <span>固定当前参数·不挑历史最佳</span>
+                      <span>较早 60% / 较晚 40%</span>
+                      <span>邻域通过率 ≥ {robustness.criteria.parameter_min_positive_rate_pct}%</span>
+                      <span>参数场景每组 ≥ {robustness.criteria.parameter_min_trades} 笔</span>
+                      <span>时间段至少 {robustness.criteria.minimum_evaluable_periods}/4 可评估</span>
+                    </div>
+                  </div>
+
+                  <div className="bt-cards bt-robustness-cards">
+                    <div className="bt-card">
+                      <div className="k">邻近参数正期望率</div>
+                      <div className="v" style={{ color: parameterSummary?.positive_rate_pct >= robustness.criteria.parameter_min_positive_rate_pct ? 'var(--up)' : 'var(--down)' }}>{rate(parameterSummary?.positive_rate_pct)}</div>
+                      <div className="hint">{parameterSummary?.positive_count ?? 0}/{parameterSummary?.evaluable_count ?? 0} 组通过·共 {parameterSummary?.scenario_count ?? 0} 组</div>
+                    </div>
+                    <div className="bt-card">
+                      <div className="k">较晚 40% 单笔净期望</div>
+                      <div className="v" style={{ color: acolor(holdout?.net_expectancy_pct) }}>{pct(holdout?.net_expectancy_pct, 3)}</div>
+                      <div className="hint">{holdout?.trade_count ?? 0} 笔·盈利因子 {number(holdout?.profit_factor, 3)}</div>
+                    </div>
+                    <div className="bt-card">
+                      <div className="k">高成本单笔净期望</div>
+                      <div className="v" style={{ color: acolor(costStress?.net_expectancy_pct) }}>{pct(costStress?.net_expectancy_pct, 3)}</div>
+                      <div className="hint">{costStress?.trade_count ?? 0} 笔·盈利因子 {number(costStress?.profit_factor, 3)}</div>
+                    </div>
+                    <div className="bt-card">
+                      <div className="k">分阶段正期望率</div>
+                      <div className="v" style={{ color: timeConsistency?.positive_rate_pct >= robustness.criteria.period_min_positive_rate_pct ? 'var(--up)' : 'var(--down)' }}>{rate(timeConsistency?.positive_rate_pct)}</div>
+                      <div className="hint">{timeConsistency?.positive_count ?? 0}/{timeConsistency?.evaluable_count ?? 0} 个可评估时间段通过</div>
+                    </div>
+                  </div>
+
+                  <div className="panel">
+                    <h3 className="section-title">🕒 时间留出与分阶段检查 <span className="hint">每个窗口内的交易必须完整走完最长持有期</span></h3>
+                    <div className="corr-wrap">
+                      <table className="bt-robustness-table">
+                        <thead><tr><th>窗口</th><th>日期</th><th>可用信号</th><th>交易</th><th>净期望</th><th>盈利因子</th><th>策略收益</th><th>最大回撤</th><th>结论</th></tr></thead>
+                        <tbody>
+                          {chronologicalWindows.map((item) => (
+                            <tr key={item.id}>
+                              <td><b>{item.label}</b></td>
+                              <td>{item.date_range[0]}<small>至 {item.date_range[1]}</small></td>
+                              <td>{item.eligible_signal_count}</td>
+                              <td>{item.trade_count}<small>门槛 {item.minimum_trades}</small></td>
+                              <td style={{ color: acolor(item.net_expectancy_pct) }}>{pct(item.net_expectancy_pct, 3)}</td>
+                              <td>{number(item.profit_factor, 3)}</td>
+                              <td style={{ color: acolor(item.strategy_return_pct) }}>{pct(item.strategy_return_pct, 3)}</td>
+                              <td style={{ color: 'var(--down)' }}>{pct(item.max_drawdown_pct, 3)}</td>
+                              <td><span className={`badge ${!item.evaluable ? 'neutral' : item.historically_positive ? 'up' : 'down'}`}>{!item.evaluable ? '样本不足' : item.historically_positive ? '通过' : '未通过'}</span></td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <h4 className="bt-robustness-subhead">四段时间一致性</h4>
+                    <div className="corr-wrap">
+                      <table className="bt-robustness-table compact">
+                        <thead><tr><th>时间段</th><th>日期</th><th>交易</th><th>净期望</th><th>盈利因子</th><th>策略收益</th><th>最大回撤</th><th>结论</th></tr></thead>
+                        <tbody>
+                          {timeConsistency?.periods?.map((item) => (
+                            <tr key={item.id}>
+                              <td><b>{item.label}</b></td>
+                              <td>{item.date_range[0]}<small>至 {item.date_range[1]}</small></td>
+                              <td>{item.trade_count}<small>门槛 {item.minimum_trades}</small></td>
+                              <td style={{ color: acolor(item.net_expectancy_pct) }}>{pct(item.net_expectancy_pct, 3)}</td>
+                              <td>{number(item.profit_factor, 3)}</td>
+                              <td style={{ color: acolor(item.strategy_return_pct) }}>{pct(item.strategy_return_pct, 3)}</td>
+                              <td style={{ color: 'var(--down)' }}>{pct(item.max_drawdown_pct, 3)}</td>
+                              <td><span className={`badge ${!item.evaluable ? 'neutral' : item.historically_positive ? 'up' : 'down'}`}>{!item.evaluable ? '样本不足' : item.historically_positive ? '通过' : '未通过'}</span></td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <div className="panel">
+                    <h3 className="section-title">🧱 参数与成本压力 <span className="hint">查看附近参数是否一起成立,不展示“历史最佳组合”</span></h3>
+                    <div className="bt-robustness-distribution">
+                      <div><span>净期望最弱值</span><b style={{ color: acolor(parameterSummary?.net_expectancy_distribution_pct?.minimum) }}>{pct(parameterSummary?.net_expectancy_distribution_pct?.minimum, 3)}</b></div>
+                      <div><span>净期望中位数</span><b style={{ color: acolor(parameterSummary?.net_expectancy_distribution_pct?.median) }}>{pct(parameterSummary?.net_expectancy_distribution_pct?.median, 3)}</b></div>
+                      <div><span>净期望最强值</span><b style={{ color: acolor(parameterSummary?.net_expectancy_distribution_pct?.maximum) }}>{pct(parameterSummary?.net_expectancy_distribution_pct?.maximum, 3)}</b></div>
+                      <div><span>压力成本 bps</span><b>{costStress?.assumptions?.commission_bps_per_side ?? '—'} / {costStress?.assumptions?.slippage_bps_per_side ?? '—'} / {costStress?.assumptions?.sell_tax_bps ?? '—'}</b><small>佣金单边 / 滑点单边 / 卖出税费</small></div>
+                    </div>
+                    <details className="bt-robustness-details">
+                      <summary>查看全部 {parameterSummary?.scenario_count ?? 0} 组邻近参数</summary>
+                      <div className="corr-wrap">
+                        <table className="bt-robustness-table bt-parameter-table">
+                          <thead><tr><th>入场分</th><th>止损 ATR</th><th>止盈 ATR</th><th>交易</th><th>净期望</th><th>盈利因子</th><th>策略收益</th><th>最大回撤</th><th>结论</th></tr></thead>
+                          <tbody>
+                            {robustness.parameter_neighborhood.scenarios.map((item) => (
+                              <tr key={`${item.entry_score}-${item.stop_atr}-${item.target_atr}`} className={item.is_baseline ? 'baseline' : ''}>
+                                <td>{item.entry_score}{item.is_baseline && <small>当前参数</small>}</td>
+                                <td>{item.stop_atr}</td>
+                                <td>{item.target_atr}</td>
+                                <td>{item.trade_count}<small>门槛 {item.minimum_trades}</small></td>
+                                <td style={{ color: acolor(item.net_expectancy_pct) }}>{pct(item.net_expectancy_pct, 3)}</td>
+                                <td>{number(item.profit_factor, 3)}</td>
+                                <td style={{ color: acolor(item.strategy_return_pct) }}>{pct(item.strategy_return_pct, 3)}</td>
+                                <td style={{ color: 'var(--down)' }}>{pct(item.max_drawdown_pct, 3)}</td>
+                                <td><span className={`badge ${!item.evaluable ? 'neutral' : item.historically_positive ? 'up' : 'down'}`}>{!item.evaluable ? '样本不足' : item.historically_positive ? '通过' : '未通过'}</span></td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </details>
+                  </div>
+
+                  <div className="warning bt-limitations">
+                    <b>稳健性检查仍有边界</b>
+                    <ul>{robustness.warnings.map((item) => <li key={item}>{item}</li>)}</ul>
+                  </div>
+                </>
+              )}
 
               <div className="bt-cards bt-execution-cards">
                 <div className="bt-card"><div className="k">风险仓位复利结果</div><div className="v" style={{ color: acolor(execution.strategy_return_pct) }}>{pct(execution.strategy_return_pct)}</div><div className="hint">{execution.trade_count} 笔非重叠交易</div></div>
