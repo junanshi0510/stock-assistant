@@ -18,6 +18,7 @@
 - 全组合资金决策引擎升级为 `whole_portfolio_next_best_action.v2`：研究预算不再对合格策略简单等权，而是读取委员会袖套和候选上限，再继续经过已有仓位优先级、IPS、可信估值、单品/权益/行业容量和四组压力情景。委员会只输出相对优先/回避与人工研究上限，不发布伪上涨概率、不计算股数、不创建订单。
 - 新增 4 个受认证操作、1 张用户隔离且拒绝 UPDATE/DELETE 的不可变指令表、`opportunity-investment-committee.v1` PostgreSQL 迁移和独立 readiness 门禁。当前 OpenAPI 共 `178` 个操作、`153` 条路径，其中机会工厂为 `20` 条路径、`24` 个操作。完整竞品映射、公式、数据模型、接口、迁移和测试记录见 [`docs/updates/2026-07-23-005-adaptive-strategy-investment-committee.md`](docs/updates/2026-07-23-005-adaptive-strategy-investment-committee.md)。
 - 后端全量回归 `529 tests` 通过，前端 `npm audit` 为 `0 vulnerabilities`，Vite 生产构建完成 `1852` 个模块转换。本地真实浏览器验证了投资委员会导航、收集态、缺失值不冒充 0、首次冻结、重复冻结幂等、历史绑定、无控制台错误以及窄屏无全局横向溢出。
+- 功能提交 `aaf5fe0` 已推送 GitHub `main` 并以相同 release 发布到 `http://8.148.67.79/` 的 `8001/8002` 两个 API 副本。生产迁移标记、Schema readiness、数据库不可变触发器、PostgreSQL、Redis、五类 Worker、Celery Beat、Nginx 与私有 OSS 均通过；发布包专项 `22 tests` 通过。临时普通用户完成匿名 `401`、登录、收集态 100% 现金、首次冻结、重复冻结内容寻址复用、历史/详情双哈希和公网 UI 验收后已停用，会话撤销后浏览器重新进入登录页。发布后 AES256 备份已上传私有 OSS，SHA-256 为 `41f726e0ec90035b40f0d852dfad59767361f26a7f095b5073d2556ec3698548`，并在隔离库恢复核对 `66` 张表和 `9` 个迁移标记。
 
 ### 2026-07-23：投资指挥台与全组合资金决策引擎
 

@@ -283,7 +283,17 @@ python -m migrations.opportunity_committee_v1
 - OpenAPI：`153` 条路径、`178` 个操作；机会工厂 `20` 条路径、`24` 个操作；
 - 真实浏览器：收集态、首次冻结、相同 Evidence 重复冻结幂等、历史当前绑定、`null` 指标显示“—”、桌面/窄屏无全局横向溢出、控制台无 warning/error 均通过。
 
-生产迁移、双 API 副本发布、真实认证/API 和公网浏览器验收结果会在发布完成后追加到本记录。
+生产结果：
+
+- 功能提交 `aaf5fe0e4891a09d1e240e821580e8f2ca5d576e` 已推送 GitHub `main`，并通过内容寻址 release 发布到 `http://8.148.67.79/`；
+- 发布前先执行 PostgreSQL 备份，再显式运行 `opportunity-investment-committee.v1` 迁移。生产存在 1 个迁移标记、1 张委员会指令表和 1 个 PostgreSQL 不可变触发器；实际尝试 UPDATE 已被数据库以 immutable 错误拒绝；
+- `8001`、`8002` 两个 API 副本均报告 release `aaf5fe0e4891a09d1e240e821580e8f2ca5d576e`，`opportunity_committee_schema=true`，PostgreSQL、Redis、私有 OSS、五类 Worker 和五条队列均为 ready；Nginx 与全部 systemd 应用服务为 active；
+- 公网 `/health/ready` 返回 `403` 是预期边界：详细健康接口只允许 loopback；公网首页和业务 UI 正常可达，匿名委员会接口返回 `401`；
+- 生产 release 在隔离临时数据库上执行委员会、全组合资金决策和路由契约专项，`22 tests` 全部通过，不读写生产业务事实；
+- 临时普通用户真实完成注册、登录和 CSRF 写请求。空账户委员会正确返回 `collecting`、0 个策略、0 个候选、0% 可投入和 100% 现金；首次冻结 `created=true`，相同证据再次冻结 `created=false` 且复用同一 mandate ID，历史和详情的 Evidence/Result SHA-256 与首次结果一致；
+- 公网真实浏览器完成“登录 → 机会工厂 → 投资委员会 → 重复冻结”闭环，页面正确展示引擎版本、现金、漂移阈值、候选上限、不可变历史与“证据没有变化，沿用已有指令”提示，应用控制台无 warning/error；
+- 临时账户验收后已停用，全部会话由服务端撤销；原密码登录返回 `401`，已登录浏览器刷新后回到登录页；
+- 发布后 PostgreSQL 备份以 AES256 上传私有 OSS，SHA-256 为 `41f726e0ec90035b40f0d852dfad59767361f26a7f095b5073d2556ec3698548`；最新备份在独立临时数据库恢复成功，核对 `66` 张表和 `9` 个迁移标记。
 
 ## 14. 明确限制
 
