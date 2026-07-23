@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import { fetchDecisionCenter } from '../api/portfolio'
+import CapitalDecisionCommand from '../features/decision/CapitalDecisionCommand'
 import DecisionCenter from '../features/decision/DecisionCenter'
 import DecisionWorkflow from '../features/decision/DecisionWorkflow'
 
@@ -124,6 +125,8 @@ export default function DashboardTab({ goPortfolio, goFunds, goMarket, goAgent, 
 
   return (
     <>
+      <CapitalDecisionCommand onNavigate={navigate} />
+
       <section className="command-hero" aria-label="今日投资决策">
         <div>
           <span className="eyebrow">今日决策</span>

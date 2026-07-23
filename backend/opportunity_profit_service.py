@@ -1186,7 +1186,7 @@ def dispatch_due_observations(
             skipped += 1
             continue
         last_time = _parse_datetime(
-            latest.get("created_at") or latest.get("observed_at")
+            latest.get("observed_at") or latest.get("created_at")
         )
         if last_time and (
             current - last_time

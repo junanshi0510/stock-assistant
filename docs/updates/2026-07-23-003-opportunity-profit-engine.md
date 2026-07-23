@@ -350,4 +350,14 @@ OpenAPI: 170 operations / 147 paths
 7. 核对新表、幂等索引、不可变触发器、定时任务、新 API 与前端资产；
 8. 再做一次迁移后备份和隔离恢复。
 
-生产实测结果将在本次提交发布后补入本节。
+本功能已随提交 `e468908` 推送至 GitHub `main` 并发布到 `http://8.148.67.79/`。
+
+生产实测：
+
+- 迁移前加密 PostgreSQL 备份已上传私有 OSS；隔离恢复核对 `62` 张 public 表和 `6` 个迁移标记；
+- `opportunity-profit-engine.v1` 迁移成功，迁移后数据库为 `64` 张 public 表和 `7` 个迁移标记，两张收益表、观察幂等索引及不可变触发器均存在；
+- `api-8001/api-8002` 均运行 release `e46890805433e6342598f42777d66199c4422ff0`，`opportunity_profit_schema=true`，PostgreSQL、Redis、私有 OSS、五类 Worker 与 Celery Beat 均通过严格健康检查；
+- Celery Beat 已注册收益观察调度，scheduler 与 market-data Worker 的任务路由和运行状态通过；
+- 公网页面与版本化静态资源返回 `200`，匿名访问收益实验室接口返回 `401`；
+- 临时普通用户完成真实 API 与浏览器验收，随后账号已停用、活动会话已撤销；页面无控制台 warning/error；
+- 迁移后再次生成加密备份并上传私有 OSS，随后在隔离数据库恢复核对 `64` 张表和 `7` 个迁移标记。

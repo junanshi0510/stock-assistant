@@ -23,6 +23,7 @@ import monitor
 import portfolio_exposure
 import portfolio_decision_twin
 import portfolio_action_report
+import portfolio_capital_decision
 import portfolio_review
 import portfolio_valuation
 import storage
@@ -44,6 +45,10 @@ from object_storage import (
 from portfolio_twin_repository import (
     PortfolioTwinNotFoundError,
     PortfolioTwinRepository,
+)
+from portfolio_capital_repository import (
+    PortfolioCapitalPlanNotFoundError,
+    repository as portfolio_capital_repository,
 )
 from portfolio_valuation_repository import (
     PortfolioValuationNotFoundError,
@@ -934,6 +939,77 @@ def get_decision_center(principal: AuthPrincipal = Depends(principal_from_reques
         return decision_center.build_decision_center(user_id=_subject_id(principal))
     except Exception as error:
         raise HTTPException(status_code=502, detail=f"真实投资决策中心生成失败:{error}")
+
+
+@router.get("/api/portfolio/capital-decision")
+def get_portfolio_capital_decision(
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        return portfolio_capital_decision.current_capital_decision(
+            user_id=_subject_id(principal),
+            tenant_id=_tenant_id(principal),
+        )
+    except Exception as error:
+        raise HTTPException(
+            status_code=502,
+            detail=f"组合资金决策生成失败:{error}",
+        ) from error
+
+
+@router.post("/api/portfolio/capital-decision/plans")
+def create_portfolio_capital_decision_plan(
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        item, created = portfolio_capital_decision.freeze_capital_decision(
+            user_id=_subject_id(principal),
+            tenant_id=_tenant_id(principal),
+            actor_id=_actor_id(principal),
+        )
+        return {"item": item, "created": created}
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(
+            status_code=502,
+            detail=f"资金决策计划冻结失败:{error}",
+        ) from error
+
+
+@router.get("/api/portfolio/capital-decision/plans")
+def get_portfolio_capital_decision_plans(
+    limit: int = Query(default=30, ge=1, le=100),
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    return portfolio_capital_decision.list_plan_summaries(
+        user_id=_subject_id(principal),
+        tenant_id=_tenant_id(principal),
+        limit=limit,
+    )
+
+
+@router.get("/api/portfolio/capital-decision/plans/{plan_id}")
+def get_portfolio_capital_decision_plan(
+    plan_id: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    item = portfolio_capital_repository.get_plan(
+        plan_id,
+        tenant_id=_tenant_id(principal),
+        user_id=_subject_id(principal),
+    )
+    if item is None:
+        raise HTTPException(status_code=404, detail="资金决策计划不存在")
+    try:
+        item["integrity"] = portfolio_capital_repository.verify_plan(
+            plan_id,
+            tenant_id=_tenant_id(principal),
+            user_id=_subject_id(principal),
+        )
+    except PortfolioCapitalPlanNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return item
 
 
 def _decision_task_public(item: dict) -> dict:

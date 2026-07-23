@@ -562,10 +562,16 @@ def _allocation_summary(
         "cash_amount": _round(amounts.get("cash_reserve", 0.0)),
         "cash_ratio": _round(amounts.get("cash_reserve", 0.0) / total * 100, 4),
         "max_single_ratio": _round(max_single, 4),
+        "equity_lower_amount": _round(equity_lower),
+        "equity_upper_amount": _round(equity_upper),
         "equity_lower_ratio": _round(equity_lower / total * 100, 4),
         "equity_upper_ratio": _round(equity_upper / total * 100, 4),
+        "industry_max_lower_amount": _round(industry_lower),
+        "industry_max_upper_amount": _round(industry_upper),
         "industry_max_lower_ratio": _round(industry_lower / total * 100, 4),
         "industry_max_upper_ratio": _round(industry_upper / total * 100, 4),
+        "unknown_market_amount": _round(unknown_market),
+        "unknown_industry_amount": _round(unknown_industry),
         "unknown_market_ratio": _round(unknown_market / total * 100, 4),
         "unknown_industry_ratio": _round(unknown_industry / total * 100, 4),
         "markets": market_rows,
@@ -645,6 +651,56 @@ def _policy_gates(portfolio: dict[str, Any], profile: dict[str, Any]) -> list[di
             }
         )
     return gates
+
+
+def evaluate_static_portfolio(
+    *,
+    holdings: list[dict[str, Any]],
+    exposure: dict[str, Any],
+    profile: dict[str, Any],
+    scenario: dict[str, Any],
+) -> dict[str, Any]:
+    """Evaluate one explicit portfolio without implying a trade or forecast.
+
+    This public adapter lets other deterministic decision services reuse the
+    decision-twin exposure intervals and policy gates. The caller must provide
+    every amount explicitly; unlike ``build_decision_twin`` this function does
+    not infer cash transfers or permit hidden external capital.
+    """
+    normalized = normalize_scenario(scenario)
+    models, total, warnings = _build_position_models(holdings, exposure)
+    amounts = {
+        model["holding_id"]: float(model["base_amount"])
+        for model in models
+    }
+    requested_budget = float(normalized["loss_budget_pct"])
+    policy_budget = (
+        _number(profile.get("max_drawdown_pct"))
+        if profile.get("configured")
+        else None
+    )
+    effective_budget = (
+        min(requested_budget, policy_budget)
+        if policy_budget is not None
+        else requested_budget
+    )
+    evaluated = _evaluate_portfolio(
+        models,
+        amounts,
+        total,
+        normalized,
+        effective_budget,
+    )
+    evaluated["policy_gates"] = _policy_gates(evaluated, profile)
+    return {
+        "schema_version": "portfolio_static_stress.v1",
+        "method_version": METHOD_VERSION,
+        "scenario": normalized,
+        "effective_loss_budget_pct": effective_budget,
+        "portfolio": evaluated,
+        "warnings": warnings,
+        "execution_authorized": False,
+    }
 
 
 def _scale_scenario(scenario: dict[str, Any], factor: float) -> dict[str, Any]:

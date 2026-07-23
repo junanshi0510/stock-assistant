@@ -192,6 +192,24 @@ export function fetchDecisionCenter() {
   return getJson('/api/decision-center')
 }
 
+export function fetchPortfolioCapitalDecision() {
+  return getJson('/api/portfolio/capital-decision')
+}
+
+export function freezePortfolioCapitalDecision() {
+  return getJson('/api/portfolio/capital-decision/plans', {
+    method: 'POST',
+  })
+}
+
+export function fetchPortfolioCapitalDecisionPlans(limit = 30) {
+  return getJson(`/api/portfolio/capital-decision/plans?limit=${encodeURIComponent(limit)}`)
+}
+
+export function fetchPortfolioCapitalDecisionPlan(planId) {
+  return getJson(`/api/portfolio/capital-decision/plans/${encodeURIComponent(planId)}`)
+}
+
 export function fetchDecisionTasks({ status = '', includeResolved = false, limit = 50 } = {}) {
   const query = new URLSearchParams({
     include_resolved: String(includeResolved),
