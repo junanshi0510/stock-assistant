@@ -1,4 +1,4 @@
-import { Activity, AlertTriangle, CheckCircle2, CloudCog, Gauge, KeyRound, PlayCircle, RefreshCw, Shield, UserPlus, UsersRound } from 'lucide-react'
+import { Activity, AlertTriangle, CheckCircle2, CloudCog, Gauge, KeyRound, PlayCircle, RefreshCw, ServerCog, Shield, UserPlus, UsersRound } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { fetchAdminAvailability, runAdminAvailabilityProbe } from '../api/availability'
 import {
@@ -31,12 +31,23 @@ const AVAILABILITY_LABELS = {
 }
 
 const CAPABILITY_LABELS = {
+  api_traffic: 'API 流量与副本',
   saved_data_read: '已保存事实读取',
   market_refresh: '市场数据刷新',
   portfolio_valuation_refresh: '组合估值刷新',
   agent_research: '投资 Agent',
   private_ocr_import: '私有 OCR 导入',
   durable_scheduling: '持久调度',
+}
+
+const CAPABILITY_MODE_LABELS = {
+  normal: '正常',
+  partial: '部分可用',
+  deterministic_only: '确定性模式',
+  redundant: '双副本',
+  reduced_redundancy: '冗余降低',
+  single_instance_unmonitored: '本地单实例',
+  unavailable: '不可用',
 }
 
 function timeText(value) {
@@ -125,6 +136,11 @@ export default function AdminTab({ currentUser }) {
   const counts = overview?.users || {}
   const availabilityState = availability?.monitoring_stale ? 'unknown' : (availability?.status || 'unknown')
   const components = availability?.latest?.payload?.components || []
+  const apiReplicas = components.filter((item) => item.category === 'api_replica')
+  const apiReplicaSummary = availability?.latest?.payload?.metadata?.api_replicas || {}
+  const apiReplicaReadyCount = apiReplicaSummary.ready_count
+    ?? apiReplicas.filter((item) => Boolean(item.details?.ready)).length
+  const apiReplicaConfiguredCount = apiReplicaSummary.configured_count ?? apiReplicas.length
   const capabilities = availability?.capabilities || {}
   const incidents = availability?.incidents || []
   const openIncidents = incidents.filter((item) => item.status === 'open')
@@ -170,11 +186,26 @@ export default function AdminTab({ currentUser }) {
             const item = capabilities[key] || {}
             return <article key={key} className={`availability-capability ${item.available ? 'available' : 'unavailable'}`}>
               <span>{item.available ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}{label}</span>
-              <strong>{item.mode === 'normal' ? '正常' : item.mode === 'partial' ? '部分可用' : item.mode === 'deterministic_only' ? '确定性模式' : item.available ? '可用' : '不可用'}</strong>
+              <strong>{CAPABILITY_MODE_LABELS[item.mode] || (item.available ? '可用' : '不可用')}</strong>
               {item.markets && <small>{Object.entries(item.markets).map(([market, state]) => `${market} ${AVAILABILITY_LABELS[state] || state}`).join(' · ')}</small>}
+              {key === 'api_traffic' && <small>{item.expected_replicas ? `${item.ready_replicas || 0}/${item.expected_replicas} 副本 · ${item.release_consistent ? '版本一致' : '需要核对版本'}` : '生产环境启用双副本探测'}</small>}
             </article>
           })}
         </div>
+
+        {apiReplicas.length > 0 && <>
+          <div className="admin-section-heading availability-subheading"><div><span className="eyebrow">Traffic Plane</span><h3><ServerCog size={17} />API 双副本流量层</h3></div><small>{apiReplicaReadyCount}/{apiReplicaConfiguredCount} 可接流量</small></div>
+          <div className="availability-replica-grid">
+            {apiReplicas.map((item) => {
+              const details = item.details || {}
+              return <article key={item.component_id} className={`state-${item.observed_state}`}>
+                <div><span className={`availability-pill state-${item.observed_state}`}>{AVAILABILITY_LABELS[item.observed_state]}</span><strong>{item.label}</strong></div>
+                <dl><div><dt>发布版本</dt><dd>{details.release_id ? details.release_id.slice(0, 12) : '-'}</dd></div><div><dt>探测延迟</dt><dd>{details.latency_ms == null ? '-' : `${details.latency_ms} ms`}</dd></div><div><dt>副本身份</dt><dd>{details.replica_id || '-'}</dd></div></dl>
+                <small>{item.message}</small>
+              </article>
+            })}
+          </div>
+        </>}
 
         <div className="admin-section-heading availability-subheading"><div><span className="eyebrow">Components</span><h3><Activity size={17} />关键组件</h3></div><small>{components.length} 个组件</small></div>
         <div className="admin-table-wrap">

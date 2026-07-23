@@ -8,6 +8,16 @@
 
 ## 最近更新
 
+### 2026-07-23：API 双副本流量层与零停机滚动发布
+
+- 生产 API 从单个 `127.0.0.1:8000` 进程升级为 `8001/8002` 两个独立 systemd 模板实例。Nginx 使用最少连接、被动故障摘除和最多两次上游尝试；未显式启用 `non_idempotent`，不会为了容灾擅自重放可能已经提交的写请求。
+- 每个 API 响应携带脱敏的副本与 release 响应头，三层健康接口同时返回 `api_replica_identity.v1`。发布版本来自 root 创建、应用用户只读的内容寻址 release 目录，不依赖可变工作区猜测当前代码。
+- 新增原子滚动发布器：从已提交 Git SHA 创建隔离 release 和独立 Python 虚拟环境、安装依赖并构建前端，依次切换两个固定槽位。更新每个副本前先通过 Nginx upstream include 主动排空该副本，再等待、重启、核对目标身份/release/readiness 并恢复流量；任一步失败都会把 upstream、代码、依赖和静态资源反向恢复到旧 release，已经存活的另一副本持续接流量。
+- 静态资源改为 release 内构建产物和 `/var/www/stock-assistant-current` 原子链接，避免先清空线上目录再复制形成资源空窗。滚动发布使用文件锁防止两个运维进程并发切换，并保存当前 release 状态。
+- 可用性控制面在生产新增两个 API 副本组件，总计 `18` 个组件；单副本失联标记为“冗余降低”但流量仍可用，两副本都失联才标记中断，两个在线副本 release 不一致时明确降级。内部 SLO 新增“任一副本可达”和“全部副本冗余”两种不同口径。
+- 管理员控制中心新增双副本流量层卡片，展示每个副本的观测状态、release、身份和探测延迟；普通用户只看到脱敏的 API 流量能力，不会得到端口、主机名或文件路径。
+- 该功能消除单 API 进程崩溃和逐副本发布造成的必然中断，但两个副本仍位于同一主机并共享 PostgreSQL、Redis 和 Nginx；它不是主机或可用区容灾。完整设计、故障注入与生产验收见 [`docs/updates/2026-07-23-002-dual-api-high-availability.md`](docs/updates/2026-07-23-002-dual-api-high-availability.md)。
+
 ### 2026-07-23：高可用控制面与安全降级
 
 - 新增每 5 分钟执行的持久可用性探针，统一观测 PostgreSQL、Redis、私有 OSS、五类 Worker、五条队列积压和 A/H/美股三条专业行情路线，共 16 个组件；调度任务按时间桶幂等，重复投递不会重复写快照或指标。
@@ -429,12 +439,13 @@
 
 ### 高可用与安全降级
 
-- Celery Beat 每 5 分钟记录一次固定时间桶探针，覆盖数据库、消息总线、五类 Worker、五条队列、私有对象存储和三市场专业行情；重复任务按稳定 ID 去重。
+- 生产流量由 Nginx 分配给 `8001/8002` 两个无状态 API 副本；单副本连接失败会被动摘除并由另一副本承接。登录会话、CSRF、幂等键和业务事实均在服务端共享存储，不依赖进程内粘性会话。
+- Celery Beat 每 5 分钟记录一次固定时间桶探针，覆盖两个 API 副本、数据库、消息总线、五类 Worker、五条队列、私有对象存储和三市场专业行情；生产共 18 个组件，重复任务按稳定 ID 去重。
 - 探针快照和事故事件永久追加且可校验；两次连续失败/恢复用于抑制瞬时抖动，未知状态单独保留，不会被归入正常。
 - `/health/ready` 代表 API 能安全提供 PostgreSQL 中的权威事实，`/health/full` 代表全部异步能力均可用；部署监控使用后者，流量接入可使用前者。
 - 用户侧能力矩阵只开放当前安全的功能。行情或队列异常时仍允许读取已保存事实，但关闭受影响的新研究、估值刷新或金额动作；权威数据库异常时整体失败关闭。
-- 管理员可查看 24 小时、7 天和 30 天固定窗口 SLI、内部目标、错误预算和事故恢复时间线。内部目标用于工程治理，不构成客户 SLA。
-- 当前架构能在单机内避免依赖故障扩大为错误投资动作；真正的主机/可用区级高可用仍需 API 多副本、托管 PostgreSQL 主备、Redis 高可用、负载均衡和异地恢复演练。
+- 管理员可查看 24 小时、7 天和 30 天固定窗口 SLI、API 流量/冗余、内部目标、错误预算和事故恢复时间线。内部目标用于工程治理，不构成客户 SLA。
+- 当前架构能承受一个 API 进程故障并避免依赖故障扩大为错误投资动作；真正的主机/可用区级高可用仍需跨主机副本、托管 PostgreSQL 主备、Redis 高可用、云负载均衡和异地恢复演练。
 
 ### 机会工厂
 
@@ -721,6 +732,7 @@ backend/
   portfolio_valuation_repository.py  不可变市场观察与用户估值快照仓库
   availability_service.py    组件探针、能力门禁、内部 SLO 与安全降级
   availability_repository.py 不可变探针、事故状态机与哈希事件链
+  runtime_identity.py         API 副本与内容寻址 release 身份
   decision_center.py       持仓感知的规则化决策任务
   data_fetch.py            A 股/港股/美股历史数据
   market_daily.py          市场机会日报
@@ -749,7 +761,7 @@ frontend/
   src/features/decision/   决策中心组件
   src/api/                 按领域拆分的 API 客户端
   src/api/availability.js  用户与管理员可用性控制面客户端
-deploy/                    systemd 与 Nginx 配置模板
+deploy/                    双 API systemd 模板、Nginx 上游、原子滚动发布与灾备脚本
 docs/
   industrial-agent-prd.md  工业级 Agent 升级 PRD
 ARCHITECTURE.md             当前代码架构约定
@@ -775,7 +787,7 @@ npm run build
 
 ## 部署
 
-生产环境推荐使用 Nginx 托管前端构建产物，并把 `/api` 反向代理到只监听 `127.0.0.1:8000` 的 FastAPI 服务。完整步骤见 [DEPLOY.md](DEPLOY.md)。
+生产环境使用 Nginx 托管原子切换的前端 release，并把 `/api` 代理到只监听 `127.0.0.1:8001/8002` 的 FastAPI 双副本上游。完整安装、滚动发布、故障注入与回滚步骤见 [DEPLOY.md](DEPLOY.md)。
 
 ## 工业级 Agent 升级
 
@@ -800,6 +812,7 @@ npm run build
 - [云服务器部署说明](DEPLOY.md)
 - [工业级 Agent PRD](docs/industrial-agent-prd.md)
 - [高可用控制面与安全降级更新记录](docs/updates/2026-07-23-001-availability-control-plane.md)
+- [API 双副本与零停机滚动发布更新记录](docs/updates/2026-07-23-002-dual-api-high-availability.md)
 - [跨市场可信组合估值更新记录](docs/updates/2026-07-22-008-trusted-portfolio-valuation.md)
 - [统一投资决策操作系统更新记录](docs/updates/2026-07-22-007-decision-operating-system.md)
 - [组合数字孪生更新记录](docs/updates/2026-07-22-006-portfolio-decision-twin.md)

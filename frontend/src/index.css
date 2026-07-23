@@ -3180,6 +3180,17 @@ tbody tr:hover { background: #f0f8f6; }
 .availability-capability.unavailable > span svg { color: #c54756; }
 .availability-capability strong { color: #243f43; font-size: 12px; }
 .availability-capability small { overflow: hidden; color: #7a898f; font-size: 9px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
+.availability-replica-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.availability-replica-grid article { min-width: 0; padding: 14px; border: 1px solid #d8e3e5; border-radius: 8px; background: #fff; }
+.availability-replica-grid article.state-degraded { border-color: #e6d29b; background: #fffbf1; }
+.availability-replica-grid article.state-outage { border-color: #e6bec5; background: #fff6f7; }
+.availability-replica-grid article > div:first-child { display: flex; align-items: center; gap: 8px; }
+.availability-replica-grid article > div:first-child strong { color: #29474b; font-size: 12px; }
+.availability-replica-grid dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 12px 0 9px; }
+.availability-replica-grid dl div { min-width: 0; }
+.availability-replica-grid dt { color: #849399; font-size: 9px; }
+.availability-replica-grid dd { overflow: hidden; margin: 3px 0 0; color: #36555a; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.availability-replica-grid article > small { color: #6e8187; font-size: 10px; line-height: 1.45; }
 .availability-subheading { margin-top: 22px; margin-bottom: 10px; }
 .availability-table { min-width: 980px; }
 .availability-pill { display: inline-flex; width: fit-content; padding: 3px 7px; border: 1px solid; border-radius: 999px; font-size: 9px; font-weight: 800; }
@@ -3226,6 +3237,7 @@ tbody tr:hover { background: #f0f8f6; }
   .panel,
   .overview-band { padding: 16px; }
   .availability-two-column { grid-template-columns: 1fr; gap: 8px; }
+  .availability-replica-grid { grid-template-columns: 1fr; }
   .availability-actions { width: 100%; }
   .availability-actions button { flex: 1; justify-content: center; }
 }

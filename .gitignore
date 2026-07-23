@@ -39,3 +39,4 @@ Thumbs.db
 # Local assistant/tooling state
 .claude/
 .codex-remote-attachments/
+.tmp/

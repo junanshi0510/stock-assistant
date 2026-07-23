@@ -4,8 +4,14 @@
 from __future__ import annotations
 
 import datetime as dt
+import ipaddress
+import json
 import os
 import re
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
@@ -165,12 +171,116 @@ def _deep_provider_probes() -> dict[str, dict[str, Any]]:
     return results
 
 
+def _api_replica_specs() -> list[dict[str, Any]]:
+    raw = str(os.getenv("API_REPLICA_ENDPOINTS") or "").strip()
+    if not raw:
+        return []
+    specs: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, entry in enumerate(item.strip() for item in raw.split(",") if item.strip()):
+        name, separator, endpoint = entry.partition("=")
+        if not separator:
+            endpoint = name
+            name = f"api-{index + 1}"
+        normalized_name = re.sub(r"[^A-Za-z0-9._-]+", "-", name.strip()).strip("-._")
+        normalized_name = (normalized_name or f"api-{index + 1}")[:40]
+        component_id = f"api_replica:{normalized_name}"
+        spec: dict[str, Any] = {
+            "name": normalized_name,
+            "component_id": component_id,
+            "endpoint": endpoint.rstrip("/"),
+            "configuration_error": None,
+        }
+        try:
+            parsed = urllib.parse.urlsplit(spec["endpoint"])
+            hostname = str(parsed.hostname or "").lower()
+            port = parsed.port
+            loopback = hostname == "localhost"
+            if hostname and not loopback:
+                try:
+                    loopback = ipaddress.ip_address(hostname).is_loopback
+                except ValueError:
+                    loopback = False
+            if (
+                parsed.scheme != "http"
+                or not loopback
+                or port is None
+                or port < 1024
+                or port > 65535
+                or parsed.username
+                or parsed.password
+                or parsed.query
+                or parsed.fragment
+                or parsed.path not in {"", "/"}
+            ):
+                raise ValueError("API replica endpoint must be a credential-free loopback HTTP origin")
+            if component_id in seen:
+                raise ValueError("API replica names must be unique")
+        except (TypeError, ValueError) as error:
+            spec["configuration_error"] = str(error)
+        specs.append(spec)
+        seen.add(component_id)
+    return specs[:8]
+
+
+def _probe_one_api_replica(spec: dict[str, Any]) -> dict[str, Any]:
+    base = {
+        "name": spec["name"],
+        "component_id": spec["component_id"],
+        "ready": False,
+        "replica_id": None,
+        "release_id": None,
+        "latency_ms": None,
+    }
+    if spec.get("configuration_error"):
+        return {**base, "error_type": "configuration_invalid"}
+    started = time.perf_counter()
+    try:
+        request = urllib.request.Request(
+            f"{spec['endpoint']}/health/ready",
+            headers={"Accept": "application/json", "User-Agent": "stock-assistant-availability/1"},
+        )
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(request, timeout=4.0) as response:
+            payload = json.loads(response.read(65_536).decode("utf-8"))
+        identity = payload.get("api_replica") or {}
+        replica_id = str(identity.get("replica_id") or "")[:80]
+        release_id = str(identity.get("release_id") or "")[:80]
+        identity_matches = replica_id == str(spec["name"])
+        return {
+            **base,
+            "ready": bool(payload.get("ready")) and identity_matches,
+            "replica_id": replica_id or None,
+            "release_id": release_id or None,
+            "latency_ms": round((time.perf_counter() - started) * 1000),
+            "error_type": None if identity_matches else "identity_mismatch",
+        }
+    except Exception as error:
+        return {
+            **base,
+            "latency_ms": round((time.perf_counter() - started) * 1000),
+            "error_type": type(error).__name__,
+        }
+
+
+def _probe_api_replicas() -> list[dict[str, Any]]:
+    specs = _api_replica_specs()
+    if not specs:
+        return []
+    with ThreadPoolExecutor(
+        max_workers=min(4, len(specs)), thread_name_prefix="availability-api-replica"
+    ) as pool:
+        rows = list(pool.map(_probe_one_api_replica, specs))
+    return sorted(rows, key=lambda item: str(item["component_id"]))
+
+
 def collect_components(
     *,
     deep: bool = False,
     health_result: dict[str, Any] | None = None,
     provider_result: dict[str, Any] | None = None,
     deep_results: dict[str, dict[str, Any]] | None = None,
+    api_replica_results: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     runtime = health_result or health.readiness(use_cache=False)
     components: list[dict[str, Any]] = []
@@ -272,6 +382,54 @@ def collect_components(
         },
     ))
 
+    replica_rows = api_replica_results
+    if replica_rows is None:
+        replica_rows = _probe_api_replicas()
+    replica_rows = [dict(item) for item in replica_rows]
+    replica_ready_count = sum(1 for item in replica_rows if item.get("ready"))
+    replica_releases = {
+        str(item.get("release_id"))
+        for item in replica_rows
+        if item.get("ready") and item.get("release_id")
+    }
+    release_consistent = bool(replica_rows) and (
+        replica_ready_count == len(replica_rows) and len(replica_releases) == 1
+    )
+    release_mismatch = (
+        bool(replica_rows)
+        and replica_ready_count == len(replica_rows)
+        and not release_consistent
+    )
+    for row in replica_rows:
+        if row.get("ready"):
+            state = "degraded" if release_mismatch else "operational"
+            message = (
+                "API 副本可接流量，但副本发布版本不一致"
+                if release_mismatch
+                else "API 副本可接流量"
+            )
+        else:
+            state = "degraded" if replica_ready_count else "outage"
+            message = (
+                "API 副本不可用，流量由其他副本承接"
+                if replica_ready_count
+                else "没有 API 副本可以安全承接流量"
+            )
+        components.append(_component(
+            str(row.get("component_id") or "api_replica:unknown"),
+            f"API 副本 {row.get('name') or 'unknown'}",
+            "api_replica",
+            state,
+            message,
+            {
+                "ready": bool(row.get("ready")),
+                "replica_id": row.get("replica_id"),
+                "release_id": row.get("release_id"),
+                "latency_ms": row.get("latency_ms"),
+                "error_type": row.get("error_type"),
+            },
+        ))
+
     provider_error = None
     providers = provider_result
     if providers is None:
@@ -331,6 +489,15 @@ def collect_components(
         "provider_policy_version": providers.get("policy_version"),
         "provider_status_error_type": provider_error,
         "deep_probe": bool(deep),
+        "api_replicas": {
+            "configured_count": len(replica_rows),
+            "ready_count": replica_ready_count,
+            "traffic_quorum": 1 if replica_rows else 0,
+            "traffic_ready": replica_ready_count >= 1 if replica_rows else None,
+            "full_redundancy": bool(replica_rows) and replica_ready_count == len(replica_rows),
+            "release_consistent": release_consistent if replica_rows else None,
+            "release_ids": sorted(replica_releases),
+        },
         "deep_results": _safe_details(deep_values or {}),
         "thresholds": {
             "failure_confirmations": FAILURE_THRESHOLD,
@@ -427,6 +594,28 @@ def build_capabilities(payload: dict[str, Any]) -> dict[str, Any]:
         for queue, state in queue_state.items()
     }
     markets = {market: _state(components, f"market:{market}") for market in _MARKETS}
+    replica_components = [
+        item for item in components.values() if item.get("category") == "api_replica"
+    ]
+    replica_ready_count = sum(
+        1 for item in replica_components if bool((item.get("details") or {}).get("ready"))
+    )
+    replica_release_ids = {
+        str((item.get("details") or {}).get("release_id"))
+        for item in replica_components
+        if (item.get("details") or {}).get("ready")
+        and (item.get("details") or {}).get("release_id")
+    }
+    traffic_available = not replica_components or replica_ready_count >= 1
+    release_consistent = bool(replica_components) and (
+        replica_ready_count == len(replica_components) and len(replica_release_ids) == 1
+    )
+    traffic_mode = (
+        "single_instance_unmonitored" if not replica_components
+        else "redundant" if release_consistent
+        else "reduced_redundancy" if traffic_available
+        else "unavailable"
+    )
     market_good = [market for market, state in markets.items() if state == "operational"]
     market_refresh_mode = (
         "normal" if len(market_good) == len(_MARKETS) and queue_state[QUEUE_MARKET] == "operational"
@@ -450,14 +639,22 @@ def build_capabilities(payload: dict[str, Any]) -> dict[str, Any]:
     llm_ok = worker[QUEUE_LLM] and queue_usable[QUEUE_LLM]
     object_ok = _state(components, "object_storage") == "operational"
     decision_mode = (
-        "unavailable" if not database_ok
+        "unavailable" if not database_ok or not traffic_available
         else "normal" if valuation_available and market_refresh_mode == "normal"
         else "read_only_degraded"
     )
     return {
+        "api_traffic": {
+            "available": traffic_available,
+            "mode": traffic_mode,
+            "ready_replicas": replica_ready_count,
+            "expected_replicas": len(replica_components),
+            "release_consistent": release_consistent if replica_components else None,
+            "release_ids": sorted(replica_release_ids),
+        },
         "decision_mode": {
             "mode": decision_mode,
-            "available": database_ok,
+            "available": database_ok and traffic_available,
             "fresh_actions_allowed": decision_mode == "normal",
             "message": {
                 "normal": "关键事实链路可刷新；具体投资动作仍受数据与策略门禁约束。",
@@ -524,8 +721,28 @@ _SLO_GROUPS = {
 def calculate_slos(runs: list[dict[str, Any]], *, now: dt.datetime | None = None) -> dict[str, Any]:
     current = _utc_now(now)
     windows = {"24h": dt.timedelta(hours=24), "7d": dt.timedelta(days=7), "30d": dt.timedelta(days=30)}
+    groups = dict(_SLO_GROUPS)
+    api_replica_ids = sorted({
+        str(component.get("component_id"))
+        for run in runs
+        for component in ((run.get("payload") or {}).get("components") or [])
+        if component.get("category") == "api_replica" and component.get("component_id")
+    })
+    if api_replica_ids:
+        groups["api_traffic"] = {
+            "label": "API 流量可达",
+            "target": float(os.getenv("AVAILABILITY_SLO_API_TRAFFIC", "99.9")),
+            "components": tuple(api_replica_ids),
+            "evaluation": "any",
+        }
+        groups["api_redundancy"] = {
+            "label": "API 双副本冗余",
+            "target": float(os.getenv("AVAILABILITY_SLO_API_REDUNDANCY", "99.0")),
+            "components": tuple(api_replica_ids),
+            "evaluation": "all",
+        }
     result: dict[str, Any] = {}
-    for group_id, definition in _SLO_GROUPS.items():
+    for group_id, definition in groups.items():
         group_windows: dict[str, Any] = {}
         target = max(0.0, min(100.0, float(definition["target"])))
         for window_id, delta in windows.items():
@@ -538,7 +755,10 @@ def calculate_slos(runs: list[dict[str, Any]], *, now: dt.datetime | None = None
                     continue
                 components = _component_map(run.get("payload") or {})
                 states = [_state(components, item) for item in definition["components"]]
-                if len(states) != len(definition["components"]) or "unknown" in states:
+                evaluation = str(definition.get("evaluation") or "all")
+                if evaluation == "any" and "operational" in states:
+                    good += 1
+                elif len(states) != len(definition["components"]) or "unknown" in states:
                     unknown += 1
                 elif all(state == "operational" for state in states):
                     good += 1
@@ -568,6 +788,7 @@ def calculate_slos(runs: list[dict[str, Any]], *, now: dt.datetime | None = None
             "label": definition["label"],
             "target_pct": target,
             "components": list(definition["components"]),
+            "evaluation": str(definition.get("evaluation") or "all"),
             "windows": group_windows,
         }
     return {

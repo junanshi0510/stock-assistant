@@ -33,6 +33,7 @@ from agent.worker import start_worker
 from routers import agent, auth, availability, funds, market, opportunities, portfolio
 from task_queue import uses_celery_queue
 from observability import observe_http_request
+from runtime_identity import api_replica_identity
 
 
 app = FastAPI(title="金融投资助手 API", version="3.0")
@@ -57,10 +58,13 @@ _UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 
 def _secure_response(response):
+    identity = api_replica_identity()
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "same-origin")
     response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.headers.setdefault("X-Stock-Assistant-Replica", identity["replica_id"])
+    response.headers.setdefault("X-Stock-Assistant-Release", identity["release_id"])
     return response
 
 
@@ -129,13 +133,16 @@ app.middleware("http")(observe_http_request)
 
 @app.get("/health/live", include_in_schema=False)
 def liveness():
-    return {"status": "alive"}
+    return {"status": "alive", "api_replica": api_replica_identity()}
 
 
 @app.get("/health/ready", include_in_schema=False)
 def dependency_readiness():
     result = health.readiness()
-    return JSONResponse(status_code=200 if result["ready"] else 503, content=result)
+    return JSONResponse(
+        status_code=200 if result["ready"] else 503,
+        content={**result, "api_replica": api_replica_identity()},
+    )
 
 
 @app.get("/health/full", include_in_schema=False)
@@ -143,7 +150,7 @@ def full_service_readiness():
     result = health.readiness()
     return JSONResponse(
         status_code=200 if result["full_service_ready"] else 503,
-        content=result,
+        content={**result, "api_replica": api_replica_identity()},
     )
 
 

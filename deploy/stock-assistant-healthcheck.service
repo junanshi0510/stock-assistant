@@ -1,14 +1,15 @@
 [Unit]
 Description=Stock Assistant dependency and worker health check
-After=stock-assistant-api.service
+After=stock-assistant-api@8001.service stock-assistant-api@8002.service
 
 [Service]
 Type=oneshot
 User=stockassistant
 Group=stockassistant
-Environment="HEALTHCHECK_URL=http://127.0.0.1:8000/health/full"
+Environment="API_REPLICA_PORTS=8001 8002"
+Environment="API_REPLICA_REQUIRED=2"
 ExecStart=/opt/stock-assistant/deploy/scripts/check-runtime.sh
-TimeoutStartSec=20
+TimeoutStartSec=30
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

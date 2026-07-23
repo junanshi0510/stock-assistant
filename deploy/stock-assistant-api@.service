@@ -1,19 +1,21 @@
 [Unit]
-Description=Stock Assistant FastAPI backend
+Description=Stock Assistant FastAPI replica on loopback port %i
 After=network-online.target postgresql.service redis-server.service
 Wants=network-online.target
+ConditionPathIsDirectory=/opt/stock-assistant-api/%i/backend
 
 [Service]
 Type=simple
 User=stockassistant
 Group=stockassistant
 UMask=0077
-WorkingDirectory=/opt/stock-assistant/backend
+WorkingDirectory=/opt/stock-assistant-api/%i/backend
 Environment="PYTHONUNBUFFERED=1"
-Environment="PYTHONPATH=/opt/stock-assistant/backend"
-Environment="SERVICE_NAME=stock-assistant-api"
-Environment="LOG_FORMAT=json"
+Environment="PYTHONPATH=/opt/stock-assistant-api/%i/backend"
 EnvironmentFile=/etc/stock-assistant/stock-assistant.env
+Environment="SERVICE_NAME=stock-assistant-api-%i"
+Environment="API_REPLICA_ID=api-%i"
+Environment="LOG_FORMAT=json"
 Environment="AUTH_REQUIRED=true"
 Environment="AUTH_TRUST_PROXY=true"
 Environment="TASK_QUEUE_MODE=celery"
@@ -22,11 +24,13 @@ Environment="DECISION_CHECK_WORKER_ENABLED=0"
 Environment="AGENT_MAX_BATCH_SIZE=6"
 Environment="AGENT_MAX_PENDING_RUNS=20"
 Environment="REQUIRE_OBJECT_STORAGE=true"
-ExecStart=/opt/stock-assistant/venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8000
+ExecStart=/opt/stock-assistant-api/%i/.venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port %i
 Restart=always
-RestartSec=5
+RestartSec=3
+TimeoutStartSec=30
 TimeoutStopSec=30
-MemoryMax=1G
+KillSignal=SIGTERM
+MemoryMax=768M
 TasksMax=256
 NoNewPrivileges=true
 PrivateTmp=true

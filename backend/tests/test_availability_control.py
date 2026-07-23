@@ -197,6 +197,95 @@ class AvailabilityControlTests(unittest.TestCase):
         self.assertEqual(capabilities["decision_mode"]["mode"], "normal")
         self.assertTrue(capabilities["portfolio_valuation_refresh"]["available"])
 
+    def test_api_replica_quorum_preserves_traffic_and_exposes_reduced_redundancy(self):
+        health_result = {
+            "ready": True,
+            "full_service_ready": True,
+            "database": {"ready": True, "dialect": "postgresql"},
+            "redis": {
+                "ready": True,
+                "mode": "celery",
+                "queue_depths": {queue: 0 for queue in availability_service._QUEUES},
+            },
+            "workers": {
+                "ready": True,
+                "mode": "celery",
+                "workers": {f"{queue}@host": [queue] for queue in availability_service._QUEUES},
+            },
+            "object_storage": {"ready": True, "required": True},
+        }
+        provider_result = {
+            "markets": [
+                {"market": market, "state": "ready", "configured": True}
+                for market in availability_service._MARKETS
+            ]
+        }
+        components, metadata = availability_service.collect_components(
+            health_result=health_result,
+            provider_result=provider_result,
+            api_replica_results=[
+                {
+                    "name": "api-8001",
+                    "component_id": "api_replica:api-8001",
+                    "ready": True,
+                    "replica_id": "api-8001",
+                    "release_id": "release-a",
+                    "latency_ms": 4,
+                },
+                {
+                    "name": "api-8002",
+                    "component_id": "api_replica:api-8002",
+                    "ready": False,
+                    "error_type": "ConnectionRefusedError",
+                },
+            ],
+        )
+        replicas = {
+            item["component_id"]: item
+            for item in components
+            if item["category"] == "api_replica"
+        }
+        self.assertEqual(len(components), 18)
+        self.assertEqual(replicas["api_replica:api-8001"]["observed_state"], "operational")
+        self.assertEqual(replicas["api_replica:api-8002"]["observed_state"], "degraded")
+        self.assertEqual(metadata["api_replicas"]["ready_count"], 1)
+        self.assertTrue(metadata["api_replicas"]["traffic_ready"])
+        capabilities = availability_service.build_capabilities({"components": components})
+        self.assertTrue(capabilities["api_traffic"]["available"])
+        self.assertEqual(capabilities["api_traffic"]["mode"], "reduced_redundancy")
+
+    def test_api_traffic_slo_uses_any_replica_but_redundancy_requires_all(self):
+        for index in range(12):
+            current = self.base + dt.timedelta(minutes=index * 5)
+            second_state = "degraded" if index == 11 else "operational"
+            self.repository.record_probe(
+                trigger_type="scheduled",
+                actor_id="scheduler",
+                observations=[
+                    {
+                        **observation("operational", component_id="api_replica:api-8001"),
+                        "category": "api_replica",
+                    },
+                    {
+                        **observation(second_state, component_id="api_replica:api-8002"),
+                        "category": "api_replica",
+                    },
+                ],
+                started_at=current,
+                completed_at=current,
+            )
+        runs = self.repository.list_probes(limit=100)
+        slos = availability_service.calculate_slos(
+            runs,
+            now=self.base + dt.timedelta(minutes=60),
+        )
+        traffic = slos["groups"]["api_traffic"]["windows"]["24h"]
+        redundancy = slos["groups"]["api_redundancy"]["windows"]["24h"]
+        self.assertEqual(traffic["availability_pct"], 100.0)
+        self.assertEqual(traffic["bad_count"], 0)
+        self.assertEqual(redundancy["bad_count"], 1)
+        self.assertAlmostEqual(redundancy["availability_pct"], 91.6667)
+
     def test_public_summary_becomes_unknown_when_monitor_is_stale(self):
         self.record(0, "operational")
         fresh = availability_service.public_summary(

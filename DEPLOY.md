@@ -25,7 +25,8 @@
 Browser
   -> Nginx :80/:443
      -> React static files
-     -> FastAPI :8000
+     -> FastAPI api-8001 + api-8002
+        (least_conn, passive failover, release identity)
         -> PostgreSQL (authoritative state, audit chains, jobs)
         -> Redis (task transport only; messages contain IDs)
 
@@ -38,24 +39,25 @@ Celery queues
 
 Operations
   journald JSON logs
-  /internal/metrics (localhost only)
+  /internal/metrics (localhost only, each API replica)
   /health/ready (authoritative read traffic)
-  /health/full + two-minute strict systemd health check
+  /health/full + two-minute two-replica strict systemd health check
   five-minute persisted availability probe + incident/SLO control plane
+  content-addressed release + atomic per-replica rollout/rollback
   daily PostgreSQL dump -> encrypted OSS
   weekly isolated restore drill
 ```
 
 PostgreSQL 保存所有输入、结果、租约、幂等键和不可变事件链。Redis 不是事实源，Redis 丢失后由 scheduler 从 PostgreSQL 重新派发尚未完成的任务。
 
-当前拓扑仍是单机应用级高可用：它能够发现依赖故障、保留事故证据并安全降级，但主机宕机仍会整体中断。需要主机或可用区级容灾时，应在此基础上增加负载均衡后的 API 多副本、托管 PostgreSQL 主备/跨区备份、Redis 高可用和独立监控执行点。
+当前拓扑是同机双 API 副本：单个 API 进程崩溃或逐副本发布时，Nginx 可把流量交给另一副本；两个副本使用共享 PostgreSQL Session/CSRF/幂等事实，不需要粘性会话。主机、Nginx、PostgreSQL 或 Redis 整体故障仍会中断。需要主机或可用区级容灾时，应增加跨主机/跨区 API 副本、云负载均衡、托管 PostgreSQL 主备/跨区备份、Redis 高可用和独立监控执行点。
 
 ## 2. 服务器要求
 
 - Ubuntu 24.04 LTS。
 - 2 核 4G 是当前最低生产配置，建议增加 2G swap；用户量或并发批次增加后升级到 4 核 8G。
 - 根分区至少保留 15GB 可用空间。
-- 安全组只开放 `22`、`80`、`443`。不要开放 `5432`、`6379`、`8000`。
+- 安全组只开放 `22`、`80`、`443`。不要开放 `5432`、`6379`、`8000`、`8001` 或 `8002`。
 - PostgreSQL、Redis、FastAPI 只监听本机地址。
 - 需要独立的阿里云 RAM 身份，最小授权 OCR 与指定 OSS Bucket，不使用主账号 AccessKey。
 
@@ -112,6 +114,9 @@ AVAILABILITY_SLO_CORE=99.9
 AVAILABILITY_SLO_BACKGROUND=99.0
 AVAILABILITY_SLO_PRIVATE_ASSET=99.0
 AVAILABILITY_SLO_MARKET=95.0
+API_REPLICA_ENDPOINTS=api-8001=http://127.0.0.1:8001,api-8002=http://127.0.0.1:8002
+AVAILABILITY_SLO_API_TRAFFIC=99.9
+AVAILABILITY_SLO_API_REDUNDANCY=99.0
 
 # 生产热门榜支持多专业源接力。Key 只写入本文件；不要写入 Git、前端或 systemd unit。
 TUSHARE_TOKEN=服务端Token
@@ -261,44 +266,56 @@ sudo systemctl enable --now \
   stock-assistant-llm-worker \
   stock-assistant-ocr-worker \
   stock-assistant-scheduler-worker \
-  stock-assistant-celery-beat \
-  stock-assistant-api
+  stock-assistant-celery-beat
 
 sudo systemctl enable --now \
   stock-assistant-healthcheck.timer \
   stock-assistant-backup.timer \
   stock-assistant-backup-verify.timer
+
+# 从当前已提交 SHA 创建只读 release 与独立 .venv，依次启动并验证 8001/8002。
+# 首次安装时 Nginx 还未指向双上游，所以让发布器用 8001 做最终直连冒烟。
+sudo env PUBLIC_HEALTH_URL=http://127.0.0.1:8001/health/ready \
+  /opt/stock-assistant/deploy/scripts/rollout-api-release.sh HEAD
 ```
 
-所有 Worker 使用同一代码版本和环境文件，但使用独立队列、并发和内存上限。API 单元中禁止进程内 Agent 与定时 Worker。
+所有 Worker 使用同一代码版本和环境文件，但使用独立队列、并发和内存上限。两个 API 实例使用同一个 `stock-assistant-api@.service` 模板、不同固定槽位和端口；每个 release 拥有独立 Python `.venv`，回退不复用已升级依赖。API 单元中禁止进程内 Agent 与定时 Worker。发布器拒绝脏工作区、非 Git commit、并发发布和非符号链接槽位。
 
 ## 9. Nginx 与前端
 
 ```bash
-cd /opt/stock-assistant/frontend
-npm ci
-npm run build
-sudo install -d -m 0755 /var/www/stock-assistant
-sudo find /var/www/stock-assistant -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
-sudo cp -a dist/. /var/www/stock-assistant/
-
 sudo cp /opt/stock-assistant/deploy/nginx-stock-assistant.conf \
   /etc/nginx/sites-available/stock-assistant
+sudo cp /opt/stock-assistant/deploy/stock-assistant-api-upstreams.conf \
+  /etc/nginx/stock-assistant-api-upstreams.conf
 sudo ln -sfn /etc/nginx/sites-available/stock-assistant \
   /etc/nginx/sites-enabled/stock-assistant
 sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-修改模板中的 `server_name`。`/internal/metrics` 只能由 `127.0.0.1` 和 `::1` 访问。
+修改模板中的 `server_name`。Nginx 使用 `127.0.0.1:8001/8002` 两个上游，独立 include `/etc/nginx/stock-assistant-api-upstreams.conf` 由发布器原子维护；滚动更新会先把目标副本标记为 `down`、reload 并等待排空，再重启该副本。前端根目录为发布器原子维护的 `/var/www/stock-assistant-current`。`/internal/metrics` 只能由 `127.0.0.1` 和 `::1` 访问。配置没有启用 `non_idempotent`，因此不会为了切换上游重放可能已提交的写请求。
+
+从旧单实例无中断迁移时，先保持 `stock-assistant-api.service :8000` 运行，执行上一节发布器并确认两个新副本 ready，再复制和 reload 新 Nginx 配置；公网验证通过后才执行：
+
+```bash
+sudo systemctl disable --now stock-assistant-api.service
+```
+
+不要在双副本 ready 之前让 Nginx 指向新上游。
 
 ## 10. 验收
 
 ```bash
-curl -fsS http://127.0.0.1:8000/health/live
-curl -fsS http://127.0.0.1:8000/health/ready
-curl -fsS http://127.0.0.1:8000/health/full
-curl -fsS http://127.0.0.1:8000/internal/metrics/ | head
+for port in 8001 8002; do
+  curl -fsS "http://127.0.0.1:${port}/health/live"
+  curl -fsS "http://127.0.0.1:${port}/health/ready"
+  curl -fsS "http://127.0.0.1:${port}/health/full"
+  curl -fsS "http://127.0.0.1:${port}/internal/metrics/" | head
+done
+
+curl -fsS -D - http://127.0.0.1/health/ready -o /dev/null \
+  | grep -Ei 'X-Stock-Assistant-(Replica|Release)'
 
 sudo systemctl --no-pager --failed
 sudo systemctl status 'stock-assistant-*' --no-pager
@@ -306,7 +323,7 @@ sudo -u postgres psql stock_assistant -Atqc \
   "select count(*) from platform_schema_migrations"
 ```
 
-`/health/ready` 在 PostgreSQL 和全部生产 Schema 可安全提供权威事实时返回 `200`；`/health/full` 还要求 Redis、私有 OSS 和五个队列 Worker 全部可用。systemd 严格监控使用 `/health/full`。公网未登录访问业务 API 必须返回 `401`，包括 `/api/platform/availability`、`/api/admin/availability` 和主动探测接口。
+`/health/ready` 在 PostgreSQL 和全部生产 Schema 可安全提供权威事实时返回 `200`；`/health/full` 还要求 Redis、私有 OSS 和五个队列 Worker 全部可用。每份健康响应必须包含正确的 `api_replica` 和完整 release SHA。systemd 严格监控要求两个副本 ready 且至少一个报告 full；Nginx 在只剩一个副本时继续服务。公网未登录访问业务 API 必须返回 `401`，包括 `/api/platform/availability`、`/api/admin/availability` 和主动探测接口。
 
 首次迁移并启动全部 Worker 后，以部署身份执行一次标准探测，确认控制面形成首份快照：
 
@@ -322,7 +339,27 @@ sudo bash -lc '
 '
 ```
 
-管理员页面应显示 16 个组件；普通用户只能读取脱敏能力矩阵。连续两次失败才开启事故，连续两次成功才恢复；不要用手工探测补齐 SLO，24 小时/7 天/30 天窗口只统计 Celery Beat 的 `scheduled` 样本。
+管理员页面应显示 18 个生产组件和两个 API 副本卡片；普通用户只能读取脱敏能力矩阵。连续两次失败才开启事故，连续两次成功才恢复；不要用手工探测补齐 SLO，24 小时/7 天/30 天窗口只统计 Celery Beat 的 `scheduled` 样本。API 流量 SLO 是“任一副本成功”，API 冗余 SLO 是“全部副本成功”，两者不能混用。
+
+受控故障注入必须在低流量窗口执行，并始终一次只停一个副本：
+
+```bash
+sudo systemctl stop stock-assistant-api@8001.service
+for attempt in $(seq 1 100); do
+  curl -fsS --max-time 3 http://127.0.0.1/health/ready >/dev/null || exit 1
+done
+sudo systemctl start stock-assistant-api@8001.service
+curl -fsS http://127.0.0.1:8001/health/ready >/dev/null
+
+sudo systemctl stop stock-assistant-api@8002.service
+for attempt in $(seq 1 100); do
+  curl -fsS --max-time 3 http://127.0.0.1/health/ready >/dev/null || exit 1
+done
+sudo systemctl start stock-assistant-api@8002.service
+curl -fsS http://127.0.0.1:8002/health/ready >/dev/null
+```
+
+任一步失败立即停止演练并恢复被停副本。两个副本恢复后，`stock-assistant-healthcheck.service` 必须重新返回 success。
 
 登录后还应在“机会工厂”或“发现股票”检查专业行情数据中台。`GET /api/market/providers` 只返回每市场全部候选路线的配置状态，不会泄露 Key，也不会主动消耗供应商额度。点击“真实连通性验证”会调用 `POST /api/market/providers/probe`，仅尝试专业源并在 30 秒内复用探测结果，不会偷偷回退公开网页。随后分别执行 A 股、港股、美股三榜冒烟；必须确认 `provider_tier=professional`、`degraded=false`、`as_of`/`data_freshness` 和 `data_quality` 符合订阅。美股 7/30 日榜还应确认 `full_market_multiday=true`，否则只是明确标记的活跃候选池降级计算。
 
@@ -357,12 +394,12 @@ sudo journalctl -u stock-assistant-backup-verify.service -n 100 --no-pager
 服务输出单行 JSON 到 journald，自动隐藏 API Key、AccessKey、密码、Authorization 和带认证信息的数据库/Redis URL。
 
 ```bash
-sudo journalctl -u stock-assistant-api -f -o cat
+sudo journalctl -u 'stock-assistant-api@*' -f -o cat
 sudo journalctl -u stock-assistant-market-worker -f -o cat
 sudo journalctl -u stock-assistant-healthcheck.service --since today --no-pager
 ```
 
-Prometheus 指标位于 `http://127.0.0.1:8000/internal/metrics/`，包括 HTTP 延迟、状态码、并发请求、队列深度、Celery 任务结果、探针总数、组件当前状态和事故转换数。systemd 每两分钟执行一次 `/health/full` 完整能力检查，失败记录可由阿里云云监控采集并告警；Celery Beat 每五分钟把可用性快照写入 PostgreSQL，后台失败不会依赖 journald 临时日志才能追溯。
+Prometheus 应分别抓取 `http://127.0.0.1:8001/internal/metrics/` 与 `:8002/internal/metrics/`，并使用 replica 标签区分进程；指标包括 HTTP 延迟、状态码、并发请求、队列深度、Celery 任务结果、探针总数、组件当前状态和事故转换数。systemd 每两分钟要求两个副本 ready；Celery Beat 每五分钟把副本 quorum、release 一致性和其他组件快照写入 PostgreSQL，后台失败不会依赖 journald 临时日志才能追溯。
 
 建议配置持久 journald：
 
@@ -382,7 +419,6 @@ Compress=yes
 ```bash
 cd /opt/stock-assistant
 git pull --ff-only
-/opt/stock-assistant/venv/bin/pip install -r backend/requirements.txt
 
 # 首次发布包含数据库结构升级的版本时，必须先完成一份 PostgreSQL + OSS 备份，
 # 再由 root 只把环境变量注入迁移进程；命令不会打印数据库凭据。
@@ -398,35 +434,41 @@ sudo bash -lc '
   /opt/stock-assistant/venv/bin/python -m migrations.availability_control_v1
 '
 
-cd frontend
-npm ci
-npm run build
-sudo find /var/www/stock-assistant -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
-sudo cp -a dist/. /var/www/stock-assistant/
-
-sudo systemctl restart \
+# Worker 消息只有持久任务 ID，可逐个重启；不要一次停止全部服务。
+for service in \
   stock-assistant-agent-worker \
   stock-assistant-market-worker \
   stock-assistant-llm-worker \
   stock-assistant-ocr-worker \
   stock-assistant-scheduler-worker \
-  stock-assistant-celery-beat \
-  stock-assistant-api
-sudo nginx -t && sudo systemctl reload nginx
-curl -fsS http://127.0.0.1:8000/health/ready
-curl -fsS http://127.0.0.1:8000/health/full
+  stock-assistant-celery-beat; do
+  sudo systemctl restart "$service"
+  sudo systemctl is-active --quiet "$service" || exit 1
+done
+
+# 创建含独立依赖的内容寻址 release、依次切换两个 API、原子切换静态资源；失败自动恢复旧槽位。
+sudo /opt/stock-assistant/deploy/scripts/rollout-api-release.sh HEAD
+
+curl -fsS http://127.0.0.1:8001/health/full
+curl -fsS http://127.0.0.1:8002/health/full
+curl -fsS http://127.0.0.1/health/ready
 ```
 
 `opportunity-factory.v1` 会在单个 PostgreSQL 事务和 advisory lock 内建立 6 张机会工厂表、不可变触发器和迁移标记；`portfolio-decision-twin.v1` 会建立用户隔离的 `portfolio_twin_runs` 表；`portfolio-valuation.v1` 会建立共享公开行情观察与用户隔离估值快照两张表；`availability-control.v1` 会建立不可变探针与事故事件两张表及哈希链所需索引。失败会整体回滚，首次成功后无需在无数据库变更的日常发布中重复执行。数据库结构升级必须先备份并执行对应迁移，不能依赖应用启动时自动建表；readiness 必须同时返回 `opportunity_schema=true`、`portfolio_twin_schema=true`、`portfolio_valuation_schema=true` 和 `availability_schema=true` 才能接流量。
 
 ## 14. 回滚
 
-代码回滚与数据回滚分开处理：
+代码回滚与数据回滚分开处理。API 与前端可以滚动回到仍存在于 Git 的已验证 commit：
 
-1. 停止 API、Beat 和所有 Worker，防止继续写入。
-2. 代码回滚到已验证提交。
-3. 若 PostgreSQL 数据有效，只回滚代码，不恢复旧 SQLite。
-4. 只有明确决定放弃切换后的全部 PostgreSQL 写入时，才移除 `DATABASE_URL/REDIS_URL` 并恢复最终 SQLite 备份。
-5. 恢复前再次备份当前 PostgreSQL，保留迁移报告和服务日志。
+```bash
+sudo /opt/stock-assistant/deploy/scripts/rollout-api-release.sh <known-good-full-sha>
+```
+
+该命令仍逐副本验证并在失败时恢复执行前槽位。完整回滚还需要让 Worker 工作区切回同一兼容版本并逐个重启。数据库规则：
+
+1. 日常迁移必须 expand/contract，同时兼容当前和上一 release；无法兼容时必须维护窗口，不能使用滚动发布。
+2. 若 PostgreSQL 数据有效，只回滚代码，不恢复旧 SQLite。
+3. 只有明确决定放弃切换后的全部 PostgreSQL 写入时，才停止 API、Beat 和所有 Worker，并恢复数据库备份。
+4. 恢复前再次备份当前 PostgreSQL，保留迁移报告、release ID 和服务日志。
 
 SQLite 回滚会丢失切换后在 PostgreSQL 产生的用户、持仓、交易和 Agent 任务，必须由管理员明确批准，不能自动执行。

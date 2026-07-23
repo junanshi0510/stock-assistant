@@ -40,6 +40,10 @@ rollback_legacy_api() {
   if [[ "$code" -ne 0 ]]; then
     echo "cutover failed; attempting to restart the SQLite API" >&2
     systemctl start stock-assistant-api.service 2>/dev/null || true
+    for port in 8001 8002; do
+      [[ -L "/opt/stock-assistant-api/$port" ]] \
+        && systemctl start "stock-assistant-api@${port}.service" 2>/dev/null || true
+    done
   fi
   exit "$code"
 }
@@ -65,7 +69,11 @@ worker_services=(
   stock-assistant-celery-beat.service
 )
 systemctl stop "${worker_services[@]}" 2>/dev/null || true
-systemctl stop stock-assistant-api.service
+systemctl stop \
+  stock-assistant-api.service \
+  stock-assistant-api@8001.service \
+  stock-assistant-api@8002.service \
+  2>/dev/null || true
 
 final_backup="$(backup_sqlite final-cutover)"
 echo "final SQLite backup verified: $final_backup"
