@@ -12,6 +12,7 @@
 
 - 生产 API 从单个 `127.0.0.1:8000` 进程升级为 `8001/8002` 两个独立 systemd 模板实例。Nginx 使用最少连接、被动故障摘除和最多两次上游尝试；未显式启用 `non_idempotent`，不会为了容灾擅自重放可能已经提交的写请求。
 - 每个 API 响应携带脱敏的副本与 release 响应头，三层健康接口同时返回 `api_replica_identity.v1`。发布版本来自 root 创建、应用用户只读的内容寻址 release 目录，不依赖可变工作区猜测当前代码。
+- 公网 Nginx 只开放不含数据库、Bucket、Worker 或内部主机信息的 `/health/edge`；详细 `/health/ready`、`/health/full` 和指标端点仅允许服务器回环访问。
 - 新增原子滚动发布器：从已提交 Git SHA 创建隔离 release 和独立 Python 虚拟环境、安装依赖并构建前端，依次切换两个固定槽位。更新每个副本前先通过 Nginx upstream include 主动排空该副本，再等待、重启、核对目标身份/release/readiness 并恢复流量；任一步失败都会把 upstream、代码、依赖和静态资源反向恢复到旧 release，已经存活的另一副本持续接流量。
 - 静态资源改为 release 内构建产物和 `/var/www/stock-assistant-current` 原子链接，避免先清空线上目录再复制形成资源空窗。滚动发布使用文件锁防止两个运维进程并发切换，并保存当前 release 状态。
 - 可用性控制面在生产新增两个 API 副本组件，总计 `18` 个组件；单副本失联标记为“冗余降低”但流量仍可用，两副本都失联才标记中断，两个在线副本 release 不一致时明确降级。内部 SLO 新增“任一副本可达”和“全部副本冗余”两种不同口径。

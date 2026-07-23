@@ -25,6 +25,25 @@ class ApiReplicaContractTests(unittest.TestCase):
         self.assertEqual(response.json()["api_replica"]["replica_id"], "api-8001")
         self.assertEqual(response.json()["api_replica"]["release_id"], "abc123release")
 
+    def test_edge_readiness_does_not_expose_dependency_topology(self):
+        with patch("main.health.readiness") as readiness:
+            readiness.return_value = {
+                "ready": True,
+                "database": {"target": "postgresql://internal-host/private"},
+                "object_storage": {"bucket": "private-bucket"},
+                "workers": {"workers": {"worker@internal-host": ["agent"]}},
+            }
+            with TestClient(main.app) as client:
+                response = client.get("/health/edge")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            set(response.json()),
+            {"schema_version", "ready", "status", "api_replica"},
+        )
+        serialized = response.text
+        self.assertNotIn("internal-host", serialized)
+        self.assertNotIn("private-bucket", serialized)
+
     def test_replica_configuration_rejects_non_loopback_and_credentials(self):
         with patch.dict(
             os.environ,
@@ -56,6 +75,8 @@ class ApiReplicaContractTests(unittest.TestCase):
         self.assertNotIn("non_idempotent", nginx)
         self.assertIn("Content-Security-Policy", nginx)
         self.assertIn("frame-ancestors 'none'", nginx)
+        self.assertIn("location = /health/edge", nginx)
+        self.assertIn("allow 127.0.0.1", nginx)
         self.assertIn("WorkingDirectory=/opt/stock-assistant-api/%i/backend", unit)
         self.assertIn("API_REPLICA_ID=api-%i", unit)
         self.assertIn("/opt/stock-assistant-api/%i/.venv/bin/python", unit)

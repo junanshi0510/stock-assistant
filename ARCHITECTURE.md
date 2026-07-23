@@ -59,6 +59,7 @@ Claim 与追加式 Audit，`worker.py` 执行已领取 Run。生产由 Redis/Cel
 ## 运行基础设施
 
 - Nginx 将动态请求分配到 `api-8001/api-8002` 两个 systemd 模板实例，使用最少连接和被动失败摘除。两个副本必须无状态并共享 PostgreSQL/Redis/OSS；响应携带脱敏 replica/release 身份。Nginx 不启用 `non_idempotent` 上游重放，写请求仍由事务、CSRF、唯一约束和业务幂等键保证。
+- 公网负载均衡健康契约只有拓扑脱敏的 `/health/edge`；包含数据库目标、对象存储、Worker 和队列明细的 `/health/ready`、`/health/full` 只能经 loopback 访问，Prometheus 指标仍由 `/internal/metrics` 的回环 ACL 保护。
 - API 使用 root 持有、应用用户只读的内容寻址 release 目录。固定槽位符号链接和前端 current 链接原子切换；滚动发布通过独立 upstream include 先主动排空目标副本，再逐副本验证目标身份与 readiness，失败时按反向顺序恢复 upstream、旧槽位和静态 release。数据库迁移必须 expand/contract 并同时兼容回退 release。
 - PostgreSQL 是生产唯一事实源，保存用户、持仓、交易、不可变市场观察与组合估值、Agent、机会策略/运行/纸面观察、组合数字孪生运行、Evidence、任务载荷、租约、结果哈希和审计事件。应用启动不得自动运行 SQLite DDL；缺少迁移表时拒绝启动。
 - `database.py` 提供 PostgreSQL 连接池和现有 Repository 的兼容接口。SQLite 只用于开发、测试和首次迁移输入，生产连接失败不得回退。

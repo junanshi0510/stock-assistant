@@ -89,6 +89,8 @@ upstream stock_assistant_api {
 
 双上游模板继续在 Nginx 层统一发送 CSP、禁止 framing、MIME 嗅探保护、Referrer Policy 和 Permissions Policy；切换流量层不能以丢失原有浏览器安全头为代价。
 
+公网健康检查只使用 `edge_readiness.v1` 的 `/health/edge`，响应仅含 ready、状态和脱敏 replica/release 身份。包含 PostgreSQL 目标、OSS Bucket、Worker 主机名、队列和 Schema 明细的 `/health/ready`、`/health/full` 由 Nginx 限制为 loopback，避免把内部依赖拓扑随高可用改造一起暴露。
+
 这是被动故障检测：只有真实请求失败后 Nginx 才会暂时标记上游不可用。独立 systemd 检查与五分钟持久探针负责主动发现冗余丢失。
 
 ## 6. 内容寻址 release 与原子切换
@@ -152,7 +154,7 @@ SLO 分开计算：
 - 桌面与手机端副本卡片、宽表和控制台；
 - 生产逐副本停止故障注入、持续公网请求、严格健康检查和自动滚动发布。
 
-本地验收结果：后端全量 `498 passed`、`4 subtests passed`，前端生产构建与 `npm audit --omit=dev` 通过；桌面 `1440×1000` 和手机 `390×844` 已验证双副本卡片、18 个组件、SLO 与旧快照元数据回算，无页面级横向溢出或控制台错误。生产结果将在 GitHub 推送、部署前备份、双副本迁移、故障注入、滚动发布与回退演练和发布后恢复验证完成后写入。
+本地验收结果：后端全量 `499 passed`、`4 subtests passed`，前端生产构建与 `npm audit --omit=dev` 通过；桌面 `1440×1000` 和手机 `390×844` 已验证双副本卡片、18 个组件、SLO 与旧快照元数据回算，无页面级横向溢出或控制台错误。生产结果将在 GitHub 推送、部署前备份、双副本迁移、故障注入、滚动发布与回退演练和发布后恢复验证完成后写入。
 
 ## 10. 明确边界
 

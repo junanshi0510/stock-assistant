@@ -294,7 +294,7 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-修改模板中的 `server_name`。Nginx 使用 `127.0.0.1:8001/8002` 两个上游，独立 include `/etc/nginx/stock-assistant-api-upstreams.conf` 由发布器原子维护；滚动更新会先把目标副本标记为 `down`、reload 并等待排空，再重启该副本。前端根目录为发布器原子维护的 `/var/www/stock-assistant-current`。`/internal/metrics` 只能由 `127.0.0.1` 和 `::1` 访问。配置没有启用 `non_idempotent`，因此不会为了切换上游重放可能已提交的写请求。
+修改模板中的 `server_name`。Nginx 使用 `127.0.0.1:8001/8002` 两个上游，独立 include `/etc/nginx/stock-assistant-api-upstreams.conf` 由发布器原子维护；滚动更新会先把目标副本标记为 `down`、reload 并等待排空，再重启该副本。前端根目录为发布器原子维护的 `/var/www/stock-assistant-current`。公网只开放拓扑脱敏的 `/health/edge`；详细 `/health/ready`、`/health/full` 与 `/internal/metrics` 只能由 `127.0.0.1` 和 `::1` 访问。配置没有启用 `non_idempotent`，因此不会为了切换上游重放可能已提交的写请求。
 
 从旧单实例无中断迁移时，先保持 `stock-assistant-api.service :8000` 运行，执行上一节发布器并确认两个新副本 ready，再复制和 reload 新 Nginx 配置；公网验证通过后才执行：
 

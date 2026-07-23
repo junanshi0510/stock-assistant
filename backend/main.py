@@ -145,6 +145,21 @@ def dependency_readiness():
     )
 
 
+@app.get("/health/edge", include_in_schema=False)
+def edge_readiness():
+    """Expose only load-balancer-safe readiness and release identity."""
+    result = health.readiness()
+    return JSONResponse(
+        status_code=200 if result["ready"] else 503,
+        content={
+            "schema_version": "edge_readiness.v1",
+            "ready": bool(result["ready"]),
+            "status": "operational" if result["ready"] else "unavailable",
+            "api_replica": api_replica_identity(),
+        },
+    )
+
+
 @app.get("/health/full", include_in_schema=False)
 def full_service_readiness():
     result = health.readiness()
