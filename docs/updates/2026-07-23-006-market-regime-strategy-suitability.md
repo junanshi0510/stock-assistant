@@ -502,4 +502,20 @@ npm audit：0 vulnerabilities
 10. 停用临时账户并撤销会话；
 11. 发布后再次创建加密备份并完成隔离恢复。
 
-生产实测结果将在发布完成后追加到本记录，不提前声明成功。
+### 15.1 生产实测结果
+
+功能提交 `b44b3ab77ad2074caed576384e3256798d6ff0a8` 已推送 GitHub `main`，并按上述顺序完成生产发布：
+
+1. 发布前 PostgreSQL 加密备份已上传私有 OSS，SHA-256 为 `852ef4e3e5a23fa4eb30451d2500e0b9d223abb84da34c500d221566611d9617`，隔离恢复核对 `66` 张表和 `9` 个迁移标记；
+2. `opportunity-regime-allocation.v1` 迁移执行成功；生产存在 `opportunity_regime_snapshots` 表、迁移标记和 `trg_opportunity_regime_snapshots_immutable_pg` 不可变触发器；
+3. 新 release 上运行状态中枢、委员会、资金引擎与路由专项，共 `35 tests` 通过；
+4. `8001/8002` 两个 API 副本均运行 release `b44b3ab77ad2074caed576384e3256798d6ff0a8`，`opportunity_regime_schema=true`，完整健康状态为 `operational`；
+5. 两个副本各自核对 OpenAPI：`156` 条路径、`182` 个操作，4 个新增状态中枢操作全部存在；
+6. 公网 `/health/edge` 与首页返回 `200`；详细 `/health/full` 按既有安全策略只允许回环访问；匿名请求 `/api/v1/opportunities/regime` 返回 `401`；
+7. 临时普通用户通过公网完成 Cookie/CSRF 登录。首次冻结创建快照 `opp_regime_a1e48e2b2e854c73bbf76451dd9d13bd`，跨副本重复冻结返回同一 ID 且 `created=false`，历史仅有一条绑定记录，详情 Evidence/Result 双 SHA-256 完整性复算通过；
+8. 同一真实会话核对 `adaptive_strategy_committee@1.1.0` 与 `whole_portfolio_next_best_action.v3` 均返回 `200`；证据不足时委员会风险预算严格收缩到 `0.50`，资金计划继续因缺少投资政策和真实持仓而阻断；
+9. 公网真实浏览器显示三市场状态卡、50% 保守风险预算、策略适配矩阵空态、不可变历史和“无杠杆/不自动交易/不承诺涨跌”护栏，页面控制台 `0` 条 warning/error；
+10. 验收后通过平台用户服务把临时账号审计化停用，活跃会话为 `0`，未硬删除不可变验收快照；
+11. 发布后 AES256 备份对象为 `backups/postgresql/2026/07/stock-assistant-iZn4ai1fm0tr284w21h4kmZ-20260723T234729Z.dump`，大小 `1,708,623` 字节，SHA-256 为 `1cdff46faf2b3237148b7ebb7edb9e01800f871032044510d0da72602b8906e4`；隔离恢复核对 `67` 张表和 `10` 个迁移标记。
+
+公网验收期间，本地 VPN/代理链路曾对一次委员会 GET 返回 `502`；服务器 Nginx/Uvicorn 没有对应失败请求，双 API 副本、严格健康和 Worker 在同一时刻均正常，随后相同请求跨两个副本连续返回 `200`。该事件按外部代理瞬时失败记录，不把它误写为应用发布成功率，也不据此降低平台门禁。

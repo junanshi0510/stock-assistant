@@ -16,6 +16,7 @@
 - 投资委员会升级为 `adaptive_strategy_committee@1.1.0`：环境失配可停用原本合格的策略，适配度参与策略袖套相对权重，当前状态和波动形成总风险硬上限。全组合资金引擎升级为 `whole_portfolio_next_best_action.v3` 并继承该上限；状态层只能增加现金，不能绕过前瞻记分卡、IPS、可信估值、已有仓位、集中度或压力情景门禁。
 - 新增 4 个受认证操作、`opportunity_regime_snapshots` 用户隔离不可变表、Evidence/Result 双 SHA-256、同证据内容寻址复用、SQLite/PostgreSQL UPDATE/DELETE 拒绝触发器、`opportunity-regime-allocation.v1` 迁移和 `opportunity_regime_schema` readiness 门禁。当前 OpenAPI 共 `182` 个操作、`156` 条路径，其中机会工厂为 `23` 条路径、`28` 个操作。
 - 后端全量回归 `542 tests` 通过，前端 `npm audit` 为 `0 vulnerabilities`，Vite 生产构建完成 `1853` 个模块转换。本地真实浏览器验证了三市场状态卡、候选池边界、策略适配矩阵、缺失值、投资政策未配置时使用最新冻结纸面组合做研究暴露回退、首次冻结、同日重复冻结严格幂等、历史绑定、委员会状态层接入、`390×844` 无全局横向溢出和干净会话 0 条控制台告警/错误；浏览器验收发现并修复了“按秒计算来源年龄导致证据哈希漂移”的问题。
+- 功能提交 `b44b3ab` 已推送 GitHub `main`，完成 `opportunity-regime-allocation.v1` 生产迁移，并以同一 release 零停机滚动发布到 `http://8.148.67.79/` 的 `8001/8002` 双 API 副本。生产 OpenAPI、Schema readiness、不可变触发器、PostgreSQL、Redis、五类 Worker、Celery Beat、Nginx、私有 OSS 与新静态资源均通过；临时普通用户完成匿名 `401`、Cookie/CSRF 登录、首次冻结、跨副本重复冻结幂等、历史/详情双哈希、委员会 `1.1.0`、资金引擎 `v3` 和公网 UI 验收后已审计化停用且会话清零。发布后 AES256 备份 SHA-256 为 `1cdff46faf2b3237148b7ebb7edb9e01800f871032044510d0da72602b8906e4`，已在隔离库恢复核对 `67` 张表和 `10` 个迁移标记。
 - 完整同行参考、状态与适配公式、风险预算、证据模型、接口、迁移和验收记录见 [`docs/updates/2026-07-23-006-market-regime-strategy-suitability.md`](docs/updates/2026-07-23-006-market-regime-strategy-suitability.md)。
 
 ### 2026-07-23：自适应策略投资委员会与候选共识模型组合
