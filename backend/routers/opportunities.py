@@ -15,6 +15,8 @@ from opportunity_repository import (
     OpportunityNotFoundError,
     repository,
 )
+from opportunity_profit_repository import repository as profit_repository
+import opportunity_profit_service
 import opportunity_service
 from task_queue import TaskQueueConfigurationError, TaskQueueUnavailableError
 
@@ -117,6 +119,30 @@ class CreateRunRequest(BaseModel):
     strategy_id: str = Field(min_length=20, max_length=96)
 
 
+class ProfitPolicyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    evaluation_horizons: list[int] = Field(
+        default_factory=lambda: [5, 20, 60], min_length=1, max_length=5
+    )
+    primary_horizon: int = Field(default=20, ge=3, le=252)
+    round_trip_cost_bps: float = Field(default=30, ge=10, le=500)
+    minimum_coverage_pct: float = Field(default=90, ge=80, le=100)
+    minimum_mature_baskets: int = Field(default=6, ge=6, le=100)
+    minimum_mean_excess_return_pct: float = Field(default=0.5, ge=0, le=20)
+    minimum_positive_excess_rate_pct: float = Field(default=55, ge=50, le=100)
+    maximum_cohort_drawdown_pct: float = Field(default=15, ge=3, le=25)
+    maximum_manual_pilot_pct: float = Field(default=5, ge=0.5, le=5)
+    latest_basket_max_age_days: int = Field(default=14, ge=3, le=30)
+
+    @model_validator(mode="after")
+    def primary_is_a_horizon(self):
+        if self.primary_horizon not in self.evaluation_horizons:
+            raise ValueError("主验证窗口必须属于观察窗口")
+        if len(set(self.evaluation_horizons)) != len(self.evaluation_horizons):
+            raise ValueError("观察窗口不能重复")
+        return self
+
+
 @router.get("/templates")
 def get_opportunity_templates():
     return {
@@ -146,6 +172,97 @@ def get_opportunity_overview(
             "paper_basket_count": len(baskets),
         },
     }
+
+
+@router.get("/profit-lab")
+def get_opportunity_profit_lab(
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        return opportunity_profit_service.profit_lab_overview(
+            user_id=_subject_id(principal)
+        )
+    except Exception as error:
+        _raise_domain(error)
+
+
+@router.get("/strategies/{strategy_id}/profit-policy")
+def get_opportunity_profit_policy(
+    strategy_id: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        return opportunity_profit_service.get_policy(
+            strategy_id, user_id=_subject_id(principal)
+        )
+    except Exception as error:
+        _raise_domain(error)
+
+
+@router.post(
+    "/strategies/{strategy_id}/profit-policy/versions",
+    status_code=status.HTTP_201_CREATED,
+)
+def create_opportunity_profit_policy(
+    strategy_id: str,
+    request: ProfitPolicyRequest,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        return opportunity_profit_service.save_policy(
+            strategy_id,
+            request.model_dump(),
+            user_id=_subject_id(principal),
+            actor_id=_actor_id(principal),
+        )
+    except Exception as error:
+        _raise_domain(error)
+
+
+@router.post(
+    "/strategies/{strategy_id}/profit-scorecards",
+    status_code=status.HTTP_201_CREATED,
+)
+def create_opportunity_profit_scorecard(
+    strategy_id: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        item, created = opportunity_profit_service.persist_scorecard(
+            strategy_id,
+            user_id=_subject_id(principal),
+            actor_id=_actor_id(principal),
+        )
+        return {"item": item, "created": created}
+    except Exception as error:
+        _raise_domain(error)
+
+
+@router.get("/profit-scorecards")
+def list_opportunity_profit_scorecards(
+    strategy_id: str | None = Query(default=None),
+    limit: int = Query(default=30, ge=1, le=200),
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    items = profit_repository.list_scorecards(
+        user_id=_subject_id(principal),
+        strategy_id=strategy_id,
+        limit=limit,
+    )
+    return {"items": items, "count": len(items)}
+
+
+@router.get("/profit-scorecards/{scorecard_id}")
+def get_opportunity_profit_scorecard(
+    scorecard_id: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    item = profit_repository.get_scorecard(
+        scorecard_id, user_id=_subject_id(principal)
+    )
+    if item is None:
+        raise HTTPException(status_code=404, detail="收益验证记分卡不存在")
+    return item
 
 
 @router.get("/strategies")

@@ -45,7 +45,7 @@ function ResearchSourceStrip({ research, onNavigate }) {
           <span className="eyebrow">统一研究证据</span>
           <h3>研究结果只从这里进入行动与验证</h3>
         </div>
-        <span>{research?.summary?.ready_source_count ?? 0}/{research?.summary?.source_count ?? 3} 个引擎已有可核验结果</span>
+        <span>{research?.summary?.ready_source_count ?? 0}/{research?.summary?.source_count ?? 4} 个引擎已有可核验结果</span>
       </div>
       <div className="research-source-grid">
         {sources.length > 0 ? sources.map((source) => (
@@ -56,7 +56,7 @@ function ResearchSourceStrip({ research, onNavigate }) {
             <i>{source.evidence_status === 'verified' ? '证据已验证' : source.evidence_status === 'partial' ? '部分证据' : source.evidence_status === 'invalid' ? '完整性异常' : '等待证据'}</i>
           </button>
         )) : (
-          <div className="research-source-empty">正在读取 Agent、机会工厂和组合情景实验室的持久化结果。</div>
+          <div className="research-source-empty">正在读取 Agent、机会工厂、收益实验室和组合情景实验室的持久化结果。</div>
         )}
       </div>
     </section>
@@ -100,7 +100,8 @@ export default function DashboardTab({ goPortfolio, goFunds, goMarket, goAgent, 
     else if (target === 'funds') goFunds()
     else if (target === 'market') goMarket()
     else if (target === 'agent') goAgent()
-    else if (target === 'opportunities') goOpportunities()
+    else if (target === 'opportunities') goOpportunities('campaigns')
+    else if (target === 'opportunity_profit') goOpportunities('profit')
     else if (target === 'twin') goPortfolio('twin')
   }
 

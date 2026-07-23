@@ -83,6 +83,55 @@ class BrokenRepo:
         raise RuntimeError("database unavailable")
 
 
+class ProfitLabLoader:
+    def __init__(self, *, current=True, gate_status="limited_manual_pilot"):
+        self.current = current
+        self.gate_status = gate_status
+
+    def __call__(self, *, user_id):
+        cutoff = "2026-07-22T04:00:00Z"
+        return {
+            "generated_at": cutoff,
+            "items": [
+                {
+                    "strategy": {
+                        "id": "strategy_1",
+                        "version_id": "strategy_version_1",
+                        "name": "前瞻质量策略",
+                    },
+                    "policy": {"values": {"primary_horizon": 20}},
+                    "automation": {
+                        "basket_count": 6,
+                        "valid_observation_count": 18,
+                    },
+                    "horizons": [
+                        {
+                            "horizon_trading_days": 20,
+                            "mature_count": 6,
+                            "mean_net_excess_return_pct": 1.25,
+                        }
+                    ],
+                    "capital_gate": {
+                        "status": self.gate_status,
+                        "capital_eligible": (
+                            self.gate_status == "limited_manual_pilot"
+                        ),
+                        "reasons": ["成本后前瞻证据已完成统计门禁"],
+                    },
+                    "evidence_cutoff_at": cutoff,
+                    "latest_persisted": {
+                        "id": "profit_score_1",
+                        "integrity_verified": True,
+                        "binding_current": self.current,
+                        "evidence_cutoff_at": (
+                            cutoff if self.current else "2026-07-21T04:00:00Z"
+                        ),
+                    },
+                }
+            ],
+        }
+
+
 class DecisionSourceTests(unittest.TestCase):
     def test_sources_converge_into_one_non_executable_queue(self):
         result = decision_sources.build_research_snapshot(
@@ -90,12 +139,17 @@ class DecisionSourceTests(unittest.TestCase):
             opportunity_repo=OpportunityRepo(),
             agent_repo=AgentRepo(),
             twin_repo=TwinRepo(),
+            profit_lab_loader=ProfitLabLoader(),
         )
 
         self.assertEqual(result["status"], "available")
-        self.assertEqual(result["summary"]["ready_source_count"], 3)
+        self.assertEqual(result["summary"]["ready_source_count"], 4)
         action_ids = {item["id"] for item in result["actions"]}
         self.assertIn("opportunity-freeze-opp_run_1", action_ids)
+        self.assertIn(
+            "profit-pilot-review-strategy_version_1",
+            action_ids,
+        )
         self.assertIn("agent-review-agent_run_1", action_ids)
         self.assertIn("twin-risk-budget-twin_run_1", action_ids)
         self.assertTrue(all(item["execution_authorized"] is False for item in result["actions"]))
@@ -117,6 +171,7 @@ class DecisionSourceTests(unittest.TestCase):
             opportunity_repo=OpportunityRepo(basket=basket),
             agent_repo=AgentRepo(),
             twin_repo=TwinRepo(),
+            profit_lab_loader=ProfitLabLoader(),
         )
 
         opportunity = next(item for item in result["sources"] if item["id"] == "opportunity")
@@ -146,6 +201,7 @@ class DecisionSourceTests(unittest.TestCase):
             opportunity_repo=OpportunityRepo(basket=basket),
             agent_repo=AgentRepo(),
             twin_repo=TwinRepo(),
+            profit_lab_loader=ProfitLabLoader(),
         )
 
         opportunity = next(item for item in result["sources"] if item["id"] == "opportunity")
@@ -163,6 +219,7 @@ class DecisionSourceTests(unittest.TestCase):
             opportunity_repo=BrokenRepo(),
             agent_repo=AgentRepo(),
             twin_repo=TwinRepo(),
+            profit_lab_loader=ProfitLabLoader(),
         )
 
         self.assertEqual(result["status"], "partial")
@@ -171,6 +228,26 @@ class DecisionSourceTests(unittest.TestCase):
         failed = next(item for item in result["sources"] if item["id"] == "opportunity")
         self.assertEqual(failed["status"], "unavailable")
         self.assertIn("database unavailable", failed["error"])
+
+    def test_profit_source_requires_current_immutable_scorecard(self):
+        result = decision_sources.build_research_snapshot(
+            user_id="owner",
+            opportunity_repo=OpportunityRepo(),
+            agent_repo=AgentRepo(),
+            twin_repo=TwinRepo(),
+            profit_lab_loader=ProfitLabLoader(current=False),
+        )
+
+        profit = next(
+            item for item in result["sources"] if item["id"] == "profit"
+        )
+        self.assertFalse(profit["ready"])
+        self.assertEqual(profit["evidence_status"], "partial")
+        self.assertEqual(profit["validation_state"], "scorecard_pending")
+        self.assertIn(
+            "profit-freeze-strategy_version_1",
+            {item["id"] for item in result["actions"]},
+        )
 
 
 if __name__ == "__main__":

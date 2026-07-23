@@ -8,6 +8,34 @@ export function fetchOpportunityOverview() {
   return getJson('/api/v1/opportunities/overview')
 }
 
+export function fetchOpportunityProfitLab() {
+  return getJson('/api/v1/opportunities/profit-lab')
+}
+
+export function fetchOpportunityProfitPolicy(strategyId) {
+  return getJson(`/api/v1/opportunities/strategies/${encodeURIComponent(strategyId)}/profit-policy`)
+}
+
+export function createOpportunityProfitPolicy(strategyId, policy) {
+  return getJson(`/api/v1/opportunities/strategies/${encodeURIComponent(strategyId)}/profit-policy/versions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(policy),
+  })
+}
+
+export function createOpportunityProfitScorecard(strategyId) {
+  return getJson(`/api/v1/opportunities/strategies/${encodeURIComponent(strategyId)}/profit-scorecards`, {
+    method: 'POST',
+  })
+}
+
+export function fetchOpportunityProfitScorecards(strategyId, limit = 20) {
+  const search = new URLSearchParams({ limit: String(limit) })
+  if (strategyId) search.set('strategy_id', strategyId)
+  return getJson(`/api/v1/opportunities/profit-scorecards?${search.toString()}`)
+}
+
 export function createOpportunityStrategy(definition) {
   return getJson('/api/v1/opportunities/strategies', {
     method: 'POST',

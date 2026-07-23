@@ -23,6 +23,7 @@ from task_queue import (
     TASK_LLM_TOOL,
     TASK_MARKET_DATA,
     TASK_OPPORTUNITY_SCAN,
+    TASK_OPPORTUNITY_OBSERVATIONS,
     TASK_MARKET_TOOL,
     TASK_OBJECT_CLEANUP,
     TASK_OCR,
@@ -487,6 +488,13 @@ def process_decision_checks():
     while handled < 10 and worker.run_once():
         handled += 1
     return {"handled": handled}
+
+
+@celery_app.task(name=TASK_OPPORTUNITY_OBSERVATIONS, ignore_result=True)
+def process_opportunity_observations():
+    from opportunity_profit_service import dispatch_due_observations
+
+    return dispatch_due_observations(limit=50)
 
 
 @celery_app.task(name=TASK_WATCHLIST_SCAN, ignore_result=True)

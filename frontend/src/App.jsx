@@ -37,6 +37,7 @@ export default function App() {
   const [researchDomain, setResearchDomain] = useState('funds')
   const [marketView, setMarketView] = useState('radar')
   const [portfolioView, setPortfolioView] = useState('holdings')
+  const [opportunityView, setOpportunityView] = useState('campaigns')
   const [taskSummary, setTaskSummary] = useState(null)
   const [availability, setAvailability] = useState(null)
 
@@ -130,7 +131,10 @@ export default function App() {
   const goFunds = () => { setTab('research'); setResearchDomain('funds') }
   const goMarket = () => { setTab('research'); setResearchDomain('market'); setMarketView('radar') }
   const goAgent = () => setTab('agent')
-  const goOpportunities = () => setTab('opportunities')
+  const goOpportunities = (view = 'campaigns') => {
+    setOpportunityView(view)
+    setTab('opportunities')
+  }
 
   async function logout() {
     try { await logoutAccount() } catch { /* session may already be invalid */ }
@@ -262,7 +266,7 @@ export default function App() {
             market={market} setMarket={setMarket} symbol={symbol} setSymbol={setSymbol}
             months={months} setMonths={setMonths} runKey={runKey} requestRun={requestRun} goAnalyze={goAnalyze}
           />}
-          {tab === 'opportunities' && <OpportunityTab goAnalyze={goAnalyze} />}
+          {tab === 'opportunities' && <OpportunityTab goAnalyze={goAnalyze} activeView={opportunityView} onViewChange={setOpportunityView} />}
         </Suspense>
       </main>
     </>

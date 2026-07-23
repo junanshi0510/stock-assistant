@@ -102,6 +102,8 @@ DATABASE_URL=postgresql://stockassistant_app:URL编码密码@127.0.0.1:5432/stoc
 POSTGRES_ADMIN_URL=postgresql://stockassistant_backup:URL编码密码@127.0.0.1:5432/postgres
 REDIS_URL=redis://:URL编码密码@127.0.0.1:6379/0
 TASK_QUEUE_MODE=celery
+# 收益实验室调度器每小时检查纸面组合；同组合至少间隔 18 小时且相同行情截面幂等。
+OPPORTUNITY_OBSERVATION_INTERVAL_SECONDS=3600
 
 # 固定探针、连续确认、积压阈值与内部 SLO（不是对外 SLA）。
 AVAILABILITY_PROBE_INTERVAL_SECONDS=300
@@ -438,6 +440,7 @@ sudo bash -lc '
   set +a
   cd /opt/stock-assistant/backend
   /opt/stock-assistant/venv/bin/python -m migrations.opportunity_factory_v1
+  /opt/stock-assistant/venv/bin/python -m migrations.opportunity_profit_engine_v1
   /opt/stock-assistant/venv/bin/python -m migrations.portfolio_decision_twin_v1
   /opt/stock-assistant/venv/bin/python -m migrations.portfolio_valuation_v1
   /opt/stock-assistant/venv/bin/python -m migrations.availability_control_v1
@@ -463,7 +466,7 @@ curl -fsS http://127.0.0.1:8002/health/full
 curl -fsS http://127.0.0.1/health/ready
 ```
 
-`opportunity-factory.v1` 会在单个 PostgreSQL 事务和 advisory lock 内建立 6 张机会工厂表、不可变触发器和迁移标记；`portfolio-decision-twin.v1` 会建立用户隔离的 `portfolio_twin_runs` 表；`portfolio-valuation.v1` 会建立共享公开行情观察与用户隔离估值快照两张表；`availability-control.v1` 会建立不可变探针与事故事件两张表及哈希链所需索引。失败会整体回滚，首次成功后无需在无数据库变更的日常发布中重复执行。数据库结构升级必须先备份并执行对应迁移，不能依赖应用启动时自动建表；readiness 必须同时返回 `opportunity_schema=true`、`portfolio_twin_schema=true`、`portfolio_valuation_schema=true` 和 `availability_schema=true` 才能接流量。
+`opportunity-factory.v1` 会在单个 PostgreSQL 事务和 advisory lock 内建立 6 张机会工厂表、不可变触发器和迁移标记；`opportunity-profit-engine.v1` 会给纸面观察增加部分唯一幂等索引，并建立用户隔离、拒绝 UPDATE/DELETE 的收益政策版本表和收益记分卡表；`portfolio-decision-twin.v1` 会建立用户隔离的 `portfolio_twin_runs` 表；`portfolio-valuation.v1` 会建立共享公开行情观察与用户隔离估值快照两张表；`availability-control.v1` 会建立不可变探针与事故事件两张表及哈希链所需索引。失败会整体回滚，首次成功后无需在无数据库变更的日常发布中重复执行。数据库结构升级必须先备份并执行对应迁移，不能依赖应用启动时自动建表；readiness 必须同时返回 `opportunity_schema=true`、`opportunity_profit_schema=true`、`portfolio_twin_schema=true`、`portfolio_valuation_schema=true` 和 `availability_schema=true` 才能接流量。迁移后还应确认 Celery Beat 注册 `observe-opportunity-baskets`，该任务路由到 `scheduler`，真正的行情读取作业路由到 `market-data`。
 
 ## 14. 回滚
 

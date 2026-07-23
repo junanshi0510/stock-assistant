@@ -60,6 +60,17 @@ def _database_readiness() -> dict[str, Any]:
                 if database_dialect(connection) == "postgresql"
                 else True
             )
+            opportunity_profit_schema = (
+                all(
+                    table_exists(connection, table)
+                    for table in (
+                        "opportunity_profit_policy_versions",
+                        "opportunity_profit_scorecards",
+                    )
+                )
+                if database_dialect(connection) == "postgresql"
+                else True
+            )
             portfolio_twin_schema = (
                 table_exists(connection, "portfolio_twin_runs")
                 if database_dialect(connection) == "postgresql"
@@ -91,6 +102,7 @@ def _database_readiness() -> dict[str, Any]:
             "ready": bool(
                 migrated
                 and opportunity_schema
+                and opportunity_profit_schema
                 and portfolio_twin_schema
                 and portfolio_valuation_schema
                 and availability_schema
@@ -99,6 +111,7 @@ def _database_readiness() -> dict[str, Any]:
             "target": redact_database_url(target),
             "platform_schema": bool(migrated),
             "opportunity_schema": bool(opportunity_schema),
+            "opportunity_profit_schema": bool(opportunity_profit_schema),
             "portfolio_twin_schema": bool(portfolio_twin_schema),
             "portfolio_valuation_schema": bool(portfolio_valuation_schema),
             "availability_schema": bool(availability_schema),

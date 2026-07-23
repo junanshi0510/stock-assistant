@@ -351,8 +351,9 @@ class OpportunityFactoryTests(unittest.TestCase):
                 basket["id"], user_id="owner", repo=self.repo
             )
         self.assertEqual(first["sequence_no"], 1)
-        self.assertEqual(second["sequence_no"], 2)
-        self.assertEqual(second["previous_hash"], first["event_hash"])
+        self.assertEqual(second["sequence_no"], 1)
+        self.assertTrue(second["deduplicated"])
+        self.assertEqual(second["event_hash"], first["event_hash"])
         self.assertTrue(second["payload_verified"])
 
 

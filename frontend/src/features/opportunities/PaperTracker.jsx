@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Activity, AlertTriangle, CalendarClock, RefreshCw, ShieldCheck, WalletCards } from 'lucide-react'
+import { Activity, AlertTriangle, CalendarClock, RefreshCw, ShieldCheck, TrendingUp, WalletCards } from 'lucide-react'
 import { fetchOpportunityPaperBasket, observeOpportunityPaperBasket } from '../../api/opportunities'
 
 function number(value, digits = 2, suffix = '') {
@@ -81,23 +81,25 @@ export default function PaperTracker({ baskets, selectedId, onSelect, onRefresh 
             <button onClick={observe} disabled={observing}>{observing ? <><span className="spinner" />读取行情</> : <><RefreshCw size={15} />更新真实收盘表现</>}</button>
           </div>
           <div className="opp-paper-kpis">
-            <div><Activity size={17} /><span>组合本币近似收益<small>{latest ? latest.method : '等待第一次真实行情观察'}</small></span><b className={Number(latest?.weighted_return_pct) >= 0 ? 'positive' : 'negative'}>{latest ? signed(latest.weighted_return_pct) : '—'}</b></div>
+            <div><Activity size={17} /><span>成本后纸面收益<small>{latest?.schema_version === 'opportunity_paper_observation.v2' ? `已扣 ${number(latest.round_trip_cost_scenario_bps, 0, ' bps')} 往返成本情景` : '旧观察尚未纳入成本'}</small></span><b className={Number(latest?.net_return_after_cost_pct ?? latest?.weighted_return_pct) >= 0 ? 'positive' : 'negative'}>{latest ? signed(latest.net_return_after_cost_pct ?? latest.weighted_return_pct) : '—'}</b></div>
+            <div><TrendingUp size={17} /><span>成本后净超额<small>按 A/H/美股市场基准同日起算</small></span><b className={Number(latest?.net_excess_return_pct) >= 0 ? 'positive' : 'negative'}>{latest?.net_excess_return_pct == null ? '—' : signed(latest.net_excess_return_pct)}</b></div>
             <div><ShieldCheck size={17} /><span>已覆盖仓位<small>失败股票权重不会被重新分配</small></span><b>{latest ? number(latest.covered_position_weight_pct, 1, '%') : '—'}</b></div>
             <div><WalletCards size={17} /><span>冻结现金<small>纸面现金收益固定按 0</small></span><b>{number(detail.snapshot.cash_pct, 1, '%')}</b></div>
             <div><CalendarClock size={17} /><span>最新观察<small>{detail.observations.length} 个不可变观察点</small></span><b>{latest ? dateTime(latest.observed_at) : '尚未开始'}</b></div>
           </div>
           <div className="opp-table-scroll">
-            <table className="opp-paper-table"><thead><tr><th>股票</th><th>冻结权重</th><th>基准日/价格</th><th>观察日/价格</th><th>本币收益</th><th>组合贡献</th><th>行情源</th></tr></thead><tbody>{positions.map((position) => <tr key={`${position.market}:${position.symbol}`}>
+            <table className="opp-paper-table"><thead><tr><th>股票</th><th>冻结权重</th><th>冻结日/价格</th><th>观察日/价格</th><th>本币收益</th><th>市场基准</th><th>组合贡献</th><th>行情源</th></tr></thead><tbody>{positions.map((position) => <tr key={`${position.market}:${position.symbol}`}>
               <td><b>{position.name || position.symbol}</b><small>{position.market} · {position.symbol}</small></td>
               <td>{number(position.weight_pct, 1, '%')}</td>
               <td>{position.entry_date || '—'}<small>{number(position.entry_price, 3)}</small></td>
               <td>{position.current_date || '待观察'}<small>{number(position.current_price, 3)}</small></td>
               <td className={Number(position.return_pct) >= 0 ? 'delta-pos' : 'delta-neg'}>{position.status === 'unavailable' ? '数据失败' : signed(position.return_pct)}</td>
+              <td className={Number(position.benchmark?.return_pct) >= 0 ? 'delta-pos' : 'delta-neg'}>{position.benchmark?.status === 'available' ? signed(position.benchmark.return_pct) : '基准失败'}<small>{position.benchmark?.symbol || position.benchmark?.error || '—'}</small></td>
               <td className={Number(position.contribution_pct) >= 0 ? 'delta-pos' : 'delta-neg'}>{signed(position.contribution_pct)}</td>
               <td>{position.source || position.price_source || '—'}{position.error && <small>{position.error}</small>}</td>
             </tr>)}</tbody></table>
           </div>
-          {history.length > 0 && <div className="opp-paper-history"><div><span className="eyebrow">观察历史</span><b>只展示前瞻冻结后的结果</b></div><div>{history.map((observation) => <span key={observation.id}><small>{dateTime(observation.observed_at)}</small><b className={Number(observation.payload.weighted_return_pct) >= 0 ? 'positive' : 'negative'}>{signed(observation.payload.weighted_return_pct)}</b><em>{number(observation.payload.covered_position_weight_pct, 0, '%')} 覆盖</em></span>)}</div></div>}
+          {history.length > 0 && <div className="opp-paper-history"><div><span className="eyebrow">观察历史</span><b>自动日终采集 · 相同行情截面幂等去重</b></div><div>{history.map((observation) => <span key={observation.id}><small>{dateTime(observation.observed_at)} · {observation.payload.observed_trading_days_min ?? 0} 日</small><b className={Number(observation.payload.net_return_after_cost_pct ?? observation.payload.weighted_return_pct) >= 0 ? 'positive' : 'negative'}>{signed(observation.payload.net_return_after_cost_pct ?? observation.payload.weighted_return_pct)}</b><em>超额 {signed(observation.payload.net_excess_return_pct)} · {number(observation.payload.covered_position_weight_pct, 0, '%')} 覆盖</em></span>)}</div></div>}
           <div className="opp-warning-list">{(latest?.limitations || detail.snapshot.limitations || []).map((item) => <div key={item}><AlertTriangle size={14} /><span>{item}</span></div>)}</div>
         </>}
       </section>

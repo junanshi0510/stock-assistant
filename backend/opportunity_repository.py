@@ -191,6 +191,7 @@ CREATE TABLE IF NOT EXISTS opportunity_paper_observations (
     user_id        TEXT NOT NULL,
     sequence_no    INTEGER NOT NULL,
     observed_at    TEXT NOT NULL,
+    idempotency_key TEXT,
     payload_json   TEXT NOT NULL,
     payload_sha256 TEXT NOT NULL,
     previous_hash  TEXT,
@@ -237,6 +238,26 @@ class OpportunityRepository:
                     require_database_schema(connection, REQUIRED_TABLES)
                 else:
                     connection.executescript(SQLITE_SCHEMA)
+                    columns = {
+                        str(row["name"])
+                        for row in connection.execute(
+                            "PRAGMA table_info(opportunity_paper_observations)"
+                        ).fetchall()
+                    }
+                    if "idempotency_key" not in columns:
+                        connection.execute(
+                            "ALTER TABLE opportunity_paper_observations "
+                            "ADD COLUMN idempotency_key TEXT"
+                        )
+                    connection.execute(
+                        """
+                        CREATE UNIQUE INDEX IF NOT EXISTS idx_opportunity_observation_idempotency
+                        ON opportunity_paper_observations(
+                            user_id, basket_id, idempotency_key
+                        )
+                        WHERE idempotency_key IS NOT NULL
+                        """
+                    )
             self._schema_ready = True
 
     @staticmethod
@@ -860,6 +881,52 @@ class OpportunityRepository:
             ).fetchall()
             return [self._basket_from_row(connection, row) for row in rows]
 
+    def list_paper_basket_scopes(self, *, limit: int = 500) -> list[dict[str, Any]]:
+        """Return minimal cross-user basket state for the internal scheduler."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM opportunity_paper_baskets
+                ORDER BY created_at ASC, id ASC LIMIT ?
+                """,
+                (max(1, min(5000, int(limit))),),
+            ).fetchall()
+            items = []
+            for row in rows:
+                item = dict(row)
+                snapshot_json = str(item.pop("snapshot_json"))
+                item["snapshot"] = _load(snapshot_json, {})
+                item["snapshot_verified"] = (
+                    _sha256(snapshot_json) == item.get("snapshot_sha256")
+                )
+                latest = connection.execute(
+                    """
+                    SELECT * FROM opportunity_paper_observations
+                    WHERE basket_id=? ORDER BY sequence_no DESC LIMIT 1
+                    """,
+                    (item["id"],),
+                ).fetchone()
+                item["latest_observation"] = (
+                    self._observation_from_row(latest) if latest is not None else None
+                )
+                items.append(item)
+        return items
+
+    def count_tested_strategy_versions(self, *, user_id: str) -> int:
+        """Count historical strategy versions that reached forward testing."""
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(DISTINCT r.strategy_version_id) AS value
+                FROM opportunity_runs r
+                JOIN opportunity_paper_baskets b
+                  ON b.run_id=r.id AND b.user_id=r.user_id
+                WHERE r.user_id=?
+                """,
+                (user_id,),
+            ).fetchone()
+        return int(row["value"] or 0) if row is not None else 0
+
     def append_paper_observation(
         self,
         basket_id: str,
@@ -867,6 +934,7 @@ class OpportunityRepository:
         user_id: str,
         observed_at: str,
         payload: dict[str, Any],
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         payload_json = _json(payload)
         with self._connect() as connection:
@@ -877,6 +945,19 @@ class OpportunityRepository:
             ).fetchone()
             if basket is None:
                 raise OpportunityNotFoundError("纸面组合不存在")
+            normalized_key = str(idempotency_key or "").strip() or None
+            if normalized_key:
+                existing = connection.execute(
+                    """
+                    SELECT * FROM opportunity_paper_observations
+                    WHERE user_id=? AND basket_id=? AND idempotency_key=?
+                    """,
+                    (user_id, basket_id, normalized_key),
+                ).fetchone()
+                if existing is not None:
+                    result = self._observation_from_row(existing)
+                    result["deduplicated"] = True
+                    return result
             previous = connection.execute(
                 """
                 SELECT sequence_no, event_hash FROM opportunity_paper_observations
@@ -894,6 +975,7 @@ class OpportunityRepository:
                 "sequence_no": sequence_no,
                 "observed_at": observed_at,
                 "payload_sha256": _sha256(payload_json),
+                "idempotency_key": normalized_key,
                 "previous_hash": previous["event_hash"] if previous else None,
                 "created_at": created_at,
             }
@@ -901,9 +983,9 @@ class OpportunityRepository:
             connection.execute(
                 """
                 INSERT INTO opportunity_paper_observations(
-                    id, basket_id, user_id, sequence_no, observed_at,
+                    id, basket_id, user_id, sequence_no, observed_at, idempotency_key,
                     payload_json, payload_sha256, previous_hash, event_hash, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     observation_id,
@@ -911,6 +993,7 @@ class OpportunityRepository:
                     user_id,
                     sequence_no,
                     observed_at,
+                    normalized_key,
                     payload_json,
                     event_basis["payload_sha256"],
                     event_basis["previous_hash"],
@@ -922,7 +1005,9 @@ class OpportunityRepository:
                 "SELECT * FROM opportunity_paper_observations WHERE id=?",
                 (observation_id,),
             ).fetchone()
-        return self._observation_from_row(row)
+        result = self._observation_from_row(row)
+        result["deduplicated"] = False
+        return result
 
 
 repository = OpportunityRepository()

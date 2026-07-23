@@ -12,12 +12,14 @@ import {
   startOpportunityRun,
 } from '../api/opportunities'
 import PaperTracker from '../features/opportunities/PaperTracker'
+import ProfitLab from '../features/opportunities/ProfitLab'
 import RunResults from '../features/opportunities/RunResults'
 import StrategyBuilder from '../features/opportunities/StrategyBuilder'
 
 const VIEWS = [
   { id: 'campaigns', label: '策略与扫描', description: '定义候选池、因子、淘汰门槛和组合约束' },
   { id: 'paper', label: '纸面跟踪', description: '只看冻结之后的前瞻表现' },
+  { id: 'profit', label: '收益实验室', description: '自动验证成本后收益、基准超额和资金资格' },
 ]
 
 function dateTime(value) {
@@ -31,8 +33,8 @@ function runStatus(value) {
   }[value] || value
 }
 
-export default function OpportunityTab({ goAnalyze }) {
-  const [view, setView] = useState('campaigns')
+export default function OpportunityTab({ goAnalyze, activeView = 'campaigns', onViewChange }) {
+  const [view, setView] = useState(activeView)
   const [templates, setTemplates] = useState([])
   const [overview, setOverview] = useState(null)
   const [selectedStrategyId, setSelectedStrategyId] = useState(null)
@@ -45,6 +47,15 @@ export default function OpportunityTab({ goAnalyze }) {
   const [paperBusy, setPaperBusy] = useState(false)
   const [error, setError] = useState('')
   const [providerStatus, setProviderStatus] = useState(null)
+
+  useEffect(() => {
+    if (VIEWS.some((item) => item.id === activeView)) setView(activeView)
+  }, [activeView])
+
+  function selectView(nextView) {
+    setView(nextView)
+    onViewChange?.(nextView)
+  }
 
   const refreshOverview = useCallback(async () => {
     const result = await fetchOpportunityOverview()
@@ -163,7 +174,7 @@ export default function OpportunityTab({ goAnalyze }) {
       const response = await createOpportunityPaperBasket(run.id)
       setSelectedBasketId(response.item.id)
       await refreshOverview()
-      setView('paper')
+      selectView('paper')
     } catch (requestError) {
       setError(requestError.message)
     } finally {
@@ -181,7 +192,7 @@ export default function OpportunityTab({ goAnalyze }) {
         description={`${currentView.description}。所有结论都绑定真实数据、策略版本和明确候选范围。`}
         views={VIEWS}
         activeView={view}
-        onViewChange={setView}
+        onViewChange={selectView}
         ariaLabel="机会工厂功能"
       />
       <div className="opp-product-banner">
@@ -194,6 +205,8 @@ export default function OpportunityTab({ goAnalyze }) {
       {loading && <div className="page-loading"><span className="spinner" />正在加载机会工厂</div>}
 
       {!loading && view === 'paper' && <PaperTracker baskets={baskets} selectedId={selectedBasketId} onSelect={setSelectedBasketId} onRefresh={refreshOverview} />}
+
+      {!loading && view === 'profit' && <ProfitLab />}
 
       {!loading && view === 'campaigns' && builderMode && <StrategyBuilder
         templates={templates}

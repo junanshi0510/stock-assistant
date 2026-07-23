@@ -9,11 +9,13 @@ missing source remains visible in the result.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import json
 import math
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from statistics import median
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import pandas as pd
@@ -73,6 +75,13 @@ DEFAULT_PORTFOLIO = {
     "max_pair_correlation": 0.85,
     "defensive_cash_add_pct": 10.0,
     "weighting": "score_inverse_vol",
+}
+PAPER_VALIDATION_HORIZONS = (5, 20, 60)
+PAPER_COST_SCENARIO_BPS = 30.0
+PAPER_BENCHMARKS = {
+    "A股": {"symbol": "510300", "name": "沪深300ETF"},
+    "港股": {"symbol": "02800", "name": "盈富基金"},
+    "美股": {"symbol": "SPY", "name": "标普500ETF"},
 }
 
 FACTOR_METRICS = {
@@ -1054,7 +1063,11 @@ def refresh_run_status(
 
 
 def create_paper_basket(
-    run_id: str, *, user_id: str, repo: OpportunityRepository = repository
+    run_id: str,
+    *,
+    user_id: str,
+    repo: OpportunityRepository = repository,
+    now: dt.datetime | None = None,
 ) -> tuple[dict[str, Any], bool]:
     run = repo.get_run(run_id, user_id=user_id)
     if run is None:
@@ -1066,12 +1079,17 @@ def create_paper_basket(
     positions = portfolio.get("positions") or []
     if not positions:
         raise OpportunityConflictError("本次扫描没有可冻结的纸面持仓")
+    frozen_at = now or dt.datetime.now(dt.timezone.utc)
+    if frozen_at.tzinfo is None:
+        frozen_at = frozen_at.replace(tzinfo=dt.timezone.utc)
     snapshot = {
         "schema_version": "opportunity_paper_basket.v1",
         "run_id": run_id,
         "run_result_sha256": run["result_sha256"],
         "strategy": result.get("strategy"),
-        "frozen_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+        "frozen_at": frozen_at.astimezone(dt.timezone.utc).isoformat(
+            timespec="seconds"
+        ),
         "positions": positions,
         "cash_pct": portfolio.get("cash_pct"),
         "data_basis": "复权日线最新收盘价；后续观察继续使用同口径真实历史接口",
@@ -1085,6 +1103,7 @@ def observe_paper_basket(
     *,
     user_id: str,
     repo: OpportunityRepository = repository,
+    history_loader: Callable[..., pd.DataFrame] | None = None,
 ) -> dict[str, Any]:
     basket = repo.get_paper_basket(basket_id, user_id=user_id)
     if basket is None:
@@ -1092,18 +1111,89 @@ def observe_paper_basket(
     if not basket.get("snapshot_verified"):
         raise OpportunityConflictError("纸面组合快照完整性校验失败")
     positions = basket["snapshot"].get("positions") or []
+    loader = history_loader or data_fetch.get_history_months
+
+    def normalized_history(market: str, symbol: str, entry_date: str) -> pd.DataFrame:
+        try:
+            parsed_entry = dt.date.fromisoformat(str(entry_date)[:10])
+            age_days = max(0, (dt.datetime.now(dt.timezone.utc).date() - parsed_entry).days)
+        except ValueError:
+            age_days = 180
+        months = max(6, min(24, int(math.ceil(age_days / 30)) + 3))
+        frame = loader(market, symbol, months, fetch_months=months).copy()
+        if frame.empty:
+            raise ValueError("真实历史行情为空")
+        frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+        frame["close"] = pd.to_numeric(frame["close"], errors="coerce")
+        frame = frame.dropna(subset=["date", "close"]).sort_values("date")
+        if frame.empty:
+            raise ValueError("真实历史行情缺少有效日期或收盘价")
+        return frame
 
     def observe(position: dict[str, Any]) -> dict[str, Any]:
         try:
-            frame = data_fetch.get_history_months(
-                position["market"], position["symbol"], 3, fetch_months=3
+            entry_date = str(position.get("entry_date") or "")[:10]
+            frame = normalized_history(
+                str(position["market"]), str(position["symbol"]), entry_date
             )
-            close = frame["close"].astype(float).dropna()
-            current_price = float(close.iloc[-1])
-            current_date = pd.Timestamp(frame["date"].iloc[-1]).strftime("%Y-%m-%d")
+            entry_timestamp = pd.Timestamp(entry_date)
+            current = frame.iloc[-1]
+            current_price = float(current["close"])
+            current_date = pd.Timestamp(current["date"]).strftime("%Y-%m-%d")
             entry = float(position["entry_price"])
             return_pct = (current_price / entry - 1) * 100 if entry else None
             weight = float(position["weight_pct"])
+            future_rows = frame[frame["date"] > entry_timestamp].reset_index(
+                drop=True
+            )
+            elapsed = len(future_rows)
+            horizon_returns: dict[str, dict[str, Any]] = {}
+            for horizon in PAPER_VALIDATION_HORIZONS:
+                if elapsed < horizon:
+                    horizon_returns[str(horizon)] = {
+                        "trading_days": horizon,
+                        "status": "pending",
+                        "trading_days_observed": elapsed,
+                    }
+                    continue
+                outcome = future_rows.iloc[horizon - 1]
+                outcome_price = float(outcome["close"])
+                outcome_return = (
+                    (outcome_price / entry - 1) * 100 if entry else None
+                )
+                path_prices = [entry] + [
+                    float(value)
+                    for value in future_rows.iloc[:horizon]["close"].tolist()
+                ]
+                peak = path_prices[0] if path_prices else 0.0
+                worst_drawdown = 0.0
+                for price in path_prices:
+                    peak = max(peak, price)
+                    if peak > 0:
+                        worst_drawdown = min(
+                            worst_drawdown, price / peak - 1
+                        )
+                horizon_returns[str(horizon)] = {
+                    "trading_days": horizon,
+                    "status": "available",
+                    "outcome_date": pd.Timestamp(outcome["date"]).strftime(
+                        "%Y-%m-%d"
+                    ),
+                    "outcome_price": round(outcome_price, 4),
+                    "return_pct": (
+                        round(outcome_return, 3)
+                        if outcome_return is not None
+                        else None
+                    ),
+                    "contribution_pct": (
+                        round(weight / 100 * outcome_return, 3)
+                        if outcome_return is not None
+                        else None
+                    ),
+                    "max_drawdown_pct": round(
+                        abs(worst_drawdown) * 100, 3
+                    ),
+                }
             return {
                 "market": position["market"],
                 "symbol": position["symbol"],
@@ -1113,6 +1203,8 @@ def observe_paper_basket(
                 "entry_date": position.get("entry_date"),
                 "current_price": round(current_price, 4),
                 "current_date": current_date,
+                "trading_days_elapsed": elapsed,
+                "horizon_returns": horizon_returns,
                 "return_pct": round(return_pct, 3) if return_pct is not None else None,
                 "contribution_pct": round(weight / 100 * return_pct, 3) if return_pct is not None else None,
                 "source": str(frame.attrs.get("source") or "source_not_exposed"),
@@ -1128,25 +1220,324 @@ def observe_paper_basket(
                 "error": str(error)[:300],
             }
 
-    with ThreadPoolExecutor(max_workers=min(8, max(1, len(positions)))) as pool:
-        observations = list(pool.map(observe, positions))
+    benchmark_markets = sorted(
+        {
+            str(position.get("market") or "")
+            for position in positions
+            if str(position.get("market") or "") in PAPER_BENCHMARKS
+        }
+    )
+
+    def load_benchmark(market: str) -> tuple[str, dict[str, Any]]:
+        benchmark = PAPER_BENCHMARKS[market]
+        entry_dates = [
+            str(item.get("entry_date") or "")[:10]
+            for item in positions
+            if item.get("market") == market
+        ]
+        earliest = min((value for value in entry_dates if value), default="")
+        try:
+            frame = normalized_history(market, benchmark["symbol"], earliest)
+            return market, {
+                **benchmark,
+                "market": market,
+                "frame": frame,
+                "source": str(frame.attrs.get("source") or "source_not_exposed"),
+                "status": "available",
+            }
+        except Exception as error:
+            return market, {
+                **benchmark,
+                "market": market,
+                "status": "unavailable",
+                "error": str(error)[:300],
+            }
+
+    with ThreadPoolExecutor(
+        max_workers=min(10, max(1, len(positions) + len(benchmark_markets)))
+    ) as pool:
+        position_futures = [pool.submit(observe, position) for position in positions]
+        benchmark_futures = [
+            pool.submit(load_benchmark, market) for market in benchmark_markets
+        ]
+        observations = [future.result() for future in position_futures]
+        benchmarks = dict(future.result() for future in benchmark_futures)
+
+    benchmark_contribution = 0.0
+    benchmark_coverage = 0.0
+    for item in observations:
+        if item.get("status") != "available":
+            continue
+        benchmark = benchmarks.get(str(item.get("market") or "")) or {}
+        frame = benchmark.get("frame")
+        if benchmark.get("status") != "available" or not isinstance(frame, pd.DataFrame):
+            item["benchmark"] = {
+                key: value for key, value in benchmark.items() if key != "frame"
+            }
+            continue
+        entry_timestamp = pd.Timestamp(str(item.get("entry_date") or "")[:10])
+        current_timestamp = pd.Timestamp(str(item.get("current_date") or "")[:10])
+        baseline_rows = frame[frame["date"] <= entry_timestamp]
+        current_rows = frame[frame["date"] <= current_timestamp]
+        if baseline_rows.empty or current_rows.empty:
+            item["benchmark"] = {
+                **{key: value for key, value in benchmark.items() if key != "frame"},
+                "status": "unavailable",
+                "error": "基准在冻结日之前没有可用收盘价",
+            }
+            continue
+        baseline = baseline_rows.iloc[-1]
+        current = current_rows.iloc[-1]
+        baseline_price = float(baseline["close"])
+        current_price = float(current["close"])
+        benchmark_return = (
+            (current_price / baseline_price - 1) * 100 if baseline_price else None
+        )
+        weight = float(item.get("weight_pct") or 0)
+        contribution = (
+            weight / 100 * benchmark_return
+            if benchmark_return is not None
+            else None
+        )
+        item["benchmark"] = {
+            "market": benchmark["market"],
+            "symbol": benchmark["symbol"],
+            "name": benchmark["name"],
+            "entry_date": pd.Timestamp(baseline["date"]).strftime("%Y-%m-%d"),
+            "entry_price": round(baseline_price, 4),
+            "current_date": pd.Timestamp(current["date"]).strftime("%Y-%m-%d"),
+            "current_price": round(current_price, 4),
+            "return_pct": round(benchmark_return, 3),
+            "contribution_pct": round(contribution, 3),
+            "source": benchmark["source"],
+            "status": "available",
+        }
+        benchmark_coverage += weight
+        benchmark_contribution += contribution or 0.0
+
+        benchmark_future = frame[
+            frame["date"] > pd.Timestamp(baseline["date"])
+        ].reset_index(drop=True)
+        for horizon in PAPER_VALIDATION_HORIZONS:
+            position_horizon = (item.get("horizon_returns") or {}).get(
+                str(horizon)
+            ) or {}
+            if (
+                position_horizon.get("status") != "available"
+                or len(benchmark_future) < horizon
+            ):
+                continue
+            horizon_row = benchmark_future.iloc[horizon - 1]
+            horizon_price = float(horizon_row["close"])
+            horizon_return = (
+                (horizon_price / baseline_price - 1) * 100
+                if baseline_price
+                else None
+            )
+            position_horizon["benchmark"] = {
+                "status": (
+                    "available" if horizon_return is not None else "unavailable"
+                ),
+                "outcome_date": pd.Timestamp(
+                    horizon_row["date"]
+                ).strftime("%Y-%m-%d"),
+                "outcome_price": round(horizon_price, 4),
+                "return_pct": (
+                    round(horizon_return, 3)
+                    if horizon_return is not None
+                    else None
+                ),
+                "contribution_pct": (
+                    round(weight / 100 * horizon_return, 3)
+                    if horizon_return is not None
+                    else None
+                ),
+            }
+
     available = [item for item in observations if item["status"] == "available"]
     coverage_weight = sum(float(item["weight_pct"]) for item in available)
+    invested_weight = sum(float(item.get("weight_pct") or 0) for item in positions)
     weighted_return = sum(float(item["contribution_pct"]) for item in available)
+    cost_drag = invested_weight / 100 * PAPER_COST_SCENARIO_BPS / 100
+    net_return = weighted_return - cost_drag
+    net_excess = net_return - benchmark_contribution
+    elapsed_values = [
+        int(item.get("trading_days_elapsed") or 0) for item in available
+    ]
+    elapsed_min = min(elapsed_values) if elapsed_values else 0
+    elapsed_max = max(elapsed_values) if elapsed_values else 0
+    horizon_status = []
+    for horizon in PAPER_VALIDATION_HORIZONS:
+        position_coverage = 0.0
+        horizon_benchmark_coverage = 0.0
+        gross_horizon_return = 0.0
+        benchmark_horizon_return = 0.0
+        conservative_drawdown = 0.0
+        outcome_dates = []
+        for item in available:
+            metric = (item.get("horizon_returns") or {}).get(
+                str(horizon)
+            ) or {}
+            if metric.get("status") != "available":
+                continue
+            weight = float(item.get("weight_pct") or 0)
+            position_coverage += weight
+            gross_horizon_return += float(
+                metric.get("contribution_pct") or 0
+            )
+            conservative_drawdown += (
+                weight / 100 * float(metric.get("max_drawdown_pct") or 0)
+            )
+            if metric.get("outcome_date"):
+                outcome_dates.append(str(metric["outcome_date"]))
+            benchmark_metric = metric.get("benchmark") or {}
+            if benchmark_metric.get("status") == "available":
+                horizon_benchmark_coverage += weight
+                benchmark_horizon_return += float(
+                    benchmark_metric.get("contribution_pct") or 0
+                )
+        horizon_cost_drag = (
+            invested_weight / 100 * PAPER_COST_SCENARIO_BPS / 100
+        )
+        exact_complete = bool(
+            position_coverage >= 90
+            and horizon_benchmark_coverage >= 90
+        )
+        horizon_status.append(
+            {
+                "trading_days": horizon,
+                "status": (
+                    "complete"
+                    if exact_complete
+                    else "partial"
+                    if position_coverage or horizon_benchmark_coverage
+                    else "pending"
+                ),
+                "complete": exact_complete,
+                "exact_horizon": True,
+                "gross_weighted_return_pct": round(
+                    gross_horizon_return, 3
+                ),
+                "round_trip_cost_scenario_bps": PAPER_COST_SCENARIO_BPS,
+                "cost_drag_pct": round(horizon_cost_drag, 3),
+                "net_return_after_cost_pct": round(
+                    gross_horizon_return - horizon_cost_drag, 3
+                ),
+                "benchmark_return_pct": round(
+                    benchmark_horizon_return, 3
+                ),
+                "net_excess_return_pct": round(
+                    gross_horizon_return
+                    - horizon_cost_drag
+                    - benchmark_horizon_return,
+                    3,
+                ),
+                "covered_position_weight_pct": round(
+                    position_coverage, 2
+                ),
+                "benchmark_coverage_weight_pct": round(
+                    horizon_benchmark_coverage, 2
+                ),
+                "invested_weight_pct": round(invested_weight, 2),
+                "conservative_component_drawdown_pct": round(
+                    conservative_drawdown, 3
+                ),
+                "outcome_date_min": min(outcome_dates)
+                if outcome_dates
+                else None,
+                "outcome_date_max": max(outcome_dates)
+                if outcome_dates
+                else None,
+            }
+        )
     observed_at = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    observation_key_basis = {
+        "basket_id": basket_id,
+        "snapshot_sha256": basket.get("snapshot_sha256"),
+        "positions": sorted(
+            [
+                {
+                    "market": item.get("market"),
+                    "symbol": item.get("symbol"),
+                    "current_date": item.get("current_date"),
+                    "current_price": item.get("current_price"),
+                    "benchmark_date": (item.get("benchmark") or {}).get(
+                        "current_date"
+                    ),
+                    "horizon_outcomes": {
+                        key: {
+                            "date": value.get("outcome_date"),
+                            "price": value.get("outcome_price"),
+                            "benchmark_date": (
+                                value.get("benchmark") or {}
+                            ).get("outcome_date"),
+                            "benchmark_price": (
+                                value.get("benchmark") or {}
+                            ).get("outcome_price"),
+                        }
+                        for key, value in (
+                            item.get("horizon_returns") or {}
+                        ).items()
+                        if value.get("status") == "available"
+                    },
+                }
+                for item in observations
+            ],
+            key=lambda item: (str(item["market"]), str(item["symbol"])),
+        ),
+    }
+    idempotency_key = hashlib.sha256(
+        json.dumps(
+            observation_key_basis,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
     payload = {
-        "schema_version": "opportunity_paper_observation.v1",
+        "schema_version": "opportunity_paper_observation.v2",
         "observed_at": observed_at,
-        "status": "complete" if len(available) == len(observations) else "partial",
+        "observation_key": idempotency_key,
+        "status": (
+            "complete"
+            if (
+                len(available) == len(observations)
+                and benchmark_coverage + 1e-6 >= invested_weight
+            )
+            else "partial"
+        ),
+        "gross_weighted_return_pct": round(weighted_return, 3),
         "weighted_return_pct": round(weighted_return, 3),
+        "round_trip_cost_scenario_bps": PAPER_COST_SCENARIO_BPS,
+        "cost_drag_pct": round(cost_drag, 3),
+        "net_return_after_cost_pct": round(net_return, 3),
+        "benchmark_return_pct": round(benchmark_contribution, 3),
+        "net_excess_return_pct": round(net_excess, 3),
         "covered_position_weight_pct": round(coverage_weight, 2),
+        "benchmark_coverage_weight_pct": round(benchmark_coverage, 2),
+        "invested_weight_pct": round(invested_weight, 2),
         "cash_pct": basket["snapshot"].get("cash_pct"),
+        "observed_trading_days_min": elapsed_min,
+        "observed_trading_days_max": elapsed_max,
+        "horizons": horizon_status,
+        "max_horizon_complete": bool(
+            horizon_status and horizon_status[-1]["complete"]
+        ),
         "positions": observations,
+        "benchmarks": [
+            {key: value for key, value in item.items() if key != "frame"}
+            for item in benchmarks.values()
+        ],
         "failed_count": len(observations) - len(available),
-        "method": "各标的本币复权收盘收益乘冻结权重；纸面现金收益按 0 处理",
+        "method": (
+            "各标的按冻结后第 5/20/60 个真实交易日取本币复权收盘价并乘冻结权重；"
+            "市场基准从同一冻结基线按相同交易日序号计算；成本后结果扣除冻结投入仓位"
+            "的往返成本情景，现金按 0 处理"
+        ),
         "limitations": [
-            "跨市场结果未换算汇率，不能等同于单一账户币种收益。",
-            "未计入交易成本、税费、分红税、成交偏差和资金利息。",
+            "跨市场收益仍是各本币收益加权近似，未计入持有期汇率变化。",
+            "30 bps 是统一往返成本压力情景，不代表任何券商、市场或账户的实际收费。",
+            "未模拟整手、涨跌停、停牌、成交冲击、分红税和资金利息。",
             "数据源切换或复权口径修订可能影响历史可比性。",
         ],
     }
@@ -1155,4 +1546,5 @@ def observe_paper_basket(
         user_id=user_id,
         observed_at=observed_at,
         payload=payload,
+        idempotency_key=idempotency_key,
     )

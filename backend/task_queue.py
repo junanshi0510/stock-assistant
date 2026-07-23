@@ -31,6 +31,9 @@ TASK_DISPATCH_QUEUED = "stock_assistant.scheduler.dispatch_queued_runs"
 TASK_OUTCOME_SCHEDULES = "stock_assistant.scheduler.outcome_schedules"
 TASK_STRATEGY_SHADOW = "stock_assistant.scheduler.strategy_shadow"
 TASK_DECISION_CHECKS = "stock_assistant.scheduler.decision_checks"
+TASK_OPPORTUNITY_OBSERVATIONS = (
+    "stock_assistant.scheduler.opportunity_observations"
+)
 TASK_WATCHLIST_SCAN = "stock_assistant.scheduler.watchlist_scan"
 TASK_AVAILABILITY_PROBE = "stock_assistant.scheduler.availability_probe"
 
@@ -129,6 +132,7 @@ celery_app.conf.update(
         TASK_OUTCOME_SCHEDULES: {"queue": QUEUE_SCHEDULER},
         TASK_STRATEGY_SHADOW: {"queue": QUEUE_SCHEDULER},
         TASK_DECISION_CHECKS: {"queue": QUEUE_SCHEDULER},
+        TASK_OPPORTUNITY_OBSERVATIONS: {"queue": QUEUE_SCHEDULER},
         TASK_WATCHLIST_SCAN: {"queue": QUEUE_MARKET},
         TASK_AVAILABILITY_PROBE: {"queue": QUEUE_SCHEDULER},
     },
@@ -157,6 +161,18 @@ celery_app.conf.update(
         "run-decision-checks": {
             "task": TASK_DECISION_CHECKS,
             "schedule": 60.0,
+        },
+        "observe-opportunity-baskets": {
+            "task": TASK_OPPORTUNITY_OBSERVATIONS,
+            "schedule": max(
+                900.0,
+                float(
+                    os.getenv(
+                        "OPPORTUNITY_OBSERVATION_INTERVAL_SECONDS", "3600"
+                    )
+                ),
+            ),
+            "options": {"expires": 900},
         },
         "scan-watchlist": {
             "task": TASK_WATCHLIST_SCAN,
@@ -270,6 +286,7 @@ def enqueue_scheduler_task(task_name: str) -> str:
         TASK_OUTCOME_SCHEDULES,
         TASK_STRATEGY_SHADOW,
         TASK_DECISION_CHECKS,
+        TASK_OPPORTUNITY_OBSERVATIONS,
         TASK_WATCHLIST_SCAN,
         TASK_OBJECT_CLEANUP,
         TASK_AVAILABILITY_PROBE,

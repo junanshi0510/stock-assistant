@@ -290,9 +290,9 @@ def _decision_workflow(
             (
                 "研究证据源暂不可用"
                 if research.get("status") == "unavailable"
-                else f"{ready_source_count}/{len(research.get('sources') or []) or 3} 个引擎已形成持久化结果"
+                else f"{ready_source_count}/{len(research.get('sources') or []) or 4} 个引擎已形成持久化结果"
             ),
-            "Agent、机会工厂或组合情景至少有一个证据完整且哈希可核验的结果；评分本身不等于可执行建议。",
+            "Agent、机会工厂、收益实验室或组合情景至少有一个证据完整且哈希可核验的持久结果；评分和资金资格本身都不等于可执行建议。",
             "agent", "生成研究证据",
         ),
         _workflow_stage(
@@ -505,17 +505,17 @@ def _timed_out_market_snapshot() -> dict:
 def _timed_out_research_snapshot() -> dict:
     message = f"持久化研究引擎在 {_SOURCE_DEADLINE_SECONDS} 秒内未返回"
     return {
-        "schema_version": "decision_research_sources.v1",
+        "schema_version": "decision_research_sources.v2",
         "status": "unavailable",
         "sources": [],
         "actions": [],
         "errors": [{"scope": "统一研究证据", "error": message}],
         "resolution_evidence_complete": False,
         "summary": {
-            "source_count": 3,
+            "source_count": 4,
             "ready_source_count": 0,
             "partial_source_count": 0,
-            "unavailable_source_count": 3,
+            "unavailable_source_count": 4,
             "paper_tracking_count": 0,
             "paper_pending_count": 0,
         },

@@ -208,6 +208,204 @@ def _opportunity_snapshot(user_id: str, repository: Any) -> tuple[dict, list[dic
     ), actions
 
 
+def _profit_snapshot(user_id: str, loader: Any) -> tuple[dict, list[dict]]:
+    """Expose forward profit evidence without turning a scorecard into an order."""
+    lab = loader(user_id=user_id)
+    items = list(lab.get("items") or [])
+    if not items:
+        return _source(
+            "profit",
+            "收益实验室",
+            "opportunity_profit",
+            status="empty",
+            summary="尚无可验证策略；资金资格保持为 0%",
+        ), []
+
+    gate_rank = {
+        "limited_manual_pilot": 5,
+        "suspended": 4,
+        "watch": 3,
+        "collecting": 2,
+        "empty": 1,
+    }
+    focus = max(
+        items,
+        key=lambda item: (
+            gate_rank.get(
+                str((item.get("capital_gate") or {}).get("status") or ""),
+                0,
+            ),
+            str(item.get("evidence_cutoff_at") or ""),
+        ),
+    )
+    gate = focus.get("capital_gate") or {}
+    gate_status = str(gate.get("status") or "empty")
+    strategy = focus.get("strategy") or {}
+    policy = (focus.get("policy") or {}).get("values") or {}
+    primary_horizon = int(policy.get("primary_horizon") or 20)
+    primary = next(
+        (
+            item
+            for item in focus.get("horizons") or []
+            if int(item.get("horizon_trading_days") or 0)
+            == primary_horizon
+        ),
+        {},
+    )
+    latest = focus.get("latest_persisted") or {}
+    cutoff = str(focus.get("evidence_cutoff_at") or "")
+    persisted_current = bool(
+        latest.get("binding_current")
+        if "binding_current" in latest
+        else (
+            latest.get("integrity_verified")
+            and cutoff
+            and str(latest.get("evidence_cutoff_at") or "") == cutoff
+        )
+    )
+    decision_states = {
+        "limited_manual_pilot",
+        "suspended",
+        "watch",
+    }
+    ready = gate_status in decision_states and persisted_current
+    valid_observations = int(
+        (focus.get("automation") or {}).get("valid_observation_count") or 0
+    )
+    basket_count = int(
+        (focus.get("automation") or {}).get("basket_count") or 0
+    )
+    mature_count = int(primary.get("mature_count") or 0)
+    mean_excess = primary.get("mean_net_excess_return_pct")
+    excess_text = (
+        f"{float(mean_excess):+.2f}%"
+        if isinstance(mean_excess, (int, float))
+        else "样本不足"
+    )
+    gate_labels = {
+        "limited_manual_pilot": "可进入受限人工试运行复核",
+        "suspended": "未通过资金门禁",
+        "watch": "统计不确定性仍需观察",
+        "collecting": "正在积累前瞻样本",
+        "empty": "尚未冻结前瞻样本",
+    }
+    status = (
+        "completed"
+        if ready
+        else "partial"
+        if valid_observations
+        else "running"
+        if basket_count
+        else "empty"
+    )
+    evidence_status = (
+        "verified"
+        if ready
+        else "partial"
+        if valid_observations or basket_count
+        else "missing"
+    )
+    validation_state = {
+        "limited_manual_pilot": (
+            "manual_pilot_review" if persisted_current else "scorecard_pending"
+        ),
+        "suspended": (
+            "strategy_suspended" if persisted_current else "scorecard_pending"
+        ),
+        "watch": "statistical_watch" if persisted_current else "scorecard_pending",
+        "collecting": "forward_collecting",
+        "empty": "not_started",
+    }.get(gate_status, "not_started")
+    actions: list[dict] = []
+    version_id = str(strategy.get("version_id") or strategy.get("id") or "unknown")
+    evidence = [
+        f"主窗口：{primary_horizon} 个交易日，成熟批次 {mature_count}",
+        f"成本后平均超额：{excess_text}",
+        *list(gate.get("reasons") or []),
+    ]
+    if gate_status in decision_states and not persisted_current:
+        actions.append(
+            _action(
+                f"profit-freeze-{version_id}",
+                "medium",
+                "收益验证",
+                f"冻结 {strategy.get('name') or '机会策略'} 的最新收益记分卡",
+                "当前统计已经形成门禁结论，但尚未把政策、批次和统计结果绑定为不可变证据；冻结前资金资格不进入今日决策。",
+                evidence,
+                "opportunity_profit",
+                "冻结收益记分卡",
+                "收益实验室前瞻批次",
+                evidence_status="partial",
+                validation_state="scorecard_pending",
+            )
+        )
+    elif gate_status == "limited_manual_pilot":
+        actions.append(
+            _action(
+                f"profit-pilot-review-{version_id}",
+                "normal",
+                "收益验证",
+                f"复核 {strategy.get('name') or '机会策略'} 的受限人工试运行预算",
+                "只有成本后前瞻超额、胜率、回撤和置信区间同时过线才会出现非零上限；仍需人工复核个人政策和可信估值，系统不会下单。",
+                evidence,
+                "opportunity_profit",
+                "复核试运行计划",
+                "不可变收益记分卡 + 个人投资政策 + 可信估值",
+                evidence_status="verified",
+                validation_state="manual_pilot_review",
+            )
+        )
+    elif gate_status == "suspended":
+        actions.append(
+            _action(
+                f"profit-suspended-{version_id}",
+                "high",
+                "收益验证",
+                f"{strategy.get('name') or '机会策略'} 未通过前瞻收益门禁",
+                "成本后的真实前瞻批次没有支持资金试运行。保持资金资格为 0%，先复核策略失效原因，不用回测分数覆盖负面证据。",
+                evidence,
+                "opportunity_profit",
+                "查看失效证据",
+                "不可变收益记分卡",
+                evidence_status="verified",
+                validation_state="strategy_suspended",
+            )
+        )
+    elif gate_status == "watch":
+        actions.append(
+            _action(
+                f"profit-watch-{version_id}",
+                "normal",
+                "收益验证",
+                f"{strategy.get('name') or '机会策略'} 暂不分配资金",
+                "平均结果可能已经过线，但 95% 区间仍覆盖零超额。继续积累独立批次，当前资金资格保持为 0%。",
+                evidence,
+                "opportunity_profit",
+                "查看统计区间",
+                "不可变收益记分卡",
+                evidence_status="verified",
+                validation_state="statistical_watch",
+            )
+        )
+
+    return _source(
+        "profit",
+        "收益实验室",
+        "opportunity_profit",
+        status=status,
+        ready=ready,
+        evidence_status=evidence_status,
+        validation_state=validation_state,
+        latest_run_id=latest.get("id"),
+        as_of=cutoff or lab.get("generated_at"),
+        summary=(
+            f"{strategy.get('name') or '策略'}："
+            f"{gate_labels.get(gate_status, gate_status)} · "
+            f"{primary_horizon} 日净超额 {excess_text}"
+        ),
+    ), actions
+
+
 def _agent_snapshot(
     user_id: str,
     tenant_id: str,
@@ -397,6 +595,7 @@ def build_research_snapshot(
     opportunity_repo: Any | None = None,
     agent_repo: Any | None = None,
     twin_repo: Any | None = None,
+    profit_lab_loader: Any | None = None,
 ) -> dict[str, Any]:
     """Read the latest durable outputs without allowing one source to hide another."""
     def load_opportunity() -> tuple[dict, list[dict]]:
@@ -423,8 +622,17 @@ def build_research_snapshot(
             repository = PortfolioTwinRepository()
         return _twin_snapshot(user_id, tenant_id, repository)
 
+    def load_profit() -> tuple[dict, list[dict]]:
+        loader = profit_lab_loader
+        if loader is None:
+            from opportunity_profit_service import profit_lab_overview
+
+            loader = profit_lab_overview
+        return _profit_snapshot(user_id, loader)
+
     loaders = (
         ("opportunity", "机会工厂", "opportunities", load_opportunity),
+        ("profit", "收益实验室", "opportunity_profit", load_profit),
         ("agent", "投资 Agent", "agent", load_agent),
         ("twin", "组合情景实验室", "twin", load_twin),
     )
@@ -472,7 +680,7 @@ def build_research_snapshot(
         else "available"
     )
     return {
-        "schema_version": "decision_research_sources.v1",
+        "schema_version": "decision_research_sources.v2",
         "status": status,
         "sources": sources,
         "actions": actions,
