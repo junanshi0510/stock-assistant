@@ -42,6 +42,7 @@ QUEUE_OUTAGE_DEPTH = max(
 _MARKETS = ("A股", "港股", "美股")
 _QUEUES = (QUEUE_AGENT, QUEUE_MARKET, QUEUE_LLM, QUEUE_OCR, QUEUE_SCHEDULER)
 _STATE_SCORE = {"unknown": 0, "outage": 1, "degraded": 2, "operational": 3}
+_DISPLAY_SEVERITY = {"operational": 0, "unknown": 1, "degraded": 2, "outage": 3}
 _SENSITIVE_DETAIL_KEY = re.compile(
     r"(?i)(authorization|credential|password|secret|token|api[_-]?key|access[_-]?key)"
 )
@@ -600,6 +601,8 @@ def public_summary(
     if latest is None:
         return {
             "status": "unknown",
+            "observed_status": None,
+            "effective_status": None,
             "monitoring_stale": True,
             "observed_at": None,
             "age_seconds": None,
@@ -609,14 +612,24 @@ def public_summary(
         }
     payload = latest.get("payload") or {}
     capabilities = build_capabilities(payload)
-    status = "unknown" if stale else str(payload.get("overall_status") or "unknown")
+    observed_status = str(payload.get("overall_status") or "unknown")
+    effective_status = str(payload.get("effective_status") or "unknown")
+    status = (
+        "unknown"
+        if stale
+        else max(
+            (observed_status, effective_status),
+            key=lambda state: _DISPLAY_SEVERITY.get(state, _DISPLAY_SEVERITY["unknown"]),
+        )
+    )
     open_count = sum(1 for item in repo.list_incidents(limit=100) if item["status"] == "open")
     notice = capabilities["decision_mode"]["message"]
     if stale:
         notice = "可用性快照已过期；已保存事实仍可读取，但不要把旧健康状态当作当前保证。"
     return {
         "status": status,
-        "effective_status": payload.get("effective_status"),
+        "observed_status": observed_status,
+        "effective_status": effective_status,
         "monitoring_stale": stale,
         "observed_at": payload.get("completed_at"),
         "age_seconds": age,

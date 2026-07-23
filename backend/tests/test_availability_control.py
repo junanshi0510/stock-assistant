@@ -212,6 +212,22 @@ class AvailabilityControlTests(unittest.TestCase):
         self.assertEqual(stale["status"], "unknown")
         self.assertTrue(stale["monitoring_stale"])
 
+    def test_public_status_does_not_hide_confirmed_incident_behind_unknown_observation(self):
+        self.record(0, "operational")
+        self.record(5, "degraded")
+        self.record(10, "degraded")
+        self.record(15, "unknown")
+
+        summary = availability_service.public_summary(
+            repository_instance=self.repository,
+            now=self.base + dt.timedelta(minutes=16),
+        )
+
+        self.assertEqual(summary["observed_status"], "unknown")
+        self.assertEqual(summary["effective_status"], "degraded")
+        self.assertEqual(summary["status"], "degraded")
+        self.assertEqual(summary["open_incident_count"], 1)
+
     def test_slo_uses_known_probe_windows_and_reports_error_budget(self):
         for index in range(12):
             self.record(

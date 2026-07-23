@@ -16,7 +16,11 @@
 - 登录用户可以看到平台状态和当前功能门禁；管理员新增高可用控制中心，可查看 16 个组件、开放/已恢复事故、24 小时/7 天/30 天内部 SLO 与错误预算，并执行标准或三市场专业源深度探测。
 - 功能门禁会区分已保存事实读取、行情刷新、组合估值、Agent、私有 OCR 和持久调度；数据库失败时关闭事实服务，队列严重积压或 Worker/供应商失败时只关闭受影响能力，不把旧健康状态或旧数据伪装为当前可用。
 - SLO 只统计固定间隔的 scheduled 探针，管理员手动探测不能刷高可用率；未知状态不会被误算为正常。所有嵌套凭据在写入不可变快照前脱敏。
-- 新增 3 个受认证 API、2 张不可变 PostgreSQL/SQLite 表、`availability-control.v1` 迁移和 Prometheus 指标。当前 OpenAPI 共 `164` 个操作；后端全量回归 `492 tests` 通过，前端 `npm audit` 为 `0 vulnerabilities`，Vite 生产构建完成 `1849` 个模块转换。
+- 新增 3 个受认证 API、2 张不可变 PostgreSQL/SQLite 表、`availability-control.v1` 迁移和 Prometheus 指标。当前 OpenAPI 共 `164` 个操作；后端全量回归 `493 tests` 与 `4 subtests` 通过，前端 `npm audit` 为 `0 vulnerabilities`，Vite 生产构建完成 `1849` 个模块转换。
+- 功能已推送 GitHub `main` 并发布到 `http://8.148.67.79/`。生产 PostgreSQL 已核对 `62` 张表、`6` 个迁移标记和两类不可变触发器；API、Celery Beat、五类 Worker、Redis、私有 OSS、Nginx 与严格 `/health/full` 均通过。公网首页和版本化静态资源返回 `200`，匿名控制面接口返回 `401`。
+- 临时管理员和普通用户完成真实登录/RBAC/CSRF 验收：管理员可读控制面，无 CSRF 的主动探测为 `403`、携带 CSRF 后为 `200`；普通用户只能读取脱敏摘要，两个管理员接口均为 `403`。测试账户随后已停用、活动会话清零，认证审计链 `26` 个事件完整。
+- 三市场真实深度探测中，A 股 Tushare 与美股 Alpha Vantage 成功；港股 Tushare `hk_daily` 受当前套餐 `1 次/分钟` 限频且 FutuOpenD 尚未配置，因此系统保留一个港股开放事故并进入只读降级，不回退新浪。用户状态取“最新观测与已确认状态中更严重者”，后续 `unknown` 观测不会把仍未恢复的事故视觉掩盖。
+- 发布后 PostgreSQL 备份已用 AES256 上传私有 OSS，SHA-256 校验通过，并在隔离数据库完整恢复核对 `62` 张表和 `6` 个迁移标记。
 - 当前仍是单机部署：本功能提供应用级故障发现、证据化事故和安全降级，不等同于跨可用区数据库、Redis、对象存储或 API 多副本容灾，也不是对外 SLA。设计与验收记录见 [`docs/updates/2026-07-23-001-availability-control-plane.md`](docs/updates/2026-07-23-001-availability-control-plane.md)。
 
 ### 2026-07-22：跨市场可信组合估值与决策门禁
