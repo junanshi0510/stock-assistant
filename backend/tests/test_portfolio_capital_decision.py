@@ -419,20 +419,33 @@ class PortfolioCapitalDecisionEngineTests(unittest.TestCase):
             result["primary_action"]["code"], "limited_manual_pilot"
         )
         self.assertAlmostEqual(
-            result["capital"]["planned_deployment_cny"], 5_000, places=2
+            result["capital"]["planned_deployment_cny"], 2_250, places=2
         )
         self.assertAlmostEqual(
-            result["capital"]["planned_cash_reserve_cny"], 5_000, places=2
+            result["capital"]["planned_cash_reserve_cny"], 7_750, places=2
         )
         candidates = {
             item["symbol"]: item
             for item in result["candidate_actions"]
         }
         self.assertAlmostEqual(
-            candidates["600519"]["planned_amount_cny"], 3_000, places=2
+            candidates["600519"]["planned_amount_cny"], 1_250, places=2
         )
         self.assertAlmostEqual(
-            candidates["000858"]["planned_amount_cny"], 2_000, places=2
+            candidates["000858"]["planned_amount_cny"], 1_000, places=2
+        )
+        self.assertEqual(
+            result["investment_committee"]["status"], "concentrated"
+        )
+        self.assertEqual(
+            result["investment_committee"]["summary"][
+                "committee_investable_pct"
+            ],
+            50,
+        )
+        self.assertTrue(
+            candidates["600519"]["committee_rank"]
+            < candidates["000858"]["committee_rank"]
         )
         self.assertTrue(
             all(
@@ -500,16 +513,16 @@ class PortfolioCapitalDecisionEngineTests(unittest.TestCase):
             result["capital"]["global_pilot_cap_cny"], 2_000
         )
         self.assertEqual(
-            result["capital"]["planned_deployment_cny"], 2_000
+            result["capital"]["planned_deployment_cny"], 900
         )
         self.assertEqual(
-            result["capital"]["planned_cash_reserve_cny"], 0
+            result["capital"]["planned_cash_reserve_cny"], 1_100
         )
         candidates = {
             item["symbol"]: item["planned_amount_cny"]
             for item in result["candidate_actions"]
         }
-        self.assertEqual(candidates, {"600519": 1_200, "000858": 800})
+        self.assertEqual(candidates, {"600519": 500, "000858": 400})
 
     def test_unknown_candidate_industry_uses_conservative_capacity(self):
         kwargs = build_kwargs()
@@ -527,15 +540,15 @@ class PortfolioCapitalDecisionEngineTests(unittest.TestCase):
         )
         self.assertAlmostEqual(
             result["capital"]["planned_deployment_cny"],
-            2_600,
+            2_250,
             places=2,
         )
         candidates = {
             item["symbol"]: item["planned_amount_cny"]
             for item in result["candidate_actions"]
         }
-        self.assertAlmostEqual(candidates["600519"], 1_560, places=2)
-        self.assertAlmostEqual(candidates["000858"], 1_040, places=2)
+        self.assertAlmostEqual(candidates["600519"], 1_250, places=2)
+        self.assertAlmostEqual(candidates["000858"], 1_000, places=2)
         self.assertTrue(
             all(item["policy_passed"] for item in result["stress_matrix"])
         )

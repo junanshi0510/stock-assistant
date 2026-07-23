@@ -4,6 +4,7 @@
 
 - 市场与股票：行情、个股研究、板块、多股比较和市场机会日报；跨标的批量候选统一进入带版本与纸面验证的机会工厂。
 - 机会工厂：版本化候选池、持久扫描、同市场多因子、硬门槛、约束后纸面组合和冻结后的前瞻观察；收益实验室继续验证精确交易日、成本后基准超额、独立批次、跨策略统计校正和资金资格。不拥有交易权限，也不代表交易所全量扫描。
+- 策略投资委员会：只组合当前不可变记分卡已通过的前瞻策略，负责近期失效熔断、策略冗余、独立贡献、袖套权重、候选共识、主动现金和漂移再平衡；输出是相对优先级与模型权重，不是涨跌概率，不拥有交易权限。
 - 基金：基金发现、单只研究、同类比较、替代品和持仓重合度。
 - 我的组合：用户确认的持仓、自选、OCR 导入、跨市场人民币可信估值、提醒，以及基于真实暴露区间的组合数字孪生；不拥有交易权限。
 - 投资指挥台：读取当前组合事实、已有仓位行动和冻结后的前瞻收益证据，生成组合级下一步行动、受限人工研究金额、现金保留与计划前后压力对照。已有仓位风险优先于新候选，不读取回测点收益直接放行，也不拥有现金、股数、订单或券商执行能力。
@@ -36,7 +37,9 @@ Claim 与追加式 Audit，`worker.py` 执行已领取 Run。生产由 Redis/Cel
 
 `backend/opportunity_profit_repository.py` 保存版本化收益政策与不可变收益记分卡。生产表由 `opportunity-profit-engine.v1` 在 PostgreSQL 事务和 advisory lock 中建立并拒绝 UPDATE/DELETE；纸面观察新增用户/组合级幂等键。Celery Beat 周期调用 `stock_assistant.scheduler.opportunity_observations`，调度器只创建带用户范围和日期幂等键的持久市场作业，真实行情仍由 `market-data` Worker 读取。相同行情截面不会追加重复观察，完成最大窗口后停止调度。API 和调度器均不持有券商凭据或订单能力。
 
-`backend/portfolio_capital_decision.py` 是组合级资金决策边界。它只接受当前且完整性通过的投资政策、可信估值、持仓行动报告、组合穿透快照和收益记分卡；先让 `data_required/reduce_review/risk_review/thesis_review` 抢占全部新资金，再把最多三个合格策略等额划分为研究袖套，并按各自冻结纸面组合权重生成最多十二个候选。全局金额取月度预算、当前组合市值乘允许试运行比例和硬上限 5% 的最小值，并继续受允许市场、单品、权益、保守行业容量及四组 `portfolio_decision_twin` 说明性情景约束。候选股票缺少专业行业分类时，新增金额统一进入同一最坏行业桶；情景越界时只能确定性缩减，不能让高分覆盖风险门禁。`portfolio_capital_repository.py` 按租户/用户保存 Evidence 与 Result 双哈希及全部来源绑定，相同证据幂等、历史拒绝 UPDATE/DELETE。所有输出只允许 `limited_manual_pilot/observe/hold/review` 语义，执行授权恒为 false。
+`backend/opportunity_committee_service.py` 是合格策略之间的组合构建边界。输入只能来自当前不可变收益记分卡和当前冻结纸面组合；最近三个独立前瞻批次连续不跑赢基准时停用，近期均值或胜率衰减时降权。策略冗余取候选权重重叠与非负前瞻超额相关性的较大值，但相关性必须至少有四个共同月份，否则保持缺失。委员会以等权为锚，按保守证据和 `1-平均冗余` 的独立贡献做有限倾斜，最多启用三个策略、单策略最高 50%；单策略和高冗余组合必须提高现金。候选模型由袖套权重乘冻结组合内权重合成，单候选最高 25%；与上一不可变指令的候选单边换手不到 10% 且没有策略进出时不要求再平衡。`opportunity_committee_repository.py` 保存用户隔离的 Evidence/Result 双哈希指令，相同证据幂等，历史拒绝 UPDATE/DELETE。
+
+`backend/portfolio_capital_decision.py` 是组合级资金决策边界。它只接受当前且完整性通过的投资政策、可信估值、持仓行动报告、组合穿透快照和收益记分卡；先让 `data_required/reduce_review/risk_review/thesis_review` 抢占全部新资金，再读取策略投资委员会的袖套权重、候选上限和主动现金。全局金额取月度预算、当前组合市值乘允许试运行比例和硬上限 5% 的最小值，并继续受允许市场、单品、权益、保守行业容量及四组 `portfolio_decision_twin` 说明性情景约束。候选股票缺少专业行业分类时，新增金额统一进入同一最坏行业桶；情景越界时只能确定性缩减，不能让委员会权重或高分覆盖风险门禁。`portfolio_capital_repository.py` 按租户/用户保存 Evidence 与 Result 双哈希及全部来源绑定，并新增委员会 Evidence SHA-256；相同证据幂等、历史拒绝 UPDATE/DELETE。所有输出只允许 `limited_manual_pilot/observe/hold/review` 语义，执行授权恒为 false。
 
 `backend/portfolio_decision_twin.py` 是组合数字孪生的确定性计算边界。它只对用户确认金额、真实基金披露暴露区间和显式情景做一阶压力计算，负责当前/WHAT-IF 对照、亏损预算、单调情景反向破线、脆弱性贡献和“减持并转现金”的线性最小名义调整草案；不得补全 Beta、相关性、行业或底层持仓，也不得生成交易订单。运行前通过 `portfolio.exposure_snapshot` 进入 `market-data` Worker 刷新披露；`portfolio_twin_repository.py` 按用户保存情景、持仓、暴露、政策和结果五段哈希，生产表由独立迁移建立并拒绝 UPDATE/DELETE。列表只能返回轻量元数据，完整性通过必须在读取详情并复算五段载荷后才能成立。
 
@@ -101,7 +104,7 @@ Claim 与追加式 Audit，`worker.py` 执行已领取 Run。生产由 Redis/Cel
 `frontend/src/api/portfolio.js`、`frontend/src/api/opportunities.js`、`frontend/src/api/availability.js` 和 `frontend/src/api/auth.js`，共享的 Cookie/CSRF 与 HTTP 错误处理放在
 `frontend/src/api/client.js`。浏览器不得把会话 Token 写入 `localStorage` 或传给业务组件。
 登录后的顶栏只显示脱敏平台状态；管理员控制台才可读取完整组件、事件、内部 SLO 和主动探测接口。用户界面必须把 `normal`、`read_only_degraded` 和 `unavailable` 明确区分，监控快照过期时不得继续显示绿色正常状态。
-机会工厂位于 `frontend/src/tabs/OpportunityTab.jsx`，策略编辑、扫描结果、纸面跟踪和收益实验室分别由 `features/opportunities/` 下的独立组件承担。页面必须同时展示候选范围、策略版本、数据源/数据日、因子覆盖率、硬门槛原因、组合限制和纸面跟踪限制；收益实验室必须展示独立/排除批次、成本、基准、统计区间、门禁原因和自动交易关闭状态。`null` 收益不得渲染为 0，未通过资金门禁不得为了“给建议”分配金额。宽表只允许在自身容器内滚动，不能扩大手机页面宽度。
+机会工厂位于 `frontend/src/tabs/OpportunityTab.jsx`，策略编辑、扫描结果、纸面跟踪、收益实验室和投资委员会分别由 `features/opportunities/` 下的独立组件承担。页面必须同时展示候选范围、策略版本、数据源/数据日、因子覆盖率、硬门槛原因、组合限制和纸面跟踪限制；收益实验室必须展示独立/排除批次、成本、基准、统计区间、门禁原因和自动交易关闭状态；投资委员会必须展示策略准入/淘汰、近期衰减、独立贡献、冗余矩阵、候选共识、主动现金、漂移和不可变指令。`null` 收益不得渲染为 0，未通过资金门禁不得为了“给建议”分配金额，任何规则权重都不得显示为涨跌概率。宽表只允许在自身容器内滚动，不能扩大手机页面宽度。
 投资指挥台位于 `frontend/src/features/decision/CapitalDecisionCommand.jsx`，并作为“今日决策”的第一决策面。页面必须同时展示当前行动、资金账本、证据门禁、已有仓位优先动作、候选证据与金额、计划前后压力矩阵，以及可复算哈希的冻结历史。任何 Evidence 过期时只能引导用户按估值 → 行动报告 → 穿透快照顺序重建；不得把实时过线但未冻结的策略渲染为可投入，不得把月度预算渲染为券商现金，不得把金额上限渲染为订单。
 组合数字孪生位于 `frontend/src/features/portfolio/PortfolioDecisionTwin.jsx`，只能从“我的资产”进入。页面必须同时展示说明性情景边界、当前/WHAT-IF 同口径对照、反向压力前提、最小降险最优性范围、证据门禁和未建模事项；不得把预设情景描述成历史校准、把降险草案描述成订单，或在混合方向损益非单调时显示单一破线倍数。
 可信估值位于 `frontend/src/features/portfolio/PortfolioValuationPanel.jsx`，必须展示基准币种、覆盖率、自动/手工方法、价格/NAV、汇率、来源日期、有效期和阻断原因。`null` 金额不得渲染为 0，手工金额不得渲染为自动估值，`trade_amount_eligible` 不得渲染为交易授权。

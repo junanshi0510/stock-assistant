@@ -13,6 +13,7 @@ import datetime as dt
 import math
 from typing import Any, Callable
 
+import opportunity_committee_service
 import opportunity_profit_service
 import portfolio_action_report
 import portfolio_decision_twin
@@ -31,7 +32,7 @@ from portfolio_capital_repository import (
 
 
 SCHEMA_VERSION = "portfolio_capital_decision.v1"
-ENGINE_VERSION = "whole_portfolio_next_best_action.v1"
+ENGINE_VERSION = "whole_portfolio_next_best_action.v2"
 HARD_GLOBAL_PILOT_CAP_PCT = 5.0
 MAX_STRATEGIES = 3
 MAX_CANDIDATES = 12
@@ -239,106 +240,22 @@ def _strategy_evidence(
     profit_repo: OpportunityProfitRepository,
     user_id: str,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    evidence: list[dict[str, Any]] = []
-    eligible: list[dict[str, Any]] = []
-    for scorecard in profit_lab.get("items") or []:
-        strategy = scorecard.get("strategy") or {}
-        gate = scorecard.get("capital_gate") or {}
-        live_plan = scorecard.get("capital_plan") or {}
-        persisted_meta = scorecard.get("latest_persisted") or {}
-        persisted = None
-        if persisted_meta.get("id"):
-            persisted = profit_repo.get_scorecard(
-                str(persisted_meta["id"]),
-                user_id=user_id,
-            )
-        persisted_current = bool(
-            persisted_meta.get("binding_current")
-            and persisted
-            and persisted.get("integrity_verified")
-        )
-        primary = _primary_horizon(scorecard)
-        family_ci = primary.get("mean_excess_familywise_ci95") or {}
-        ci95 = primary.get("mean_excess_ci95") or {}
-        row = {
-            "strategy_id": strategy.get("id"),
-            "strategy_name": strategy.get("name"),
-            "strategy_version_id": strategy.get("version_id"),
-            "profit_policy_id": (
-                scorecard.get("policy") or {}
-            ).get("id"),
-            "scorecard_id": persisted_meta.get("id"),
-            "scorecard_sha256": persisted_meta.get("payload_sha256"),
-            "scorecard_current": persisted_current,
-            "evidence_cutoff_at": scorecard.get("evidence_cutoff_at"),
-            "capital_gate_status": gate.get("status"),
-            "capital_eligible": bool(gate.get("capital_eligible")),
-            "capital_plan_status": live_plan.get("status"),
-            "basket_id": live_plan.get("basket_id"),
-            "primary_horizon_trading_days": primary.get(
-                "horizon_trading_days"
-            ),
-            "mature_cohort_count": primary.get("mature_count"),
-            "mean_net_excess_return_pct": primary.get(
-                "mean_net_excess_return_pct"
-            ),
-            "positive_excess_rate_pct": primary.get(
-                "positive_excess_rate_pct"
-            ),
-            "mean_excess_ci95": {
-                "lower": ci95.get("lower"),
-                "upper": ci95.get("upper"),
-            },
-            "familywise_ci95": {
-                "lower": family_ci.get("lower"),
-                "upper": family_ci.get("upper"),
-            },
-            "worst_cohort_drawdown_pct": primary.get(
-                "worst_cohort_drawdown_pct"
-            ),
-            "maximum_manual_pilot_pct": gate.get(
-                "maximum_manual_pilot_pct"
-            ),
-            "live_capital_plan": {
-                key: live_plan.get(key)
-                for key in (
-                    "status",
-                    "basket_id",
-                    "valuation_snapshot_id",
-                    "profile_version_id",
-                    "pilot_cap_pct",
-                    "pilot_cap_cny",
-                    "planned_budget_cny",
-                    "positions",
-                    "reasons",
-                )
-            },
-            "reasons": _unique(
-                [
-                    *(str(item) for item in gate.get("reasons") or []),
-                    *(str(item) for item in live_plan.get("reasons") or []),
-                ]
-            ),
-        }
-        evidence.append(row)
-        if (
-            row["capital_eligible"]
-            and row["capital_plan_status"] == "available"
-            and persisted_current
-            and row["basket_id"]
-        ):
-            eligible.append(row)
-    eligible.sort(
-        key=lambda item: (
-            -(
-                _number((item.get("familywise_ci95") or {}).get("lower"))
-                or -1_000_000
-            ),
-            -(_number(item.get("positive_excess_rate_pct")) or 0),
-            str(item.get("strategy_id") or ""),
-        )
+    evidence = opportunity_committee_service.strategy_evidence_rows(
+        profit_lab,
+        profit_repo=profit_repo,
+        user_id=user_id,
     )
-    return evidence, eligible[:MAX_STRATEGIES]
+    eligible = [
+        item
+        for item in evidence
+        if (
+            item.get("capital_eligible")
+            and item.get("capital_plan_status") == "available"
+            and item.get("scorecard_current")
+            and item.get("basket_id")
+        )
+    ]
+    return evidence, eligible
 
 
 def _existing_actions(
@@ -395,13 +312,25 @@ def _candidate_desires(
     global_budget: float,
     allowed_markets: set[str],
     current_actions: dict[tuple[str, str], str],
+    committee: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     if not strategies or global_budget <= 0:
         return []
-    strategy_share = global_budget / len(strategies)
+    committee_candidates = {
+        (str(item.get("market") or ""), str(item.get("symbol") or "")): item
+        for item in (committee or {}).get("candidate_consensus") or []
+    }
     candidates: dict[tuple[str, str], dict[str, Any]] = {}
     for strategy in strategies:
         plan = strategy.get("live_capital_plan") or {}
+        committee_weight = _number(
+            strategy.get("committee_weight_pct")
+        )
+        strategy_share = (
+            global_budget * committee_weight / 100
+            if committee_weight is not None
+            else global_budget / len(strategies)
+        )
         strategy_budget = min(
             strategy_share,
             _number(plan.get("planned_budget_cny"), 0.0) or 0.0,
@@ -463,6 +392,13 @@ def _candidate_desires(
                     "worst_cohort_drawdown_pct": strategy.get(
                         "worst_cohort_drawdown_pct"
                     ),
+                    "committee_weight_pct": strategy.get(
+                        "committee_weight_pct"
+                    ),
+                    "unique_contribution_pct": strategy.get(
+                        "unique_contribution_pct"
+                    ),
+                    "recent_decay": strategy.get("recent_decay"),
                     "source_weight_pct": position.get(
                         "source_weight_pct"
                     ),
@@ -475,7 +411,42 @@ def _candidate_desires(
                 row["blockers"].append(
                     f"existing_holding_action:{current_action}"
                 )
-    result = list(candidates.values())
+    result = []
+    for item in candidates.values():
+        key = (item["market"], item["symbol"])
+        committee_item = committee_candidates.get(key) or {}
+        committee_target = _number(
+            committee_item.get("model_target_weight_pct")
+        )
+        if committee_target is not None:
+            item["desired_amount_cny"] = min(
+                float(item["desired_amount_cny"]),
+                global_budget * committee_target / 100,
+            )
+        item.update(
+            {
+                "committee_rank": committee_item.get(
+                    "committee_rank"
+                ),
+                "committee_relative_view": committee_item.get(
+                    "relative_view"
+                ),
+                "committee_view_label": committee_item.get(
+                    "view_label"
+                ),
+                "committee_agreement_pct": committee_item.get(
+                    "agreement_pct"
+                ),
+                "committee_support_count": committee_item.get(
+                    "support_count"
+                ),
+                "committee_model_target_weight_pct": (
+                    committee_target
+                ),
+                "calibrated_probability": False,
+            }
+        )
+        result.append(item)
     result.sort(
         key=lambda item: (
             -float(item["desired_amount_cny"]),
@@ -754,11 +725,50 @@ def _assemble(
             holdings, profile, valuation_id
         )
     profit_lab = profit_lab_loader()
-    strategy_rows, eligible_strategies = _strategy_evidence(
+    strategy_rows, gate_eligible_strategies = _strategy_evidence(
         profit_lab,
         profit_repo=profit_repo,
         user_id=user_id,
     )
+    committee, committee_evidence = (
+        opportunity_committee_service.compose_committee(
+            strategy_rows,
+            now=current,
+        )
+    )
+    committee_by_strategy = {
+        str(item.get("strategy_id") or ""): item
+        for item in committee.get("strategies") or []
+    }
+    eligible_strategies = []
+    for strategy in gate_eligible_strategies:
+        committee_row = committee_by_strategy.get(
+            str(strategy.get("strategy_id") or "")
+        ) or {}
+        committee_weight = _number(
+            committee_row.get("committee_weight_pct"), 0.0
+        ) or 0.0
+        if committee_weight <= 0:
+            continue
+        eligible_strategies.append(
+            {
+                **strategy,
+                "committee_weight_pct": round(
+                    committee_weight, 4
+                ),
+                "committee_state": committee_row.get(
+                    "committee_state"
+                ),
+                "unique_contribution_pct": committee_row.get(
+                    "unique_contribution_pct"
+                ),
+                "recent_decay": committee_row.get("recent_decay"),
+                "committee_reasons": committee_row.get(
+                    "committee_reasons"
+                )
+                or [],
+            }
+        )
     existing_actions, critical_actions = _existing_actions(
         holdings, report
     )
@@ -957,6 +967,37 @@ def _assemble(
                 source="策略收益实验室",
             )
         )
+    committee_status = str(committee.get("status") or "collecting")
+    committee_summary = committee.get("summary") or {}
+    if eligible_strategies:
+        gates.append(
+            _gate(
+                "adaptive_strategy_committee",
+                "策略投资委员会",
+                (
+                    "pass"
+                    if committee_status == "active"
+                    else "watch"
+                ),
+                (
+                    f"{len(eligible_strategies)} 个策略袖套入选，"
+                    f"模型投入 {float(committee_summary.get('candidate_model_invested_pct') or 0):.1f}%，"
+                    f"保留现金 {float(committee_summary.get('cash_reserve_pct') or 0):.1f}%；"
+                    f"状态 {committee_status}"
+                ),
+                source=opportunity_committee_service.ENGINE_VERSION,
+            )
+        )
+    else:
+        gates.append(
+            _gate(
+                "adaptive_strategy_committee",
+                "策略投资委员会",
+                "watch",
+                "没有策略通过委员会的前瞻、完整性、失效和独立贡献检查",
+                source=opportunity_committee_service.ENGINE_VERSION,
+            )
+        )
 
     global_pilot_pct = min(
         HARD_GLOBAL_PILOT_CAP_PCT,
@@ -981,6 +1022,7 @@ def _assemble(
         global_budget=global_pilot_cap,
         allowed_markets=allowed_markets,
         current_actions=current_action_map,
+        committee=committee,
     )
 
     baseline_allocation: dict[str, Any] = {}
@@ -1255,8 +1297,8 @@ def _assemble(
                 "manual_review_required": True,
                 "execution_authorized": False,
                 "evidence_interpretation": (
-                    "历史冻结后的前瞻成本后超额证据；"
-                    "不是该股票未来收益预测。"
+                    "历史冻结后的前瞻成本后超额、策略独立贡献与"
+                    "候选共识；不是该股票未来收益概率。"
                 ),
             }
         )
@@ -1276,7 +1318,7 @@ def _assemble(
             "headline": f"本期最多试投 ¥{allocated:,.2f}，保留 ¥{reserve:,.2f}",
             "description": (
                 f"{len([item for item in candidate_rows if item['planned_amount_cny'] > 0])} "
-                "只候选通过前瞻、组合与投资政策门禁；"
+                "只候选通过前瞻、策略委员会、组合与投资政策门禁；"
                 "金额是研究上限，不是订单。"
             ),
         }
@@ -1369,6 +1411,9 @@ def _assemble(
             for item in eligible_strategies
             if item.get("basket_id")
         ),
+        "committee_evidence_sha256": sha256_payload(
+            committee_evidence
+        ),
     }
     evidence = {
         "schema_version": "portfolio_capital_evidence.v1",
@@ -1450,6 +1495,7 @@ def _assemble(
             }
         ),
         "opportunity_strategies": strategy_rows,
+        "opportunity_committee": committee,
         "engine_policy": {
             "hard_global_pilot_cap_pct": HARD_GLOBAL_PILOT_CAP_PCT,
             "maximum_strategy_count": MAX_STRATEGIES,
@@ -1458,8 +1504,9 @@ def _assemble(
                 "候选股票行业未知时，全部新增金额按同一最坏行业桶占用容量"
             ),
             "strategy_allocation": (
-                "通过门禁的策略先等额分配试运行预算，"
-                "再按冻结纸面组合权重分配候选；不按历史点估计追逐最高收益"
+                "通过门禁的策略由投资委员会以等权为锚，按独立贡献"
+                "窄幅倾斜；三期连续失效停用，高冗余和单策略场景"
+                "主动保留现金，再按冻结纸面组合权重分配候选"
             ),
         },
     }
@@ -1505,6 +1552,7 @@ def _assemble(
         "existing_position_actions": existing_actions,
         "candidate_actions": candidate_rows,
         "strategy_evidence": strategy_rows,
+        "investment_committee": committee,
         "stress_matrix": stress_rows,
         "data_quality": {
             "profile_current": profile_ready,
@@ -1513,6 +1561,13 @@ def _assemble(
             "exposure_current": exposure_ready,
             "eligible_strategy_count": len(eligible_strategies),
             "live_capital_eligible_strategy_count": live_eligible_count,
+            "committee_status": committee_status,
+            "committee_selected_strategy_count": len(
+                eligible_strategies
+            ),
+            "committee_evidence_sha256": bindings[
+                "committee_evidence_sha256"
+            ],
             "critical_existing_action_count": len(critical_actions),
             "exposure_reasons": exposure_reasons,
         },
@@ -1526,15 +1581,17 @@ def _assemble(
         "methodology": {
             "decision_order": (
                 "事实完整性 → 已有仓位风险/纪律 → 前瞻策略资格 → "
-                "月度预算 → 单品/权益/行业容量 → 全组合压力情景"
+                "策略失效/冗余/共识委员会 → 月度预算 → "
+                "单品/权益/行业容量 → 全组合压力情景"
             ),
             "profit_evidence": (
                 "只使用冻结后独立前瞻批次的成本后相对基准结果；"
                 "要求置信区间、多重检验、回撤与命中率同时通过。"
             ),
             "allocation": (
-                "多个合格策略等额分配研究袖套，再按冻结候选权重分配；"
-                "最终金额受当前组合和投资政策的更严格边界约束。"
+                "多个合格策略以等权为锚，按可验证独立贡献窄幅倾斜；"
+                "单策略、重复押注和单一候选过度集中会转为现金，"
+                "最终金额继续受当前组合和投资政策的更严格边界约束。"
             ),
             "stress": (
                 "使用当前暴露区间和说明性市场冲击比较新增资金前后；"

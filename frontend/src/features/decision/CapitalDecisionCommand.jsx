@@ -86,13 +86,13 @@ function CandidateCard({ item }) {
       </div>
       <div className="capital-candidate-metrics">
         <span>计划后占比 <b>{pct(item.post_ratio_pct)}</b></span>
-        <span>独立批次 <b>{source.mature_cohort_count ?? '—'}</b></span>
-        <span>成本后超额 <b>{pct(source.mean_net_excess_return_pct, true)}</b></span>
+        <span>委员会排名 <b>{item.committee_rank ? `#${item.committee_rank}` : '—'}</b></span>
+        <span>策略支持 <b>{item.committee_support_count ?? '—'} / {pct(item.committee_agreement_pct)}</b></span>
         <span>家族校正下界 <b>{pct(lower, true)}</b></span>
       </div>
       <div className="capital-candidate-evidence">
         <ShieldCheck size={14} aria-hidden="true" />
-        <span>{source.strategy_name || '前瞻策略'} · {source.primary_horizon_trading_days || '—'} 交易日主窗口 · 胜基准 {pct(source.positive_excess_rate_pct)}</span>
+        <span>{item.committee_view_label || '委员会候选'} · {source.strategy_name || '前瞻策略'} · {source.primary_horizon_trading_days || '—'} 交易日主窗口 · 胜基准 {pct(source.positive_excess_rate_pct)}</span>
       </div>
       {item.blockers?.length > 0 && (
         <small className="capital-candidate-blockers">{item.blockers.join(' · ')}</small>
@@ -306,7 +306,7 @@ export default function CapitalDecisionCommand({ onNavigate }) {
         <section className="capital-panel candidate-panel">
           <div className="capital-panel-head">
             <div><span className="eyebrow">新增资金计划</span><h3>{approved.length ? `${approved.length} 只候选获限额试投资格` : '本期没有候选获资金资格'}</h3></div>
-            <button type="button" onClick={() => onNavigate?.('opportunity_profit')}>收益实验室<ArrowRight size={15} /></button>
+            <button type="button" onClick={() => onNavigate?.('opportunity_committee')}>策略委员会<ArrowRight size={15} /></button>
           </div>
           {approved.length > 0 ? (
             <div className="capital-candidate-list">{approved.map((item) => <CandidateCard item={item} key={`${item.market}:${item.symbol}`} />)}</div>

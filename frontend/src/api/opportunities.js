@@ -12,6 +12,20 @@ export function fetchOpportunityProfitLab() {
   return getJson('/api/v1/opportunities/profit-lab')
 }
 
+export function fetchOpportunityCommittee() {
+  return getJson('/api/v1/opportunities/committee')
+}
+
+export function freezeOpportunityCommittee() {
+  return getJson('/api/v1/opportunities/committee/mandates', {
+    method: 'POST',
+  })
+}
+
+export function fetchOpportunityCommitteeMandates(limit = 20) {
+  return getJson(`/api/v1/opportunities/committee/mandates?limit=${encodeURIComponent(limit)}`)
+}
+
 export function fetchOpportunityProfitPolicy(strategyId) {
   return getJson(`/api/v1/opportunities/strategies/${encodeURIComponent(strategyId)}/profit-policy`)
 }

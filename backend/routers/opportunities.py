@@ -16,6 +16,10 @@ from opportunity_repository import (
     repository,
 )
 from opportunity_profit_repository import repository as profit_repository
+from opportunity_committee_repository import (
+    repository as committee_repository,
+)
+import opportunity_committee_service
 import opportunity_profit_service
 import opportunity_service
 from task_queue import TaskQueueConfigurationError, TaskQueueUnavailableError
@@ -184,6 +188,60 @@ def get_opportunity_profit_lab(
         )
     except Exception as error:
         _raise_domain(error)
+
+
+@router.get("/committee")
+def get_opportunity_investment_committee(
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        return opportunity_committee_service.current_committee(
+            user_id=_subject_id(principal)
+        )
+    except Exception as error:
+        _raise_domain(error)
+
+
+@router.post(
+    "/committee/mandates",
+    status_code=status.HTTP_201_CREATED,
+)
+def create_opportunity_committee_mandate(
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        item, created = opportunity_committee_service.freeze_committee(
+            user_id=_subject_id(principal),
+            actor_id=_actor_id(principal),
+        )
+        return {"item": item, "created": created}
+    except Exception as error:
+        _raise_domain(error)
+
+
+@router.get("/committee/mandates")
+def list_opportunity_committee_mandates(
+    limit: int = Query(default=30, ge=1, le=100),
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    return opportunity_committee_service.mandate_history(
+        user_id=_subject_id(principal), limit=limit
+    )
+
+
+@router.get("/committee/mandates/{mandate_id}")
+def get_opportunity_committee_mandate(
+    mandate_id: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    item = committee_repository.get_mandate(
+        mandate_id, user_id=_subject_id(principal)
+    )
+    if item is None:
+        raise HTTPException(
+            status_code=404, detail="策略投资委员会指令不存在"
+        )
+    return item
 
 
 @router.get("/strategies/{strategy_id}/profit-policy")
