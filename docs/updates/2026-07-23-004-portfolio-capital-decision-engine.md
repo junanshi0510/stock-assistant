@@ -305,4 +305,15 @@ OpenAPI: 174 operations / 150 paths
 8. 使用临时普通用户完成 API/浏览器验收并停用账户；
 9. 再次备份并执行隔离恢复。
 
-生产实测结果将在本次提交发布后补入本节。
+生产实测于 2026-07-23 完成，结果如下：
+
+- 功能提交 `4d949d43c5d51d0264017cc8d1081f239d2e10f4` 已推送 GitHub `main`，并通过内容寻址 release 原子滚动发布到 `http://8.148.67.79/`。
+- 发布前 PostgreSQL 备份已使用 AES256 上传私有 OSS，SHA-256 为 `04b26025672fc38c23f7b33ab0346e4d8662abe5d73fa434cbeb469191e42912`；隔离恢复核对 `64` 张表、`7` 个迁移标记通过。
+- `portfolio-capital-decision.v1` 已执行；生产数据库核对为 `65` 张表、`8` 个迁移标记，新表 `17` 列且存在 1 个 UPDATE/DELETE 拒绝触发器。事务内真实 UPDATE 探针收到 `integrity_constraint_violation`，回滚后残留行数为 `0`。
+- `stock-assistant-api@8001/8002` 均为 active，两个副本的 release 都是 `4d949d43c5d51d0264017cc8d1081f239d2e10f4`；`/health/ready` 与 `/health/full` 均为 `operational`，并返回 `portfolio_capital_schema=true`。五类 Worker、Celery Beat、PostgreSQL、Redis、Nginx 和私有 OSS 均正常。
+- 两个副本的 OpenAPI 都核对为 `150` 条路径、`174` 个操作，4 个资金决策操作完整存在。服务器运行时使用生产依赖执行资金决策、路由契约和健康检查共 `20` 项，全部通过。
+- 公网首页和本次版本化 JS/CSS 资源全部返回 `200`；匿名读取当前计划和匿名冻结计划都返回 `401`。Chrome 已真实渲染公网登录页；公网静态资产名称与本地完成桌面、冻结历史及 `390×844` 验收的构建产物一致。
+- 临时普通用户完成真实生产 API 验收：注册 `201`、登录/会话 `200`、缺少 CSRF 的冻结请求 `403`、当前计划 `200/blocked`；首次冻结 `created=true`，相同证据再次冻结 `created=false` 且复用同一计划，历史数量为 `1`，详情的 Schema、Evidence、Result 与全部绑定校验均为 `true`。结果继续保持 `execution_authorized=false`、`cash_source_confirmed=false`。验收后账户已停用，活跃会话为 `0`。
+- 发布后备份再次使用 AES256 上传私有 OSS，SHA-256 为 `0f0a881e119daffc1369a8833f45284f2a5bad8888f3f6aa1e2a4b3389c7156b`；独立恢复成功核对 `65` 张表、`8` 个迁移标记。
+
+本次验收确认的是决策链、资金约束、证据完整性和故障关闭行为正确，不代表策略已经积累足够前瞻样本，也不构成未来收益保证。

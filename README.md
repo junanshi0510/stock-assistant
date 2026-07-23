@@ -17,6 +17,7 @@
 - 页面同时展示已有仓位动作、候选逐项金额与前瞻证据、资金账本、全部门禁、计划前后压力损失以及现金保留额。月度预算不是券商实时现金，系统不计算股数、不创建订单、不连接券商，所有结果固定 `execution_authorized=false`。
 - 每次计划可冻结为按租户/用户隔离的不可变记录，完整保存持仓、政策、估值、行动报告、穿透快照、收益记分卡和纸面组合绑定，并分别校验 Evidence/Result SHA-256；相同证据幂等复用，SQLite/PostgreSQL 均拒绝 UPDATE/DELETE。新增 4 个受认证操作、`portfolio-capital-decision.v1` 迁移和 readiness 门禁，当前 OpenAPI 共 `174` 个操作、`150` 条路径。
 - 后端全量回归 `523 passed`、`11 subtests passed`，前端 `npm audit` 为 `0 vulnerabilities`，Vite 生产构建完成 `1851` 个模块转换。本地真实浏览器已验证阻断态、冻结幂等、历史双哈希与 `390×844` 响应式布局。完整竞品参考、计算公式、证据绑定、接口、边界与验收记录见 [`docs/updates/2026-07-23-004-portfolio-capital-decision-engine.md`](docs/updates/2026-07-23-004-portfolio-capital-decision-engine.md)。
+- 功能提交 `4d949d4` 已推送 GitHub `main` 并发布到 `http://8.148.67.79/`。生产双 API 副本、Schema readiness、五类 Worker、Celery Beat、Redis、PostgreSQL、Nginx、私有 OSS、新静态资源和匿名权限门禁均通过；临时普通用户完成 CSRF、阻断计划、首次冻结、幂等复用、历史与双哈希验收后已停用且会话清零。发布后加密备份已上传私有 OSS，并在隔离库恢复核对 `65` 张表和 `8` 个迁移标记。
 
 ### 2026-07-23：策略收益实验室与资金资格引擎
 
