@@ -262,7 +262,17 @@ atomic_link "$target_dir/frontend/dist" "$static_link"
 static_changed=1
 nginx -t
 systemctl reload nginx
-public_response="$(curl --fail --silent --show-error --max-time 8 "$public_health_url")"
+public_response=""
+for attempt in $(seq 1 15); do
+  public_response="$(curl --fail --silent --show-error --max-time 8 \
+    "$public_health_url" 2>/dev/null || true)"
+  if grep -Eq '"ready"[[:space:]]*:[[:space:]]*true' <<<"$public_response" \
+    && grep -Eq "\"release_id\"[[:space:]]*:[[:space:]]*\"${release_id}\"" \
+      <<<"$public_response"; then
+    break
+  fi
+  sleep 1
+done
 grep -Eq '"ready"[[:space:]]*:[[:space:]]*true' <<<"$public_response" \
   && grep -Eq "\"release_id\"[[:space:]]*:[[:space:]]*\"${release_id}\"" <<<"$public_response" || {
   echo "rollout failed: public readiness or release identity is invalid" >&2

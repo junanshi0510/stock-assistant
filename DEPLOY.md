@@ -292,6 +292,15 @@ sudo ln -sfn /etc/nginx/sites-available/stock-assistant \
   /etc/nginx/sites-enabled/stock-assistant
 sudo nginx -t
 sudo systemctl reload nginx
+
+# reload 后旧 worker 会优雅退出；轮询到目标 release，不能只检查第一次响应。
+expected_release="$(git -C /opt/stock-assistant rev-parse HEAD)"
+for attempt in $(seq 1 15); do
+  response="$(curl -fsS http://127.0.0.1/health/ready || true)"
+  grep -q "\"release_id\":\"${expected_release}\"" <<<"$response" && break
+  sleep 1
+done
+grep -q "\"release_id\":\"${expected_release}\"" <<<"$response"
 ```
 
 修改模板中的 `server_name`。Nginx 使用 `127.0.0.1:8001/8002` 两个上游，独立 include `/etc/nginx/stock-assistant-api-upstreams.conf` 由发布器原子维护；滚动更新会先把目标副本标记为 `down`、reload 并等待排空，再重启该副本。前端根目录为发布器原子维护的 `/var/www/stock-assistant-current`。公网只开放拓扑脱敏的 `/health/edge`；详细 `/health/ready`、`/health/full` 与 `/internal/metrics` 只能由 `127.0.0.1` 和 `::1` 访问。配置没有启用 `non_idempotent`，因此不会为了切换上游重放可能已提交的写请求。

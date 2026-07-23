@@ -87,6 +87,7 @@ class ApiReplicaContractTests(unittest.TestCase):
         self.assertIn("write_upstream_config", rollout)
         self.assertIn("down;", rollout)
         self.assertIn("public readiness or release identity is invalid", rollout)
+        self.assertIn("for attempt in $(seq 1 15)", rollout)
         self.assertIn("restoring previous API slots", rollout)
         self.assertFalse((root / "deploy" / "stock-assistant-api.service").exists())
 
