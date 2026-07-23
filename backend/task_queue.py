@@ -32,6 +32,7 @@ TASK_OUTCOME_SCHEDULES = "stock_assistant.scheduler.outcome_schedules"
 TASK_STRATEGY_SHADOW = "stock_assistant.scheduler.strategy_shadow"
 TASK_DECISION_CHECKS = "stock_assistant.scheduler.decision_checks"
 TASK_WATCHLIST_SCAN = "stock_assistant.scheduler.watchlist_scan"
+TASK_AVAILABILITY_PROBE = "stock_assistant.scheduler.availability_probe"
 
 
 class TaskQueueConfigurationError(RuntimeError):
@@ -129,6 +130,7 @@ celery_app.conf.update(
         TASK_STRATEGY_SHADOW: {"queue": QUEUE_SCHEDULER},
         TASK_DECISION_CHECKS: {"queue": QUEUE_SCHEDULER},
         TASK_WATCHLIST_SCAN: {"queue": QUEUE_MARKET},
+        TASK_AVAILABILITY_PROBE: {"queue": QUEUE_SCHEDULER},
     },
     task_annotations={
         TASK_AGENT_RUN: {"soft_time_limit": 3600, "time_limit": 3900},
@@ -137,6 +139,7 @@ celery_app.conf.update(
         TASK_OPPORTUNITY_SCAN: {"soft_time_limit": 900, "time_limit": 960},
         TASK_LLM_TOOL: {"soft_time_limit": 150, "time_limit": 180},
         TASK_OCR: {"soft_time_limit": 120, "time_limit": 150},
+        TASK_AVAILABILITY_PROBE: {"soft_time_limit": 120, "time_limit": 150},
     },
     beat_schedule={
         "dispatch-durable-agent-runs": {
@@ -162,6 +165,14 @@ celery_app.conf.update(
         "cleanup-expired-private-objects": {
             "task": TASK_OBJECT_CLEANUP,
             "schedule": 3600.0,
+        },
+        "record-platform-availability": {
+            "task": TASK_AVAILABILITY_PROBE,
+            "schedule": max(
+                60.0,
+                float(os.getenv("AVAILABILITY_PROBE_INTERVAL_SECONDS", "300")),
+            ),
+            "options": {"expires": 240},
         },
     },
 )
@@ -261,6 +272,7 @@ def enqueue_scheduler_task(task_name: str) -> str:
         TASK_DECISION_CHECKS,
         TASK_WATCHLIST_SCAN,
         TASK_OBJECT_CLEANUP,
+        TASK_AVAILABILITY_PROBE,
     }
     if task_name not in allowed:
         raise TaskQueueConfigurationError("不允许的调度任务")

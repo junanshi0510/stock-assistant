@@ -29,7 +29,7 @@ class HealthReadinessTests(unittest.TestCase):
         self.assertFalse(result["ready"])
         self.assertEqual(result["missing_queues"], ["llm", "ocr", "scheduler"])
 
-    def test_all_dependencies_must_be_ready(self):
+    def test_optional_dependency_failure_keeps_read_traffic_but_marks_full_service_degraded(self):
         with (
             patch.object(health, "_database_readiness", return_value={"ready": True}),
             patch.object(
@@ -45,7 +45,27 @@ class HealthReadinessTests(unittest.TestCase):
             ),
         ):
             result = health.readiness(use_cache=False)
+        self.assertTrue(result["ready"])
+        self.assertTrue(result["traffic_ready"])
+        self.assertFalse(result["full_service_ready"])
+        self.assertEqual(result["status"], "degraded")
+
+    def test_database_failure_removes_traffic_readiness(self):
+        with (
+            patch.object(health, "_database_readiness", return_value={"ready": False}),
+            patch.object(
+                health,
+                "redis_readiness",
+                return_value={"ready": True, "queue_depths": {}},
+            ),
+            patch.object(health, "_worker_readiness", return_value={"ready": True}),
+            patch.object(health, "_object_storage_readiness", return_value={"ready": True}),
+        ):
+            result = health.readiness(use_cache=False)
         self.assertFalse(result["ready"])
+        self.assertFalse(result["traffic_ready"])
+        self.assertFalse(result["full_service_ready"])
+        self.assertEqual(result["status"], "outage")
 
     def test_required_object_storage_configuration_failure_is_visible(self):
         with (

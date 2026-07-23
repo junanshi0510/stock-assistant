@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
-import { Bot, BriefcaseBusiness, Info, LayoutDashboard, Search, Shield, Telescope, TrendingUp } from 'lucide-react'
+import { Activity, Bot, BriefcaseBusiness, Info, LayoutDashboard, Search, Shield, Telescope, TrendingUp } from 'lucide-react'
 import { fetchAuthSession, logoutAccount } from './api/auth'
+import { fetchPlatformAvailability } from './api/availability'
 import { fetchMarkets } from './api/market'
 import { fetchDecisionTaskSummary } from './api/portfolio'
 import AccountMenu from './components/AccountMenu'
@@ -37,6 +38,7 @@ export default function App() {
   const [marketView, setMarketView] = useState('radar')
   const [portfolioView, setPortfolioView] = useState('holdings')
   const [taskSummary, setTaskSummary] = useState(null)
+  const [availability, setAvailability] = useState(null)
 
   // 单股分析的共享状态(供扫描页点击跳转使用)
   const [market, setMarket] = useState('A股')
@@ -57,20 +59,45 @@ export default function App() {
     const unauthorized = () => {
       setUser(null)
       setTaskSummary(null)
+      setAvailability(null)
       setAuthView('login')
       setAuthNotice('')
       setTab('overview')
     }
+    const availabilityUpdated = (event) => {
+      if (event.detail) setAvailability(event.detail)
+    }
     globalThis.addEventListener('stock-assistant:unauthorized', unauthorized)
+    globalThis.addEventListener('stock-assistant:availability-updated', availabilityUpdated)
     return () => {
       active = false
       globalThis.removeEventListener('stock-assistant:unauthorized', unauthorized)
+      globalThis.removeEventListener('stock-assistant:availability-updated', availabilityUpdated)
     }
   }, [])
 
   useEffect(() => {
     if (!user) return
     fetchMarkets().then((d) => d.markets && setMarkets(d.markets)).catch(() => {})
+  }, [user])
+
+  useEffect(() => {
+    if (!user || user.must_change_password) {
+      setAvailability(null)
+      return undefined
+    }
+    let active = true
+    const refreshAvailability = () => {
+      fetchPlatformAvailability()
+        .then((result) => { if (active) setAvailability(result) })
+        .catch(() => { if (active) setAvailability(null) })
+    }
+    refreshAvailability()
+    const timer = globalThis.setInterval(refreshAvailability, 60000)
+    return () => {
+      active = false
+      globalThis.clearInterval(timer)
+    }
   }, [user])
 
   useEffect(() => {
@@ -109,6 +136,7 @@ export default function App() {
     try { await logoutAccount() } catch { /* session may already be invalid */ }
     setUser(null)
     setTaskSummary(null)
+    setAvailability(null)
     setAuthView('login')
     setAuthNotice('')
     setTab('overview')
@@ -160,6 +188,14 @@ export default function App() {
     ? [...BASE_TABS, { id: 'admin', label: '系统管理', icon: Shield }]
     : BASE_TABS
   const openTaskCount = Math.max(0, Number(taskSummary?.open_count) || 0)
+  const availabilityState = availability?.monitoring_stale ? 'unknown' : (availability?.status || 'unknown')
+  const availabilityLabel = {
+    operational: '服务正常',
+    degraded: '部分降级',
+    outage: '服务受阻',
+    unknown: '监测中',
+  }[availabilityState]
+  const decisionMode = availability?.capabilities?.decision_mode?.mode
 
   return (
     <>
@@ -189,9 +225,10 @@ export default function App() {
               )
             })}
           </nav>
-          <div className="header-status" aria-label="数据来源说明">
+          <div className={`header-status state-${availabilityState}`} aria-label="平台可用性">
             <span className="header-status-dot" aria-hidden="true" />
-            <span>真实数据</span>
+            <Activity size={13} aria-hidden="true" />
+            <span>{availabilityLabel}</span>
           </div>
           <AccountMenu
             user={user}
@@ -207,6 +244,12 @@ export default function App() {
           <Info size={15} strokeWidth={2.2} aria-hidden="true" />
           <span>风险提示：市场与基金事实来自已标注数据源；AI 仅解释 Evidence，不代表未来涨跌，也不构成投资建议。</span>
         </div>
+        {decisionMode && decisionMode !== 'normal' && (
+          <div className={`platform-availability-notice state-${availabilityState}`} role="status">
+            <Activity size={15} aria-hidden="true" />
+            <span>{availability.notice}</span>
+          </div>
+        )}
 
         <Suspense fallback={<div className="page-loading"><span className="spinner" />正在加载工作区</div>}>
           {tab === 'overview' && <DashboardTab goPortfolio={goPortfolio} goFunds={goFunds} goMarket={goMarket} goAgent={goAgent} goOpportunities={goOpportunities} onTaskSummaryChange={setTaskSummary} />}

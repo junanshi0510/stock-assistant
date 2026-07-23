@@ -1,5 +1,6 @@
-import { CheckCircle2, KeyRound, RefreshCw, Shield, UserPlus, UsersRound } from 'lucide-react'
+import { Activity, AlertTriangle, CheckCircle2, CloudCog, Gauge, KeyRound, PlayCircle, RefreshCw, Shield, UserPlus, UsersRound } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
+import { fetchAdminAvailability, runAdminAvailabilityProbe } from '../api/availability'
 import {
   createAdminUser,
   fetchAdminAuthAudit,
@@ -20,6 +21,22 @@ const EVENT_LABELS = {
   login_succeeded: '登录成功',
   login_failed: '登录失败',
   logout: '退出登录',
+}
+
+const AVAILABILITY_LABELS = {
+  operational: '正常',
+  degraded: '降级',
+  outage: '中断',
+  unknown: '待确认',
+}
+
+const CAPABILITY_LABELS = {
+  saved_data_read: '已保存事实读取',
+  market_refresh: '市场数据刷新',
+  portfolio_valuation_refresh: '组合估值刷新',
+  agent_research: '投资 Agent',
+  private_ocr_import: '私有 OCR 导入',
+  durable_scheduling: '持久调度',
 }
 
 function timeText(value) {
@@ -57,19 +74,21 @@ export default function AdminTab({ currentUser }) {
   const [overview, setOverview] = useState(null)
   const [users, setUsers] = useState([])
   const [audit, setAudit] = useState(null)
+  const [availability, setAvailability] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [resetTarget, setResetTarget] = useState(null)
+  const [probeMode, setProbeMode] = useState('')
   const [createForm, setCreateForm] = useState({ username: '', display_name: '', role: 'user', temporary_password: '' })
 
   const load = useCallback(async () => {
     setLoading(true); setError('')
     try {
-      const [overviewData, userData, auditData] = await Promise.all([
-        fetchAdminOverview(), fetchAdminUsers(), fetchAdminAuthAudit(60),
+      const [overviewData, userData, auditData, availabilityData] = await Promise.all([
+        fetchAdminOverview(), fetchAdminUsers(), fetchAdminAuthAudit(60), fetchAdminAvailability(),
       ])
-      setOverview(overviewData); setUsers(userData.items || []); setAudit(auditData)
+      setOverview(overviewData); setUsers(userData.items || []); setAudit(auditData); setAvailability(availabilityData)
     } catch (requestError) { setError(requestError.message) } finally { setLoading(false) }
   }, [])
 
@@ -91,7 +110,26 @@ export default function AdminTab({ currentUser }) {
     catch (requestError) { setError(requestError.message) }
   }
 
+  async function runProbe(mode) {
+    setProbeMode(mode); setError(''); setMessage('')
+    try {
+      const result = await runAdminAvailabilityProbe(mode)
+      if (result.summary) {
+        globalThis.dispatchEvent(new CustomEvent('stock-assistant:availability-updated', { detail: result.summary }))
+      }
+      setMessage(mode === 'deep' ? '三市场专业源主动探测已记录。' : '平台可用性探测已记录。')
+      await load()
+    } catch (requestError) { setError(requestError.message) } finally { setProbeMode('') }
+  }
+
   const counts = overview?.users || {}
+  const availabilityState = availability?.monitoring_stale ? 'unknown' : (availability?.status || 'unknown')
+  const components = availability?.latest?.payload?.components || []
+  const capabilities = availability?.capabilities || {}
+  const incidents = availability?.incidents || []
+  const openIncidents = incidents.filter((item) => item.status === 'open')
+  const coreWindow = availability?.slos?.groups?.core_access?.windows?.['24h']
+  const sloRows = Object.entries(availability?.slos?.groups || {})
   return (
     <div className="admin-workspace">
       <WorkspaceHeader eyebrow="Access Control" title="管理控制台" description="账户、角色、会话与认证审计。所有权限变更都在服务端执行并写入哈希审计链。" />
@@ -104,6 +142,67 @@ export default function AdminTab({ currentUser }) {
         <div><span>启用用户</span><strong>{counts.active_users ?? '-'}</strong></div>
         <div><span>活动会话</span><strong>{overview?.active_sessions ?? '-'}</strong></div>
         <div><span>Agent Run</span><strong>{Object.values(overview?.agent_runs || {}).reduce((sum, value) => sum + value, 0)}</strong></div>
+      </section>
+
+      <section className="admin-section availability-control">
+        <div className="admin-section-heading">
+          <div><span className="eyebrow">Availability Control Plane</span><h3><CloudCog size={18} />高可用控制中心</h3></div>
+          <div className="availability-actions">
+            <button type="button" className="ghost icon-text" onClick={() => runProbe('standard')} disabled={Boolean(probeMode)}><PlayCircle size={15} />{probeMode === 'standard' ? '探测中' : '立即探测'}</button>
+            <button type="button" className="ghost icon-text" onClick={() => runProbe('deep')} disabled={Boolean(probeMode)}><Activity size={15} />{probeMode === 'deep' ? '专业源探测中' : '三市场深度探测'}</button>
+          </div>
+        </div>
+
+        <div className="availability-metrics" aria-label="平台可用性概览">
+          <div><span>当前状态</span><strong className={`availability-state state-${availabilityState}`}>{AVAILABILITY_LABELS[availabilityState]}</strong><small>{availability?.monitoring_stale ? '监测快照已过期' : timeText(availability?.observed_at)}</small></div>
+          <div><span>开放事故</span><strong>{openIncidents.length}</strong><small>连续两次失败才开启</small></div>
+          <div><span>24 小时核心 SLI</span><strong>{coreWindow?.availability_pct == null ? '-' : `${coreWindow.availability_pct}%`}</strong><small>{coreWindow?.enough_samples ? `目标 ${coreWindow.target_pct}%` : '样本积累中'}</small></div>
+          <div><span>审计完整性</span><strong>{availability?.verification?.latest_probe?.verified && availability?.verification?.incident_events?.verified ? '完整' : '异常'}</strong><small>{availability?.history_count || 0} 份近期快照</small></div>
+        </div>
+
+        <div className="availability-mode-banner">
+          <Gauge size={17} />
+          <div><strong>{capabilities?.decision_mode?.mode === 'normal' ? '正常决策模式' : capabilities?.decision_mode?.mode === 'read_only_degraded' ? '只读降级模式' : '事实服务不可用'}</strong><span>{capabilities?.decision_mode?.message || availability?.notice}</span></div>
+        </div>
+
+        <div className="availability-capabilities">
+          {Object.entries(CAPABILITY_LABELS).map(([key, label]) => {
+            const item = capabilities[key] || {}
+            return <article key={key} className={`availability-capability ${item.available ? 'available' : 'unavailable'}`}>
+              <span>{item.available ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}{label}</span>
+              <strong>{item.mode === 'normal' ? '正常' : item.mode === 'partial' ? '部分可用' : item.mode === 'deterministic_only' ? '确定性模式' : item.available ? '可用' : '不可用'}</strong>
+              {item.markets && <small>{Object.entries(item.markets).map(([market, state]) => `${market} ${AVAILABILITY_LABELS[state] || state}`).join(' · ')}</small>}
+            </article>
+          })}
+        </div>
+
+        <div className="admin-section-heading availability-subheading"><div><span className="eyebrow">Components</span><h3><Activity size={17} />关键组件</h3></div><small>{components.length} 个组件</small></div>
+        <div className="admin-table-wrap">
+          <table className="admin-table availability-table"><thead><tr><th>组件</th><th>类别</th><th>观测</th><th>确认状态</th><th>连续失败/恢复</th><th>说明</th></tr></thead>
+            <tbody>{components.map((item) => <tr key={item.component_id}>
+              <td><strong>{item.label}</strong><small>{item.component_id}</small></td>
+              <td>{item.category}</td>
+              <td><span className={`availability-pill state-${item.observed_state}`}>{AVAILABILITY_LABELS[item.observed_state]}</span></td>
+              <td><span className={`availability-pill state-${item.effective_state}`}>{AVAILABILITY_LABELS[item.effective_state]}</span>{item.pending_transition && <small>待二次确认</small>}</td>
+              <td>{item.failure_streak || 0} / {item.success_streak || 0}</td>
+              <td><span>{item.message}</span>{item.incident_id && <small>{item.incident_id.slice(0, 26)}…</small>}</td>
+            </tr>)}</tbody>
+          </table>
+        </div>
+
+        <div className="availability-two-column">
+          <div>
+            <div className="admin-section-heading availability-subheading"><div><span className="eyebrow">Internal SLO</span><h3><Gauge size={17} />错误预算</h3></div></div>
+            <div className="availability-slo-list">{sloRows.map(([key, item]) => {
+              const window = item.windows?.['24h'] || {}
+              return <div key={key}><span><strong>{item.label}</strong><small>{window.enough_samples ? `${window.sample_count} 个有效样本` : '样本积累中'}</small></span><b>{window.availability_pct == null ? '-' : `${window.availability_pct}%`}</b><small>目标 {item.target_pct}% · Burn {window.burn_rate ?? '-'}×</small></div>
+            })}</div>
+          </div>
+          <div>
+            <div className="admin-section-heading availability-subheading"><div><span className="eyebrow">Incident Timeline</span><h3><AlertTriangle size={17} />事故与恢复</h3></div><small>{incidents.length} 条</small></div>
+            <div className="availability-incident-list">{incidents.length ? incidents.slice(0, 12).map((item) => <div key={item.incident_id} className={item.status}><span className={`availability-pill state-${item.current_state}`}>{item.status === 'open' ? '处理中' : '已恢复'}</span><div><strong>{item.component_id}</strong><small>{timeText(item.opened_at)}{item.resolved_at ? ` → ${timeText(item.resolved_at)}` : ''}</small><span>{item.latest_message || '状态转换已记录'}</span></div></div>) : <p className="empty-inline">尚无确认事故。</p>}</div>
+          </div>
+        </div>
       </section>
 
       <section className="admin-section">

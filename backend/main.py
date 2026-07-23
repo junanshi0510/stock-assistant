@@ -30,7 +30,7 @@ from auth import (
     auth_service,
 )
 from agent.worker import start_worker
-from routers import agent, auth, funds, market, opportunities, portfolio
+from routers import agent, auth, availability, funds, market, opportunities, portfolio
 from task_queue import uses_celery_queue
 from observability import observe_http_request
 
@@ -138,10 +138,20 @@ def dependency_readiness():
     return JSONResponse(status_code=200 if result["ready"] else 503, content=result)
 
 
+@app.get("/health/full", include_in_schema=False)
+def full_service_readiness():
+    result = health.readiness()
+    return JSONResponse(
+        status_code=200 if result["full_service_ready"] else 503,
+        content=result,
+    )
+
+
 app.mount("/internal/metrics", make_asgi_app())
 
 
 app.include_router(auth.router)
+app.include_router(availability.router)
 app.include_router(market.router)
 app.include_router(funds.router)
 app.include_router(portfolio.router)

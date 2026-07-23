@@ -8,6 +8,17 @@
 
 ## 最近更新
 
+### 2026-07-23：高可用控制面与安全降级
+
+- 新增每 5 分钟执行的持久可用性探针，统一观测 PostgreSQL、Redis、私有 OSS、五类 Worker、五条队列积压和 A/H/美股三条专业行情路线，共 16 个组件；调度任务按时间桶幂等，重复投递不会重复写快照或指标。
+- 每份探针快照计算 SHA-256 并拒绝 UPDATE/DELETE；组件连续两次失败才开启事故、连续两次成功才关闭事故，开启、严重度变化和恢复事件形成逐事故哈希链，避免一次网络抖动制造假事故。
+- 健康检查拆为 `/health/live`、只要求权威数据库可安全读写的 `/health/ready`，以及要求 Redis、OSS 和五类 Worker 全部正常的 `/health/full`。systemd 使用严格的 full 检查，异步依赖失败时 API 仍可提供已保存事实并明确进入只读降级。
+- 登录用户可以看到平台状态和当前功能门禁；管理员新增高可用控制中心，可查看 16 个组件、开放/已恢复事故、24 小时/7 天/30 天内部 SLO 与错误预算，并执行标准或三市场专业源深度探测。
+- 功能门禁会区分已保存事实读取、行情刷新、组合估值、Agent、私有 OCR 和持久调度；数据库失败时关闭事实服务，队列严重积压或 Worker/供应商失败时只关闭受影响能力，不把旧健康状态或旧数据伪装为当前可用。
+- SLO 只统计固定间隔的 scheduled 探针，管理员手动探测不能刷高可用率；未知状态不会被误算为正常。所有嵌套凭据在写入不可变快照前脱敏。
+- 新增 3 个受认证 API、2 张不可变 PostgreSQL/SQLite 表、`availability-control.v1` 迁移和 Prometheus 指标。当前 OpenAPI 共 `164` 个操作；后端全量回归 `492 tests` 通过，前端 `npm audit` 为 `0 vulnerabilities`，Vite 生产构建完成 `1849` 个模块转换。
+- 当前仍是单机部署：本功能提供应用级故障发现、证据化事故和安全降级，不等同于跨可用区数据库、Redis、对象存储或 API 多副本容灾，也不是对外 SLA。设计与验收记录见 [`docs/updates/2026-07-23-001-availability-control-plane.md`](docs/updates/2026-07-23-001-availability-control-plane.md)。
+
 ### 2026-07-22：跨市场可信组合估值与决策门禁
 
 - 新增 A 股、港股、美股和基金统一人民币估值：股票使用真实未复权日线，基金只使用确认单位净值，港币/美元先取 Massive 前日汇率、失败后使用 Frankfurter 央行参考汇率；盘中估值不进入正式组合市值。
@@ -410,7 +421,16 @@
 | 研究中心 | 在一个入口内组织基金候选初筛与比较、股票与板块研究、多股分析和历史策略验证；跨标的候选构建统一进入机会工厂 |
 | 机会工厂 | 定义不可变跨市场机会策略，运行持久扫描，查看候选漏斗、同市场五因子评分、硬门槛淘汰、约束后纸面组合和冻结后的前瞻表现 |
 | 投资 Agent | 创建可恢复的单基金 Run 或 2-6 只基金 Batch，识别内地/港股/美股/全球基金，编排真实市场/持仓/新闻工具、跨基金披露持仓重合、确定性风险门禁和可选 LLM 证据合成，保存 Step、Evidence、Claim、模型调用摘要、用户决策版本和追加式审计链 |
-| 系统管理 | 管理员创建和启停账户、分配角色、重置临时密码、查看系统统计并验证不可变认证审计链；普通用户不可见也不可调用 |
+| 系统管理 | 管理员创建和启停账户、分配角色、重置临时密码、验证不可变认证审计链，并在高可用控制中心查看组件、事故、SLO/错误预算和执行主动探测；普通用户不可见也不可调用 |
+
+### 高可用与安全降级
+
+- Celery Beat 每 5 分钟记录一次固定时间桶探针，覆盖数据库、消息总线、五类 Worker、五条队列、私有对象存储和三市场专业行情；重复任务按稳定 ID 去重。
+- 探针快照和事故事件永久追加且可校验；两次连续失败/恢复用于抑制瞬时抖动，未知状态单独保留，不会被归入正常。
+- `/health/ready` 代表 API 能安全提供 PostgreSQL 中的权威事实，`/health/full` 代表全部异步能力均可用；部署监控使用后者，流量接入可使用前者。
+- 用户侧能力矩阵只开放当前安全的功能。行情或队列异常时仍允许读取已保存事实，但关闭受影响的新研究、估值刷新或金额动作；权威数据库异常时整体失败关闭。
+- 管理员可查看 24 小时、7 天和 30 天固定窗口 SLI、内部目标、错误预算和事故恢复时间线。内部目标用于工程治理，不构成客户 SLA。
+- 当前架构能在单机内避免依赖故障扩大为错误投资动作；真正的主机/可用区级高可用仍需 API 多副本、托管 PostgreSQL 主备、Redis 高可用、负载均衡和异地恢复演练。
 
 ### 机会工厂
 
@@ -420,7 +440,7 @@
 - 因子分位只代表“同市场、本次候选池”内的相对位置，不是全市场或行业中性排名；缺失基本面不会被静默重分配权重。
 - 约束后纸面组合支持综合分×低波动、低波动或等权三种确定性权重方法，保留现金并排除高相关候选；跨市场权重暂不换算汇率。
 - 纸面观察点绑定冻结基准、真实行情来源、载荷哈希和前序事件哈希。它用于发现策略在冻结后是否失效，不代表用户持仓或真实成交。
-- 当前 OpenAPI 共 `161` 个操作，其中机会工厂提供 11 条策略、运行、纸面组合和观察路径（14 个操作）。
+- 当前 OpenAPI 共 `164` 个操作，其中机会工厂提供 11 条策略、运行、纸面组合和观察路径（14 个操作）。
 
 ### 组合数字孪生
 
@@ -682,6 +702,7 @@ backend/
     personalized_fund_decision.py 持仓感知的个人风险门禁与金额策略 1.0.0
   routers/
     auth.py                登录、自助注册、改密和管理员账户管理 API
+    availability.py        用户可用性摘要与管理员控制面 API
     agent.py               Agent Batch/Run、重跑对比、Evidence 和 Audit API
     market.py              股票、板块、行情和市场日报接口
     opportunities.py       机会策略、扫描运行和纸面跟踪接口
@@ -694,6 +715,8 @@ backend/
   portfolio_review.py      FIFO、XIRR、行为、快照和归因
   portfolio_valuation.py   A/H/美股与基金统一人民币估值、来源和运行时门禁
   portfolio_valuation_repository.py  不可变市场观察与用户估值快照仓库
+  availability_service.py    组件探针、能力门禁、内部 SLO 与安全降级
+  availability_repository.py 不可变探针、事故状态机与哈希事件链
   decision_center.py       持仓感知的规则化决策任务
   data_fetch.py            A 股/港股/美股历史数据
   market_daily.py          市场机会日报
@@ -721,6 +744,7 @@ frontend/
   src/features/funds/      基金研究组件和状态管理
   src/features/decision/   决策中心组件
   src/api/                 按领域拆分的 API 客户端
+  src/api/availability.js  用户与管理员可用性控制面客户端
 deploy/                    systemd 与 Nginx 配置模板
 docs/
   industrial-agent-prd.md  工业级 Agent 升级 PRD
@@ -771,6 +795,7 @@ npm run build
 - [当前架构约定](ARCHITECTURE.md)
 - [云服务器部署说明](DEPLOY.md)
 - [工业级 Agent PRD](docs/industrial-agent-prd.md)
+- [高可用控制面与安全降级更新记录](docs/updates/2026-07-23-001-availability-control-plane.md)
 - [跨市场可信组合估值更新记录](docs/updates/2026-07-22-008-trusted-portfolio-valuation.md)
 - [统一投资决策操作系统更新记录](docs/updates/2026-07-22-007-decision-operating-system.md)
 - [组合数字孪生更新记录](docs/updates/2026-07-22-006-portfolio-decision-twin.md)

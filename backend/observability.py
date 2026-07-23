@@ -47,6 +47,21 @@ BACKGROUND_TASKS = Counter(
     "Celery task terminal outcomes",
     ("task", "status"),
 )
+AVAILABILITY_PROBES = Counter(
+    "stock_assistant_availability_probes_total",
+    "Availability control-plane probes",
+    ("trigger", "status"),
+)
+AVAILABILITY_COMPONENT_STATE = Gauge(
+    "stock_assistant_availability_component_state",
+    "Current component state (0 unknown, 1 outage, 2 degraded, 3 operational)",
+    ("component",),
+)
+AVAILABILITY_INCIDENT_EVENTS = Counter(
+    "stock_assistant_availability_incident_events_total",
+    "Availability incident lifecycle events",
+    ("event",),
+)
 
 
 _SECRET_PATTERN = re.compile(

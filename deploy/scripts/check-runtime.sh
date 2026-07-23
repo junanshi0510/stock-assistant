@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-endpoint="${HEALTHCHECK_URL:-http://127.0.0.1:8000/health/ready}"
+endpoint="${HEALTHCHECK_URL:-http://127.0.0.1:8000/health/full}"
 services=(
   stock-assistant-api.service
   stock-assistant-agent-worker.service
@@ -20,8 +20,8 @@ for service in "${services[@]}"; do
 done
 
 response="$(curl --fail --silent --show-error --max-time 12 "$endpoint")"
-grep -Eq '"ready"[[:space:]]*:[[:space:]]*true' <<<"$response" || {
-  echo "runtime health failed: readiness payload is not ready" >&2
+grep -Eq '"full_service_ready"[[:space:]]*:[[:space:]]*true' <<<"$response" || {
+  echo "runtime health failed: full service readiness is false" >&2
   exit 1
 }
 

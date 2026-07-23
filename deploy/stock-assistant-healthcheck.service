@@ -6,11 +6,10 @@ After=stock-assistant-api.service
 Type=oneshot
 User=stockassistant
 Group=stockassistant
-Environment="HEALTHCHECK_URL=http://127.0.0.1:8000/health/ready"
+Environment="HEALTHCHECK_URL=http://127.0.0.1:8000/health/full"
 ExecStart=/opt/stock-assistant/deploy/scripts/check-runtime.sh
 TimeoutStartSec=20
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-

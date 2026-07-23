@@ -17,6 +17,7 @@ from task_queue import (
     QUEUE_LLM,
     QUEUE_MARKET,
     TASK_AGENT_RUN,
+    TASK_AVAILABILITY_PROBE,
     TASK_DECISION_CHECKS,
     TASK_DISPATCH_QUEUED,
     TASK_LLM_TOOL,
@@ -494,3 +495,26 @@ def scan_watchlist():
 
     monitor.trigger_scan_now()
     return {"status": "completed"}
+
+
+@celery_app.task(
+    name=TASK_AVAILABILITY_PROBE,
+    ignore_result=True,
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_jitter=True,
+    max_retries=2,
+)
+def record_platform_availability():
+    import availability_service
+
+    result = availability_service.run_probe(
+        trigger_type="scheduled",
+        actor_id="system:celery-beat",
+    )
+    payload = result.get("payload") or {}
+    return {
+        "probe_id": result.get("id"),
+        "overall_status": payload.get("overall_status"),
+        "transition_count": len(payload.get("transitions") or []),
+    }

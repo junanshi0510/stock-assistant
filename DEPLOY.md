@@ -39,12 +39,16 @@ Celery queues
 Operations
   journald JSON logs
   /internal/metrics (localhost only)
-  /health/ready + two-minute systemd health check
+  /health/ready (authoritative read traffic)
+  /health/full + two-minute strict systemd health check
+  five-minute persisted availability probe + incident/SLO control plane
   daily PostgreSQL dump -> encrypted OSS
   weekly isolated restore drill
 ```
 
 PostgreSQL 保存所有输入、结果、租约、幂等键和不可变事件链。Redis 不是事实源，Redis 丢失后由 scheduler 从 PostgreSQL 重新派发尚未完成的任务。
+
+当前拓扑仍是单机应用级高可用：它能够发现依赖故障、保留事故证据并安全降级，但主机宕机仍会整体中断。需要主机或可用区级容灾时，应在此基础上增加负载均衡后的 API 多副本、托管 PostgreSQL 主备/跨区备份、Redis 高可用和独立监控执行点。
 
 ## 2. 服务器要求
 
@@ -96,6 +100,18 @@ DATABASE_URL=postgresql://stockassistant_app:URL编码密码@127.0.0.1:5432/stoc
 POSTGRES_ADMIN_URL=postgresql://stockassistant_backup:URL编码密码@127.0.0.1:5432/postgres
 REDIS_URL=redis://:URL编码密码@127.0.0.1:6379/0
 TASK_QUEUE_MODE=celery
+
+# 固定探针、连续确认、积压阈值与内部 SLO（不是对外 SLA）。
+AVAILABILITY_PROBE_INTERVAL_SECONDS=300
+AVAILABILITY_STALE_SECONDS=900
+AVAILABILITY_FAILURE_THRESHOLD=2
+AVAILABILITY_RECOVERY_THRESHOLD=2
+AVAILABILITY_QUEUE_WARN_DEPTH=100
+AVAILABILITY_QUEUE_OUTAGE_DEPTH=1000
+AVAILABILITY_SLO_CORE=99.9
+AVAILABILITY_SLO_BACKGROUND=99.0
+AVAILABILITY_SLO_PRIVATE_ASSET=99.0
+AVAILABILITY_SLO_MARKET=95.0
 
 # 生产热门榜支持多专业源接力。Key 只写入本文件；不要写入 Git、前端或 systemd unit。
 TUSHARE_TOKEN=服务端Token
@@ -281,6 +297,7 @@ sudo systemctl reload nginx
 ```bash
 curl -fsS http://127.0.0.1:8000/health/live
 curl -fsS http://127.0.0.1:8000/health/ready
+curl -fsS http://127.0.0.1:8000/health/full
 curl -fsS http://127.0.0.1:8000/internal/metrics/ | head
 
 sudo systemctl --no-pager --failed
@@ -289,7 +306,23 @@ sudo -u postgres psql stock_assistant -Atqc \
   "select count(*) from platform_schema_migrations"
 ```
 
-`/health/ready` 只有在数据库、Redis、OSS 和五个队列 Worker 全部可用时才返回 `200`。公网未登录访问业务 API 必须返回 `401`。
+`/health/ready` 在 PostgreSQL 和全部生产 Schema 可安全提供权威事实时返回 `200`；`/health/full` 还要求 Redis、私有 OSS 和五个队列 Worker 全部可用。systemd 严格监控使用 `/health/full`。公网未登录访问业务 API 必须返回 `401`，包括 `/api/platform/availability`、`/api/admin/availability` 和主动探测接口。
+
+首次迁移并启动全部 Worker 后，以部署身份执行一次标准探测，确认控制面形成首份快照：
+
+```bash
+cd /opt/stock-assistant/backend
+sudo bash -lc '
+  set -a
+  source /etc/stock-assistant/stock-assistant.env
+  set +a
+  exec runuser -u stockassistant --preserve-environment -- \
+    /opt/stock-assistant/venv/bin/python -c \
+    "import availability_service; print(availability_service.run_probe(trigger_type=\"deployment\", actor_id=\"system:deployment\")[\"id\"])"
+'
+```
+
+管理员页面应显示 16 个组件；普通用户只能读取脱敏能力矩阵。连续两次失败才开启事故，连续两次成功才恢复；不要用手工探测补齐 SLO，24 小时/7 天/30 天窗口只统计 Celery Beat 的 `scheduled` 样本。
 
 登录后还应在“机会工厂”或“发现股票”检查专业行情数据中台。`GET /api/market/providers` 只返回每市场全部候选路线的配置状态，不会泄露 Key，也不会主动消耗供应商额度。点击“真实连通性验证”会调用 `POST /api/market/providers/probe`，仅尝试专业源并在 30 秒内复用探测结果，不会偷偷回退公开网页。随后分别执行 A 股、港股、美股三榜冒烟；必须确认 `provider_tier=professional`、`degraded=false`、`as_of`/`data_freshness` 和 `data_quality` 符合订阅。美股 7/30 日榜还应确认 `full_market_multiday=true`，否则只是明确标记的活跃候选池降级计算。
 
@@ -329,7 +362,7 @@ sudo journalctl -u stock-assistant-market-worker -f -o cat
 sudo journalctl -u stock-assistant-healthcheck.service --since today --no-pager
 ```
 
-Prometheus 指标位于 `http://127.0.0.1:8000/internal/metrics/`，包括 HTTP 延迟、状态码、并发请求、队列深度和 Celery 任务结果。systemd 每两分钟执行一次完整 readiness 检查，失败记录可由阿里云云监控采集并告警。
+Prometheus 指标位于 `http://127.0.0.1:8000/internal/metrics/`，包括 HTTP 延迟、状态码、并发请求、队列深度、Celery 任务结果、探针总数、组件当前状态和事故转换数。systemd 每两分钟执行一次 `/health/full` 完整能力检查，失败记录可由阿里云云监控采集并告警；Celery Beat 每五分钟把可用性快照写入 PostgreSQL，后台失败不会依赖 journald 临时日志才能追溯。
 
 建议配置持久 journald：
 
@@ -362,6 +395,7 @@ sudo bash -lc '
   /opt/stock-assistant/venv/bin/python -m migrations.opportunity_factory_v1
   /opt/stock-assistant/venv/bin/python -m migrations.portfolio_decision_twin_v1
   /opt/stock-assistant/venv/bin/python -m migrations.portfolio_valuation_v1
+  /opt/stock-assistant/venv/bin/python -m migrations.availability_control_v1
 '
 
 cd frontend
@@ -380,9 +414,10 @@ sudo systemctl restart \
   stock-assistant-api
 sudo nginx -t && sudo systemctl reload nginx
 curl -fsS http://127.0.0.1:8000/health/ready
+curl -fsS http://127.0.0.1:8000/health/full
 ```
 
-`opportunity-factory.v1` 会在单个 PostgreSQL 事务和 advisory lock 内建立 6 张机会工厂表、不可变触发器和迁移标记；`portfolio-decision-twin.v1` 会建立用户隔离的 `portfolio_twin_runs` 表；`portfolio-valuation.v1` 会建立共享公开行情观察与用户隔离估值快照两张表。后两类事实表都使用 UPDATE/DELETE 拒绝触发器和独立迁移标记。失败会整体回滚，首次成功后无需在无数据库变更的日常发布中重复执行。数据库结构升级必须先备份并执行对应迁移，不能依赖应用启动时自动建表；readiness 必须同时返回 `opportunity_schema=true`、`portfolio_twin_schema=true` 和 `portfolio_valuation_schema=true` 才能接流量。
+`opportunity-factory.v1` 会在单个 PostgreSQL 事务和 advisory lock 内建立 6 张机会工厂表、不可变触发器和迁移标记；`portfolio-decision-twin.v1` 会建立用户隔离的 `portfolio_twin_runs` 表；`portfolio-valuation.v1` 会建立共享公开行情观察与用户隔离估值快照两张表；`availability-control.v1` 会建立不可变探针与事故事件两张表及哈希链所需索引。失败会整体回滚，首次成功后无需在无数据库变更的日常发布中重复执行。数据库结构升级必须先备份并执行对应迁移，不能依赖应用启动时自动建表；readiness 必须同时返回 `opportunity_schema=true`、`portfolio_twin_schema=true`、`portfolio_valuation_schema=true` 和 `availability_schema=true` 才能接流量。
 
 ## 14. 回滚
 

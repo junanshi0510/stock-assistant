@@ -100,6 +100,18 @@ class TaskQueueProtocolTests(unittest.TestCase):
                     Mock(),
                 )
 
+    def test_availability_probe_is_periodic_and_scheduler_routed(self):
+        self.assertEqual(
+            task_queue.celery_app.conf.task_routes[task_queue.TASK_AVAILABILITY_PROBE],
+            {"queue": task_queue.QUEUE_SCHEDULER},
+        )
+        schedule = task_queue.celery_app.conf.beat_schedule[
+            "record-platform-availability"
+        ]
+        self.assertEqual(schedule["task"], task_queue.TASK_AVAILABILITY_PROBE)
+        self.assertGreaterEqual(float(schedule["schedule"]), 60.0)
+        self.assertEqual(schedule["options"]["expires"], 240)
+
 
 if __name__ == "__main__":
     unittest.main()

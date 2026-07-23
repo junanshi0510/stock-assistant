@@ -76,12 +76,24 @@ def _database_readiness() -> dict[str, Any]:
                 if database_dialect(connection) == "postgresql"
                 else True
             )
+            availability_schema = (
+                all(
+                    table_exists(connection, table)
+                    for table in (
+                        "availability_probe_runs",
+                        "availability_incident_events",
+                    )
+                )
+                if database_dialect(connection) == "postgresql"
+                else True
+            )
         return {
             "ready": bool(
                 migrated
                 and opportunity_schema
                 and portfolio_twin_schema
                 and portfolio_valuation_schema
+                and availability_schema
             ),
             "dialect": database_dialect(target),
             "target": redact_database_url(target),
@@ -89,6 +101,7 @@ def _database_readiness() -> dict[str, Any]:
             "opportunity_schema": bool(opportunity_schema),
             "portfolio_twin_schema": bool(portfolio_twin_schema),
             "portfolio_valuation_schema": bool(portfolio_valuation_schema),
+            "availability_schema": bool(availability_schema),
         }
     except Exception as error:
         return {
@@ -168,9 +181,21 @@ def readiness(*, use_cache: bool = True) -> dict[str, Any]:
         QUEUE_DEPTH.labels(queue=queue).set(depth)
     workers = _worker_readiness()
     objects = _object_storage_readiness()
+    traffic_ready = bool(database.get("ready"))
+    full_service_ready = all(
+        item.get("ready") for item in (database, redis, workers, objects)
+    )
     result = {
-        "ready": all(
-            item.get("ready") for item in (database, redis, workers, objects)
+        # Readiness means that the API can safely serve authoritative, persisted
+        # facts. Optional/async capabilities are reported separately so a worker
+        # outage does not unnecessarily remove read-only traffic.
+        "ready": traffic_ready,
+        "traffic_ready": traffic_ready,
+        "full_service_ready": full_service_ready,
+        "status": (
+            "operational" if full_service_ready
+            else "degraded" if traffic_ready
+            else "outage"
         ),
         "database": database,
         "redis": redis,
