@@ -5,6 +5,7 @@ import {
   BarChart3,
   CheckCircle2,
   CircleDollarSign,
+  Gauge,
   GitCompareArrows,
   History,
   Layers3,
@@ -60,6 +61,7 @@ function shortId(value) {
 function StrategySleeve({ item }) {
   const meta = STRATEGY_STATE[item.committee_state] || STRATEGY_STATE.collecting
   const recent = item.recent_decay || {}
+  const fit = item.regime_fit || {}
   const lower = item.familywise_ci95?.lower
   return (
     <article className={`committee-strategy ${meta.tone}`}>
@@ -81,6 +83,8 @@ function StrategySleeve({ item }) {
         <div><dt>最差批次回撤</dt><dd>{number(item.worst_cohort_drawdown_pct, 1, '%')}</dd></div>
         <div><dt>近期 3 期超额</dt><dd className={Number(recent.mean_net_excess_return_pct) >= 0 ? 'positive' : 'negative'}>{signed(recent.mean_net_excess_return_pct)}</dd></div>
         <div><dt>近期状态</dt><dd>{recent.three_consecutive_nonpositive ? '连续失败熔断' : recent.warning ? '衰减降权' : recent.window_cohort_count >= 3 ? '稳定' : '样本未满'}</dd></div>
+        <div><dt>当前环境适配</dt><dd>{fit.fit_status === 'preferred' ? '优先' : fit.fit_status === 'underweight' ? '降权' : fit.fit_status === 'avoid' ? '失配熔断' : fit.fit_status === 'collecting' ? '积累样本' : '中性 / 不可判'}</dd></div>
+        <div><dt>同环境样本 / 倾斜</dt><dd>{fit.matched_cohort_count ?? 0} · {number(fit.allocation_tilt, 2)}×</dd></div>
       </dl>
       {!!item.committee_reasons?.length && (
         <details>
@@ -148,6 +152,7 @@ export default function InvestmentCommittee() {
   const strategies = committee?.strategies || []
   const redundancy = committee?.redundancy_matrix || []
   const latest = committee?.persistence?.latest_mandate
+  const regime = committee?.market_regime || {}
 
   return (
     <div className="investment-committee">
@@ -160,7 +165,7 @@ export default function InvestmentCommittee() {
           <span className="eyebrow">自适应策略投资委员会 · {committee?.engine_version}</span>
           <h2>{status.label}</h2>
           <p>{committee?.headline || status.detail}</p>
-          <small>证据截止 {dateTime(committee?.evidence_cutoff_at)} · 只使用冻结后的前瞻结果，不读取回测胜率当作未来概率</small>
+          <small>证据截止 {dateTime(committee?.evidence_cutoff_at)} · 已接入市场状态与同环境前瞻适配，不读取回测胜率当作未来概率</small>
         </div>
         <div className="committee-hero-actions">
           <button className="ghost" onClick={() => load({ quiet: true })} disabled={refreshing}>
@@ -179,6 +184,13 @@ export default function InvestmentCommittee() {
         <article><ShieldCheck size={18} /><span><small>主动现金保留</small><b>{number(summary.cash_reserve_pct, 1, '%')}</b></span></article>
         <article><GitCompareArrows size={18} /><span><small>策略平均冗余</small><b>{number(summary.average_selected_redundancy_pct, 1, '%')}</b></span></article>
         <article><Activity size={18} /><span><small>熔断 / 停用</small><b>{summary.suspended_strategy_count || 0}</b></span></article>
+        <article><Gauge size={18} /><span><small>状态前原始上限</small><b>{number(summary.base_committee_investable_pct, 1, '%')}</b></span></article>
+        <article><ShieldCheck size={18} /><span><small>状态层新增现金</small><b>{number(summary.regime_cash_added_pct, 1, '%')}</b></span></article>
+      </section>
+
+      <section className={`committee-regime ${regime.risk_cap_applied ? 'capped' : 'open'}`}>
+        <div><Gauge size={20} /><span><b>{regime.label || '市场状态未接入'}</b><small>状态风险乘数 {number(regime.risk_budget_multiplier, 2)} · {regime.binding_snapshot ? '已绑定不可变状态快照' : '绑定当前不可变扫描证据'}</small></span></div>
+        <p>{regime.risk_cap_applied ? '市场状态层已把委员会原始可投入上限继续收缩；偏强状态也不能增加原始总风险。' : '状态层没有进一步压低当前上限；仍受策略、冗余、候选和全组合资金门禁约束。'}</p>
       </section>
 
       <section className={`committee-drift ${drift.rebalance_required ? 'rebalance' : 'stable'}`}>

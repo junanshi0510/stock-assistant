@@ -25,10 +25,11 @@ from opportunity_profit_repository import (
     repository as profit_repository,
 )
 import opportunity_profit_service
+import opportunity_regime_service
 
 
-ENGINE_VERSION = "adaptive_strategy_committee@1.0.0"
-EVIDENCE_SCHEMA_VERSION = "opportunity_committee_evidence.v1"
+ENGINE_VERSION = "adaptive_strategy_committee@1.1.0"
+EVIDENCE_SCHEMA_VERSION = "opportunity_committee_evidence.v2"
 MAX_SELECTED_STRATEGIES = 3
 MAX_STRATEGY_WEIGHT_PCT = 50.0
 MAX_CANDIDATE_MODEL_WEIGHT_PCT = 25.0
@@ -490,12 +491,36 @@ def compose_committee(
     strategy_rows: list[dict[str, Any]],
     *,
     previous_result: dict[str, Any] | None = None,
+    regime_context: dict[str, Any] | None = None,
     now: dt.datetime | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Create one deterministic committee result from point-in-time evidence."""
 
     current = _now(now)
     rows = [_base_state(dict(item)) for item in strategy_rows]
+    regime_fit_by_strategy = {
+        str(item.get("strategy_id") or ""): item
+        for item in (regime_context or {}).get("strategy_fits") or []
+    }
+    for item in rows:
+        strategy_id = str(item.get("strategy_id") or "")
+        regime_fit = regime_fit_by_strategy.get(strategy_id)
+        item["regime_fit"] = regime_fit
+        if (
+            regime_fit
+            and regime_fit.get("fit_status") == "avoid"
+            and item.get("committee_state") == "approved"
+        ):
+            item["committee_state"] = "suspended"
+            item["committee_reasons"] = _unique(
+                [
+                    *item["committee_reasons"],
+                    *(
+                        str(reason)
+                        for reason in regime_fit.get("reasons") or []
+                    ),
+                ]
+            )
     approved = [
         item for item in rows if item["committee_state"] == "approved"
     ]
@@ -589,12 +614,29 @@ def compose_committee(
             if (item.get("recent_decay") or {}).get("warning")
             else 1.0
         )
+        regime_tilt = min(
+            1.10,
+            max(
+                0.0,
+                _number(
+                    (item.get("regime_fit") or {}).get(
+                        "allocation_tilt"
+                    ),
+                    1.0,
+                )
+                or 0.0,
+            ),
+        )
         item["unique_contribution_pct"] = round(
             uniqueness * 100, 2
         )
         item["evidence_tilt"] = round(evidence_tilt, 4)
+        item["regime_tilt"] = round(regime_tilt, 4)
         item["allocation_utility"] = (
-            evidence_tilt * uniqueness_tilt * decay_tilt
+            evidence_tilt
+            * uniqueness_tilt
+            * decay_tilt
+            * regime_tilt
         )
 
     selected: list[dict[str, Any]] = []
@@ -646,15 +688,15 @@ def compose_committee(
         statistics.fmean(selected_pairs) if selected_pairs else 0.0
     )
     if not selected:
-        investable_pct = 0.0
+        base_investable_pct = 0.0
     elif len(selected) == 1:
-        investable_pct = 50.0
+        base_investable_pct = 50.0
     elif average_selected_redundancy >= 0.8:
-        investable_pct = 70.0
+        base_investable_pct = 70.0
     elif average_selected_redundancy >= 0.65:
-        investable_pct = 85.0
+        base_investable_pct = 85.0
     else:
-        investable_pct = 100.0
+        base_investable_pct = 100.0
 
     selected_raw = {
         str(item.get("strategy_id") or ""): float(
@@ -662,6 +704,52 @@ def compose_committee(
         )
         for item in selected
     }
+    if regime_context:
+        global_regime_multiplier = (
+            _number(
+                (
+                    regime_context.get("portfolio_risk_budget") or {}
+                ).get("multiplier"),
+                0.50,
+            )
+            or 0.50
+        )
+        if selected:
+            risk_denominator = sum(selected_raw.values())
+            if risk_denominator > 0:
+                regime_risk_multiplier = sum(
+                    selected_raw[
+                        str(item.get("strategy_id") or "")
+                    ]
+                    * min(
+                        1.0,
+                        max(
+                            0.0,
+                            _number(
+                                (
+                                    item.get("regime_fit") or {}
+                                ).get(
+                                    "market_risk_budget_multiplier"
+                                ),
+                                global_regime_multiplier,
+                            )
+                            or 0.0,
+                        ),
+                    )
+                    for item in selected
+                ) / risk_denominator
+            else:
+                regime_risk_multiplier = global_regime_multiplier
+        else:
+            regime_risk_multiplier = global_regime_multiplier
+    else:
+        regime_risk_multiplier = 1.0
+    regime_risk_multiplier = min(
+        1.0, max(0.0, regime_risk_multiplier)
+    )
+    investable_pct = (
+        base_investable_pct * regime_risk_multiplier
+    )
     selected_weights = _capped_weights(
         selected_raw,
         target_pct=investable_pct,
@@ -733,6 +821,12 @@ def compose_committee(
                     ),
                     "scorecard_id": item.get("scorecard_id"),
                     "basket_id": item.get("basket_id"),
+                    "regime_fit_status": (
+                        item.get("regime_fit") or {}
+                    ).get("fit_status"),
+                    "matched_regime": (
+                        item.get("regime_fit") or {}
+                    ).get("matched_regime"),
                 }
             )
 
@@ -908,6 +1002,7 @@ def compose_committee(
                     "minimum_mature_baskets",
                     "primary_cohorts",
                     "live_capital_plan",
+                    "regime_fit",
                 )
             }
         )
@@ -938,7 +1033,46 @@ def compose_committee(
                 for item in rows
                 if item.get("strategy_version_id")
             ),
+            "regime_evidence_sha256": (
+                (regime_context or {}).get("evidence_sha256")
+            ),
+            "regime_snapshot_id": (
+                (
+                    (regime_context or {}).get("persistence") or {}
+                ).get("latest_snapshot")
+                or {}
+            ).get("id"),
         },
+        "regime_context": (
+            {
+                "engine_version": regime_context.get(
+                    "engine_version"
+                ),
+                "evidence_sha256": regime_context.get(
+                    "evidence_sha256"
+                ),
+                "status": regime_context.get("status"),
+                "portfolio_risk_budget": regime_context.get(
+                    "portfolio_risk_budget"
+                ),
+                "market_states": [
+                    {
+                        key: state.get(key)
+                        for key in (
+                            "market",
+                            "status",
+                            "source_count",
+                            "latest_observed_at",
+                            "risk_budget_multiplier",
+                        )
+                    }
+                    for state in regime_context.get("market_states")
+                    or []
+                ],
+            }
+            if regime_context
+            else None
+        ),
         "strategies": evidence_strategies,
     }
     evidence_sha = sha256_payload(evidence)
@@ -967,6 +1101,8 @@ def compose_committee(
                     "recent_decay",
                     "unique_contribution_pct",
                     "evidence_tilt",
+                    "regime_tilt",
+                    "regime_fit",
                     "allocation_utility",
                 )
             }
@@ -1000,6 +1136,31 @@ def compose_committee(
         "evidence_sha256": evidence_sha,
         "status": status,
         "headline": headline,
+        "market_regime": (
+            {
+                "engine_version": regime_context.get(
+                    "engine_version"
+                ),
+                "status": regime_context.get("status"),
+                "label": regime_context.get("label"),
+                "evidence_sha256": regime_context.get(
+                    "evidence_sha256"
+                ),
+                "risk_budget_multiplier": round(
+                    regime_risk_multiplier, 4
+                ),
+                "risk_cap_applied": (
+                    regime_risk_multiplier < 1 - 1e-9
+                ),
+                "binding_snapshot": bool(
+                    (
+                        regime_context.get("persistence") or {}
+                    ).get("binding_current")
+                ),
+            }
+            if regime_context
+            else None
+        ),
         "summary": {
             "strategy_count": len(rows),
             "forward_eligible_count": sum(
@@ -1010,6 +1171,16 @@ def compose_committee(
             "candidate_count": len(candidate_rows),
             "committee_investable_pct": round(
                 investable_pct, 2
+            ),
+            "base_committee_investable_pct": round(
+                base_investable_pct, 2
+            ),
+            "regime_risk_budget_multiplier": round(
+                regime_risk_multiplier, 4
+            ),
+            "regime_cash_added_pct": round(
+                max(0.0, base_investable_pct - investable_pct),
+                2,
             ),
             "candidate_model_invested_pct": round(
                 candidate_invested_pct, 2
@@ -1047,6 +1218,7 @@ def compose_committee(
                 REBALANCE_DRIFT_THRESHOLD_PCT
             ),
             "single_strategy_investable_pct": 50.0,
+            "regime_layer_can_increase_total_risk": False,
             "high_redundancy_cash_reserve": (
                 "入选策略平均冗余达到 65%/80% 时，模型最多投入 "
                 "85%/70%，其余保留现金"
@@ -1069,7 +1241,13 @@ def compose_committee(
             ),
             "allocation": (
                 "以等权为锚，仅在窄幅内按保守证据和独立贡献"
-                "倾斜；单策略最高 50%，最多启用 3 个策略。"
+                "及同类市场环境适配度倾斜；单策略最高 50%，"
+                "最多启用 3 个策略。"
+            ),
+            "regime_suitability": (
+                "只使用冻结时处于同类候选池环境的独立前瞻批次；"
+                "同类环境连续失效会停用策略，市场状态与波动预算"
+                "只能增加现金，不能把总风险提高到原委员会上限以上。"
             ),
             "candidate_consensus": (
                 "候选权重来自策略袖套权重乘以冻结组合内权重；"
@@ -1101,6 +1279,7 @@ def current_committee(
     user_id: str,
     now: dt.datetime | None = None,
     profit_lab_loader=None,
+    regime_context_loader=None,
     profit_repo: OpportunityProfitRepository = profit_repository,
     mandate_repo: OpportunityCommitteeRepository = committee_repository,
 ) -> dict[str, Any]:
@@ -1114,6 +1293,15 @@ def current_committee(
         profit_repo=profit_repo,
         user_id=user_id,
     )
+    regime_context = (
+        regime_context_loader(rows)
+        if regime_context_loader
+        else opportunity_regime_service.current_regime_context(
+            user_id=user_id,
+            strategy_rows=rows,
+            now=now,
+        )
+    )
     latest = mandate_repo.latest_mandate(user_id=user_id)
     previous = (
         latest.get("result")
@@ -1121,7 +1309,10 @@ def current_committee(
         else None
     )
     result, evidence = compose_committee(
-        rows, previous_result=previous, now=now
+        rows,
+        previous_result=previous,
+        regime_context=regime_context,
+        now=now,
     )
     evidence_sha = sha256_payload(evidence)
     return {
@@ -1159,6 +1350,7 @@ def freeze_committee(
     actor_id: str,
     now: dt.datetime | None = None,
     profit_lab_loader=None,
+    regime_context_loader=None,
     profit_repo: OpportunityProfitRepository = profit_repository,
     mandate_repo: OpportunityCommitteeRepository = committee_repository,
 ) -> tuple[dict[str, Any], bool]:
@@ -1172,6 +1364,15 @@ def freeze_committee(
         profit_repo=profit_repo,
         user_id=user_id,
     )
+    regime_context = (
+        regime_context_loader(rows)
+        if regime_context_loader
+        else opportunity_regime_service.current_regime_context(
+            user_id=user_id,
+            strategy_rows=rows,
+            now=now,
+        )
+    )
     latest = mandate_repo.latest_mandate(user_id=user_id)
     previous = (
         latest.get("result")
@@ -1179,7 +1380,10 @@ def freeze_committee(
         else None
     )
     result, evidence = compose_committee(
-        rows, previous_result=previous, now=now
+        rows,
+        previous_result=previous,
+        regime_context=regime_context,
+        now=now,
     )
     return mandate_repo.create_mandate(
         user_id=user_id,

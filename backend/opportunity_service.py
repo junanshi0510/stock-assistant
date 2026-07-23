@@ -1090,9 +1090,14 @@ def create_paper_basket(
         "frozen_at": frozen_at.astimezone(dt.timezone.utc).isoformat(
             timespec="seconds"
         ),
+        "market_regimes": result.get("market_regimes") or [],
         "positions": positions,
         "cash_pct": portfolio.get("cash_pct"),
         "data_basis": "复权日线最新收盘价；后续观察继续使用同口径真实历史接口",
+        "regime_basis": (
+            "冻结本次扫描的候选池市场状态；不是交易所全市场状态，"
+            "后续不会用新行情改写"
+        ),
         "limitations": portfolio.get("warnings") or [],
     }
     return repo.create_paper_basket(run_id=run_id, user_id=user_id, snapshot=snapshot)

@@ -25,6 +25,9 @@ from migrations.opportunity_profit_engine_v1 import (
 from migrations.opportunity_committee_v1 import (
     install_opportunity_committee_schema,
 )
+from migrations.opportunity_regime_v1 import (
+    install_opportunity_regime_schema,
+)
 from migrations.portfolio_capital_decision_v1 import (
     install_portfolio_capital_schema,
 )
@@ -294,6 +297,7 @@ def migrate(
             install_opportunity_factory_schema(target_connection)
             install_opportunity_profit_schema(target_connection)
             install_opportunity_committee_schema(target_connection)
+            install_opportunity_regime_schema(target_connection)
             install_portfolio_capital_schema(target_connection)
             install_portfolio_twin_schema(target_connection)
             install_portfolio_valuation_schema(target_connection)

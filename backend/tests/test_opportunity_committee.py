@@ -245,6 +245,100 @@ class OpportunityCommitteeTests(unittest.TestCase):
             service.REBALANCE_DRIFT_THRESHOLD_PCT,
         )
 
+    def test_market_regime_caps_total_risk_without_leverage(self):
+        context = {
+            "engine_version": "market_regime_strategy_fit@1.0.0",
+            "evidence_sha256": "9" * 64,
+            "status": "defensive",
+            "label": "防守",
+            "portfolio_risk_budget": {"multiplier": 0.60},
+            "market_states": [],
+            "strategy_fits": [
+                {
+                    "strategy_id": "alpha",
+                    "fit_status": "neutral",
+                    "allocation_tilt": 1.0,
+                    "market_risk_budget_multiplier": 0.60,
+                    "matched_regime": "defensive",
+                    "matched_cohort_count": 5,
+                    "reasons": [],
+                }
+            ],
+            "persistence": {
+                "latest_snapshot": {"id": "regime_1"},
+                "binding_current": True,
+            },
+        }
+        result, evidence = service.compose_committee(
+            [
+                strategy_row(
+                    "alpha",
+                    positions=[("600519", 60), ("000858", 40)],
+                )
+            ],
+            regime_context=context,
+        )
+
+        self.assertEqual(
+            result["summary"]["base_committee_investable_pct"], 50
+        )
+        self.assertEqual(
+            result["summary"]["committee_investable_pct"], 30
+        )
+        self.assertEqual(
+            result["summary"]["regime_cash_added_pct"], 20
+        )
+        self.assertTrue(
+            result["market_regime"]["risk_cap_applied"]
+        )
+        self.assertEqual(
+            evidence["bindings"]["regime_evidence_sha256"],
+            "9" * 64,
+        )
+
+    def test_same_regime_failure_suspends_otherwise_eligible_strategy(self):
+        context = {
+            "engine_version": "market_regime_strategy_fit@1.0.0",
+            "evidence_sha256": "8" * 64,
+            "status": "risk_on",
+            "label": "偏强",
+            "portfolio_risk_budget": {"multiplier": 1.0},
+            "market_states": [],
+            "strategy_fits": [
+                {
+                    "strategy_id": "alpha",
+                    "fit_status": "avoid",
+                    "allocation_tilt": 0,
+                    "market_risk_budget_multiplier": 1.0,
+                    "matched_regime": "risk_on",
+                    "matched_cohort_count": 4,
+                    "reasons": ["最近同环境批次连续失败"],
+                }
+            ],
+            "persistence": {
+                "latest_snapshot": None,
+                "binding_current": False,
+            },
+        }
+        result, _ = service.compose_committee(
+            [
+                strategy_row(
+                    "alpha",
+                    positions=[("600519", 60), ("000858", 40)],
+                )
+            ],
+            regime_context=context,
+        )
+
+        self.assertEqual(result["status"], "degraded")
+        self.assertEqual(
+            result["strategies"][0]["committee_state"],
+            "suspended",
+        )
+        self.assertEqual(
+            result["summary"]["committee_investable_pct"], 0
+        )
+
     def test_mandate_is_deduplicated_immutable_and_user_scoped(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "committee.db"

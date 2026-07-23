@@ -321,6 +321,14 @@ class OpportunityFactoryTests(unittest.TestCase):
                 "cash_pct": 60,
                 "warnings": [],
             },
+            "market_regimes": [
+                {
+                    "market": "A股",
+                    "status": "risk_on",
+                    "label": "偏强",
+                    "sample_count": 8,
+                }
+            ],
         }
         self.repo.complete_run(
             run["id"], user_id="owner", result=result,
@@ -330,6 +338,10 @@ class OpportunityFactoryTests(unittest.TestCase):
             run["id"], user_id="owner", repo=self.repo
         )
         self.assertTrue(created)
+        self.assertEqual(
+            basket["snapshot"]["market_regimes"][0]["status"],
+            "risk_on",
+        )
         self.assertIsNone(
             self.repo.get_paper_basket(basket["id"], user_id="another-user")
         )

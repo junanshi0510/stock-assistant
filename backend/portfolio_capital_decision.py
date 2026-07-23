@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 import opportunity_committee_service
 import opportunity_profit_service
+import opportunity_regime_service
 import portfolio_action_report
 import portfolio_decision_twin
 import portfolio_exposure
@@ -32,7 +33,7 @@ from portfolio_capital_repository import (
 
 
 SCHEMA_VERSION = "portfolio_capital_decision.v1"
-ENGINE_VERSION = "whole_portfolio_next_best_action.v2"
+ENGINE_VERSION = "whole_portfolio_next_best_action.v3"
 HARD_GLOBAL_PILOT_CAP_PCT = 5.0
 MAX_STRATEGIES = 3
 MAX_CANDIDATES = 12
@@ -683,6 +684,10 @@ def _assemble(
     ]
     | None = None,
     profit_lab_loader: Callable[[], dict[str, Any]] | None = None,
+    regime_context_loader: Callable[
+        [list[dict[str, Any]]], dict[str, Any]
+    ]
+    | None = None,
     profit_repo: OpportunityProfitRepository = opportunity_profit_repository,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     current = _now(now)
@@ -730,9 +735,19 @@ def _assemble(
         profit_repo=profit_repo,
         user_id=user_id,
     )
+    regime_context = (
+        regime_context_loader(strategy_rows)
+        if regime_context_loader
+        else opportunity_regime_service.current_regime_context(
+            user_id=user_id,
+            strategy_rows=strategy_rows,
+            now=current,
+        )
+    )
     committee, committee_evidence = (
         opportunity_committee_service.compose_committee(
             strategy_rows,
+            regime_context=regime_context,
             now=current,
         )
     )
@@ -763,6 +778,7 @@ def _assemble(
                     "unique_contribution_pct"
                 ),
                 "recent_decay": committee_row.get("recent_decay"),
+                "regime_fit": committee_row.get("regime_fit"),
                 "committee_reasons": committee_row.get(
                     "committee_reasons"
                 )
@@ -1414,6 +1430,15 @@ def _assemble(
         "committee_evidence_sha256": sha256_payload(
             committee_evidence
         ),
+        "regime_evidence_sha256": regime_context.get(
+            "evidence_sha256"
+        ),
+        "regime_snapshot_id": (
+            (
+                regime_context.get("persistence") or {}
+            ).get("latest_snapshot")
+            or {}
+        ).get("id"),
     }
     evidence = {
         "schema_version": "portfolio_capital_evidence.v1",
@@ -1568,6 +1593,15 @@ def _assemble(
             "committee_evidence_sha256": bindings[
                 "committee_evidence_sha256"
             ],
+            "regime_status": regime_context.get("status"),
+            "regime_risk_budget_multiplier": (
+                (
+                    committee.get("market_regime") or {}
+                ).get("risk_budget_multiplier")
+            ),
+            "regime_evidence_sha256": bindings[
+                "regime_evidence_sha256"
+            ],
             "critical_existing_action_count": len(critical_actions),
             "exposure_reasons": exposure_reasons,
         },
@@ -1581,6 +1615,7 @@ def _assemble(
         "methodology": {
             "decision_order": (
                 "事实完整性 → 已有仓位风险/纪律 → 前瞻策略资格 → "
+                "市场状态/策略适配/风险预算 → "
                 "策略失效/冗余/共识委员会 → 月度预算 → "
                 "单品/权益/行业容量 → 全组合压力情景"
             ),

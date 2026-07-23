@@ -406,6 +406,34 @@ def build_kwargs(*, existing_action: str = "hold_review"):
             lambda _holdings, _profile, _valuation_id: (exposure, [])
         ),
         "profit_lab_loader": lambda: profit_lab,
+        "regime_context_loader": lambda rows: {
+            "engine_version": "test-regime@1",
+            "evidence_sha256": "9" * 64,
+            "status": "risk_on",
+            "label": "偏强",
+            "portfolio_risk_budget": {"multiplier": 1.0},
+            "market_states": [],
+            "strategy_fits": [
+                {
+                    "strategy_id": row.get("strategy_id"),
+                    "fit_status": "neutral",
+                    "allocation_tilt": 1.0,
+                    "market_risk_budget_multiplier": 1.0,
+                    "matched_regime": "risk_on",
+                    "matched_cohort_count": 4,
+                    "current_regime": {
+                        "status": "risk_on",
+                        "coverage_pct": 100,
+                    },
+                    "reasons": [],
+                }
+                for row in rows
+            ],
+            "persistence": {
+                "latest_snapshot": None,
+                "binding_current": False,
+            },
+        },
         "profit_repo": FakeProfitRepository(),
     }
 
@@ -459,6 +487,44 @@ class PortfolioCapitalDecisionEngineTests(unittest.TestCase):
         self.assertEqual(len(result["stress_matrix"]), 4)
         self.assertTrue(
             all(item["policy_passed"] for item in result["stress_matrix"])
+        )
+
+    def test_defensive_regime_reduces_downstream_capital_plan(self):
+        baseline = service.build_capital_decision(**build_kwargs())
+        kwargs = build_kwargs()
+        neutral_loader = kwargs["regime_context_loader"]
+
+        def defensive(rows):
+            context = neutral_loader(rows)
+            context["status"] = "defensive"
+            context["label"] = "防守"
+            context["portfolio_risk_budget"]["multiplier"] = 0.60
+            for item in context["strategy_fits"]:
+                item["market_risk_budget_multiplier"] = 0.60
+                item["matched_regime"] = "defensive"
+            return context
+
+        kwargs["regime_context_loader"] = defensive
+        defensive_result = service.build_capital_decision(**kwargs)
+
+        committee = defensive_result["investment_committee"]
+        self.assertEqual(
+            committee["summary"]["base_committee_investable_pct"],
+            50,
+        )
+        self.assertEqual(
+            committee["summary"]["committee_investable_pct"],
+            30,
+        )
+        self.assertLess(
+            defensive_result["capital"]["planned_deployment_cny"],
+            baseline["capital"]["planned_deployment_cny"],
+        )
+        self.assertEqual(
+            defensive_result["data_quality"][
+                "regime_risk_budget_multiplier"
+            ],
+            0.6,
         )
 
     def test_existing_reduce_review_preempts_all_new_capital(self):

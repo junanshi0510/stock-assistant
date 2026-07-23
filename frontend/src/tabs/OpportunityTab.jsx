@@ -14,6 +14,7 @@ import {
 import PaperTracker from '../features/opportunities/PaperTracker'
 import ProfitLab from '../features/opportunities/ProfitLab'
 import InvestmentCommittee from '../features/opportunities/InvestmentCommittee'
+import MarketRegimeHub from '../features/opportunities/MarketRegimeHub'
 import RunResults from '../features/opportunities/RunResults'
 import StrategyBuilder from '../features/opportunities/StrategyBuilder'
 
@@ -21,6 +22,7 @@ const VIEWS = [
   { id: 'campaigns', label: '策略与扫描', description: '定义候选池、因子、淘汰门槛和组合约束' },
   { id: 'paper', label: '纸面跟踪', description: '只看冻结之后的前瞻表现' },
   { id: 'profit', label: '收益实验室', description: '自动验证成本后收益、基准超额和资金资格' },
+  { id: 'regime', label: '市场状态', description: '识别候选池环境、验证策略适配并收缩总风险预算' },
   { id: 'committee', label: '投资委员会', description: '淘汰失效策略、惩罚重复押注并形成候选模型组合' },
 ]
 
@@ -199,7 +201,7 @@ export default function OpportunityTab({ goAnalyze, activeView = 'campaigns', on
       />
       <div className="opp-product-banner">
         <Radar size={19} />
-        <div><b>从“看一只股票”升级为可复现的投资研究流水线</b><span>候选发现 → 前瞻纸面验证 → 策略淘汰与共识 → 全组合资金决策</span></div>
+        <div><b>从“看一只股票”升级为可复现的投资研究流水线</b><span>候选发现 → 前瞻纸面验证 → 市场状态与策略适配 → 策略淘汰与共识 → 全组合资金决策</span></div>
         <em><ShieldCheck size={14} />不承诺涨跌，不自动交易</em>
       </div>
       <MarketProviderStatus data={providerStatus} />
@@ -209,6 +211,8 @@ export default function OpportunityTab({ goAnalyze, activeView = 'campaigns', on
       {!loading && view === 'paper' && <PaperTracker baskets={baskets} selectedId={selectedBasketId} onSelect={setSelectedBasketId} onRefresh={refreshOverview} />}
 
       {!loading && view === 'profit' && <ProfitLab />}
+
+      {!loading && view === 'regime' && <MarketRegimeHub />}
 
       {!loading && view === 'committee' && <InvestmentCommittee />}
 

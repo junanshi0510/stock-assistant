@@ -16,6 +16,20 @@ export function fetchOpportunityCommittee() {
   return getJson('/api/v1/opportunities/committee')
 }
 
+export function fetchOpportunityRegime() {
+  return getJson('/api/v1/opportunities/regime')
+}
+
+export function freezeOpportunityRegime() {
+  return getJson('/api/v1/opportunities/regime/snapshots', {
+    method: 'POST',
+  })
+}
+
+export function fetchOpportunityRegimeSnapshots(limit = 20) {
+  return getJson(`/api/v1/opportunities/regime/snapshots?limit=${encodeURIComponent(limit)}`)
+}
+
 export function freezeOpportunityCommittee() {
   return getJson('/api/v1/opportunities/committee/mandates', {
     method: 'POST',

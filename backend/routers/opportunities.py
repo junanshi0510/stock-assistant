@@ -19,8 +19,12 @@ from opportunity_profit_repository import repository as profit_repository
 from opportunity_committee_repository import (
     repository as committee_repository,
 )
+from opportunity_regime_repository import (
+    repository as regime_repository,
+)
 import opportunity_committee_service
 import opportunity_profit_service
+import opportunity_regime_service
 import opportunity_service
 from task_queue import TaskQueueConfigurationError, TaskQueueUnavailableError
 
@@ -200,6 +204,58 @@ def get_opportunity_investment_committee(
         )
     except Exception as error:
         _raise_domain(error)
+
+
+@router.get("/regime")
+def get_opportunity_market_regime(
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        return opportunity_regime_service.current_regime_hub(
+            user_id=_subject_id(principal)
+        )
+    except Exception as error:
+        _raise_domain(error)
+
+
+@router.post(
+    "/regime/snapshots",
+    status_code=status.HTTP_201_CREATED,
+)
+def create_opportunity_market_regime_snapshot(
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        item, created = opportunity_regime_service.freeze_regime_hub(
+            user_id=_subject_id(principal),
+            actor_id=_actor_id(principal),
+        )
+        return {"item": item, "created": created}
+    except Exception as error:
+        _raise_domain(error)
+
+
+@router.get("/regime/snapshots")
+def list_opportunity_market_regime_snapshots(
+    limit: int = Query(default=30, ge=1, le=100),
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    return opportunity_regime_service.regime_snapshot_history(
+        user_id=_subject_id(principal), limit=limit
+    )
+
+
+@router.get("/regime/snapshots/{snapshot_id}")
+def get_opportunity_market_regime_snapshot(
+    snapshot_id: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    item = regime_repository.get_snapshot(
+        snapshot_id, user_id=_subject_id(principal)
+    )
+    if item is None:
+        raise HTTPException(status_code=404, detail="市场状态快照不存在")
+    return item
 
 
 @router.post(
