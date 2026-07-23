@@ -87,6 +87,8 @@ upstream stock_assistant_api {
 
 连接错误、超时、无效响应头和 `502/503/504` 可以尝试另一个上游，最多两次、总切换等待最多五秒。没有启用 `non_idempotent`；写请求一旦已经发送，不由 Nginx 自动重放。应用自身的写操作仍必须使用 CSRF、事务、唯一约束和业务幂等键。
 
+双上游模板继续在 Nginx 层统一发送 CSP、禁止 framing、MIME 嗅探保护、Referrer Policy 和 Permissions Policy；切换流量层不能以丢失原有浏览器安全头为代价。
+
 这是被动故障检测：只有真实请求失败后 Nginx 才会暂时标记上游不可用。独立 systemd 检查与五分钟持久探针负责主动发现冗余丢失。
 
 ## 6. 内容寻址 release 与原子切换

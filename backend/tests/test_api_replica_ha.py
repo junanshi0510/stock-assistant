@@ -54,6 +54,8 @@ class ApiReplicaContractTests(unittest.TestCase):
         self.assertIn("127.0.0.1:8002", upstreams)
         self.assertIn("proxy_next_upstream_tries 2", nginx)
         self.assertNotIn("non_idempotent", nginx)
+        self.assertIn("Content-Security-Policy", nginx)
+        self.assertIn("frame-ancestors 'none'", nginx)
         self.assertIn("WorkingDirectory=/opt/stock-assistant-api/%i/backend", unit)
         self.assertIn("API_REPLICA_ID=api-%i", unit)
         self.assertIn("/opt/stock-assistant-api/%i/.venv/bin/python", unit)
