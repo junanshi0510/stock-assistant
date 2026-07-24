@@ -319,4 +319,37 @@ delta_amount_i  = target_amount_i - current_amount_i
 
 ## 17. 生产发布记录
 
-本节在 GitHub 功能提交、PostgreSQL 迁移、双副本滚动发布、生产临时账户验收、发布后加密备份和隔离恢复全部完成后补充。部署未完成前，README 与页面不得把本地通过描述为生产上线。
+本功能已于 2026-07-24 以提交 `974da0eda9903c522afe694d069c25c1b92ac94d` 推送 GitHub，并部署到 `http://8.148.67.79/`。
+
+### 17.1 数据安全与迁移
+
+- 发布前私有 OSS AES256 PostgreSQL 备份对象为 `backups/postgresql/2026/07/stock-assistant-iZn4ai1fm0tr284w21h4kmZ-20260724T151855Z.dump`，SHA-256 为 `68d3d151a92f0fecd06d613f5a661be4b110525e7e1a92ba141b0b3edd0491b0`，大小 `1,884,615` 字节。
+- 发布前备份已在隔离 PostgreSQL 中真实恢复，核对结果为 `70` 张表、`11` 个迁移标记。
+- `portfolio-quant-lab.v1` 迁移只执行一次；生产数据库新增 3 张量化表、3 个保护触发器和 1 个迁移标记，迁移后为 `73` 张表、`12` 个迁移标记。
+- 使用生产隔离测试记录分别尝试修改 Run 冻结输入、删除事件和修改纸面指令，三次操作均被 PostgreSQL 触发器以 SQLSTATE `23000` 拒绝；回读 Run、事件链和 Mandate 完整性仍全部通过。
+- 发布后私有 OSS AES256 备份对象为 `backups/postgresql/2026/07/stock-assistant-iZn4ai1fm0tr284w21h4kmZ-20260724T153637Z.dump`，SHA-256 为 `232439187e5fbff7ee6f6c131a1e6491a36196b174e119671f24f0625825bb3a`，大小 `1,925,153` 字节。
+- 发布后备份已再次恢复到隔离数据库，真实核对 `73` 张表、`12` 个迁移标记，不是只检查文件存在或校验和。
+
+### 17.2 服务与协议
+
+- 生产运行环境保持最小依赖，不临时安装 `pytest`；使用 Python 标准 `unittest` 执行量化、路由、健康和队列协议专项，`26 tests` 全部通过。
+- 6 个 Worker/Beat 服务逐个重启并保持 active；真实量化作业由 `market-data` Worker 领取并完成，证明任务注册、队列路由、租约与结果回写均有效。
+- 内容寻址 release 依次更新 `8001/8002` 两个 API 副本和前端静态资源；两个副本 release 都是 `974da0eda9903c522afe694d069c25c1b92ac94d`。
+- 两个副本均为 `full_service_ready=true`、`portfolio_quant_schema=true`，OpenAPI 均为 `169` 条路径、`197` 个操作；量化实验室为 `6` 条路径、`7` 个受认证操作。
+- 公网首页和 `/health/edge` 返回 `200`；Nginx、两个 loopback 副本分别匿名访问量化总览都返回 `401`。最终运行检查为 `ready_replicas=2`、`full_replicas=2`。
+- 第一次 transient rollout 在创建 release 前被 Git 仓库所有权检查拒绝，线上两个旧副本未被改动；第二次只向该隔离发布进程注入精确的 `/opt/stock-assistant` safe-directory 后成功，没有修改全局 Git 配置。
+
+### 17.3 生产账户端到端验证
+
+验收共使用 4 个新建普通账户，不使用管理员登录，不读取或修改既有用户持仓。第一轮已完成真实 Run，但测试脚本把返回字段 `audit` 误写成 `event_verification`，因此在客户端断言处停止；服务端 Run 本身为 `succeeded`，Result、3 个事件和完整性全部通过。修正测试脚本后，用新的隔离账户完整重跑：
+
+1. 空账户量化总览报告 0 只直接股票、`execution_authorized=false`。
+2. 保存 AAPL/MSFT 两只美股并激活一份完整性通过的投资政策；Polygon 未复权日线和真实 USD→CNY 路线形成自动估值，`risk_analysis_eligible=true`、`trade_amount_eligible=true`。
+3. 同一 Cookie 会话分别访问 `8001/8002` 均读取到 2 只直接股票，证明共享 PostgreSQL Session 和双副本用户事实一致。
+4. API 以 `202` 接受持久量化作业；第二普通账户读取第一账户 Run 返回 `404`。
+5. `market-data` Worker 完成 `risk_parity` 实验：17 个严格样本外 fold、5 个模型、专业历史源覆盖 100%、历史滞后 1 天、全部 12 项门禁通过，状态为 `paper_ready`。
+6. 目标逐项确认 `quantity_generated=false`，整体 `execution_authorized=false`；没有券商调用或真实订单。
+7. 使用同一 Result SHA 两次请求纸面指令，返回同一个 Mandate ID，验证内容寻址幂等；不可变指令详情完整性通过。
+8. 4 个临时账户最终全部为 `disabled`，对应活跃会话为 0；认证审计链共 `79` 个事件，顺序、前序哈希和事件哈希全部通过。上传到服务器的临时验收脚本已删除。
+
+结论：量化组合大功能已完成“当前真实持仓 → 可信估值与政策 → 专业历史行情 → 严格滚动样本外 → 成本与风险诊断 → 人民币目标 → 纸面准入 → 不可变指令”的生产闭环。它能提高组合风险和调仓决策质量，但仍不预测单股涨跌、不承诺获利、不计算股数、不连接券商，也不授权自动交易。

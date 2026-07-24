@@ -17,6 +17,9 @@
 - 纸面准入还要求有效投资政策、可信调仓金额、单一市场、至少 6 个完整样本外窗口、100% 资产历史覆盖、平均/最高/当前换手均不超限、样本外波动与回撤不恶化、成本后 PSR 至少 55%，以及波动下降 5% 或风险贡献集中度下降 10%。通过仅允许冻结不可变人民币目标金额，不计算股数、不连接券商、不授权下单。
 - 新增 7 个受认证操作、3 张租户/用户隔离业务表、持久化 `market-data` 后台作业、Evidence/Result/Event SHA-256、前序哈希事件链、PostgreSQL/SQLite UPDATE/DELETE 拒绝、`portfolio-quant-lab.v1` 迁移和 `portfolio_quant_schema` readiness 门禁。当前 OpenAPI 共 `197` 个操作、`169` 条路径。
 - 后端全量回归 `563 passed`、`11 subtests passed`，前端 Vite 生产构建完成 `1855` 个模块转换。隔离浏览器账户已真实验证桌面端与 `390×844` 响应式布局、方法/参数交互、完整模型对照、风险贡献、目标金额、样本外窗口、12 项准入门禁、哈希审计和 0 条应用控制台错误；验收期间未触发纸面指令，更未产生真实交易。
+- 功能提交 `974da0e` 已推送 GitHub 并原子滚动部署到 `8001/8002` 双 API 副本；两个副本均报告 `full_service_ready=true`、`portfolio_quant_schema=true`，OpenAPI 契约一致，6 个 Worker/Beat 服务正常。云端专项 `26 tests` 通过。
+- 生产隔离普通账户使用 Polygon 真实日线完成 AAPL/MSFT 自动人民币估值、17 个滚动样本外窗口、5 模型对照、专业源覆盖 100%、`paper_ready` 和纸面指令重复冻结幂等；跨账户读取返回 `404`，全部目标保持 `execution_authorized=false` 且不生成股数。4 个临时账户随后全部停用、活跃会话为 0，认证审计链 `79` 个事件通过。
+- 发布前备份 SHA-256 为 `68d3d151a92f0fecd06d613f5a661be4b110525e7e1a92ba141b0b3edd0491b0`，隔离恢复为 `70` 张表、`11` 个迁移标记；发布后私有 OSS AES256 备份 SHA-256 为 `232439187e5fbff7ee6f6c131a1e6491a36196b174e119671f24f0625825bb3a`，已真实恢复核对 `73` 张表、`12` 个迁移标记。
 - 完整同行参考、数学口径、数据模型、接口、异步执行、准入门禁和验收记录见 [`docs/updates/2026-07-24-002-portfolio-quant-walk-forward-lab.md`](docs/updates/2026-07-24-002-portfolio-quant-walk-forward-lab.md)。
 
 ### 2026-07-24：资本计划兑现、真实成交对账与决策学习中枢
