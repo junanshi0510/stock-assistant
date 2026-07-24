@@ -128,6 +128,22 @@ class TaskQueueProtocolTests(unittest.TestCase):
         self.assertGreaterEqual(float(schedule["schedule"]), 900.0)
         self.assertEqual(schedule["options"]["expires"], 900)
 
+    def test_capital_outcomes_are_periodic_and_scheduler_routed(self):
+        self.assertEqual(
+            task_queue.celery_app.conf.task_routes[
+                task_queue.TASK_CAPITAL_OUTCOMES
+            ],
+            {"queue": task_queue.QUEUE_SCHEDULER},
+        )
+        schedule = task_queue.celery_app.conf.beat_schedule[
+            "observe-capital-plan-outcomes"
+        ]
+        self.assertEqual(
+            schedule["task"], task_queue.TASK_CAPITAL_OUTCOMES
+        )
+        self.assertGreaterEqual(float(schedule["schedule"]), 900.0)
+        self.assertEqual(schedule["options"]["expires"], 900)
+
 
 if __name__ == "__main__":
     unittest.main()

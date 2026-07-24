@@ -590,6 +590,46 @@ class PortfolioCapitalDecisionEngineTests(unittest.TestCase):
         }
         self.assertEqual(candidates, {"600519": 500, "000858": 400})
 
+    def test_confirmed_execution_consumes_budget_and_open_plan_blocks_stacking(self):
+        kwargs = build_kwargs()
+        kwargs["execution_summary_loader"] = lambda _as_of: {
+            "schema_version": "portfolio_capital_month_execution.v1",
+            "month": "2026-07",
+            "confirmed_settled_amount_cny": 9_000,
+            "ready_plan_count": 1,
+            "latest_ready_plan": {
+                "plan_id": "capital_plan_previous",
+                "execution_status": "partial",
+                "confirmed_settled_amount_cny": 9_000,
+            },
+            "blocking_reason": "previous_capital_plan_open",
+            "plans": [],
+        }
+
+        result = service.build_capital_decision(**kwargs)
+
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(
+            result["primary_action"]["code"],
+            "reconcile_previous_capital_plan",
+        )
+        self.assertEqual(
+            result["capital"]["policy_monthly_budget_cny"], 10_000
+        )
+        self.assertEqual(
+            result["capital"]["confirmed_month_to_date_cny"], 9_000
+        )
+        self.assertEqual(
+            result["capital"]["remaining_monthly_budget_cny"], 1_000
+        )
+        self.assertEqual(
+            result["capital"]["planned_deployment_cny"], 0
+        )
+        self.assertIn(
+            "previous_capital_plan_open",
+            result["blocking_reasons"],
+        )
+
     def test_unknown_candidate_industry_uses_conservative_capacity(self):
         kwargs = build_kwargs()
         profile = kwargs["profile_loader"]()

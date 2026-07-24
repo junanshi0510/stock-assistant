@@ -6,7 +6,16 @@ import hashlib
 import os
 from typing import Literal
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    UploadFile,
+)
 from pydantic import BaseModel, ConfigDict, Field
 
 import data_fetch
@@ -24,6 +33,7 @@ import portfolio_exposure
 import portfolio_decision_twin
 import portfolio_action_report
 import portfolio_capital_decision
+import portfolio_capital_learning_service
 import portfolio_review
 import portfolio_valuation
 import storage
@@ -49,6 +59,11 @@ from portfolio_twin_repository import (
 from portfolio_capital_repository import (
     PortfolioCapitalPlanNotFoundError,
     repository as portfolio_capital_repository,
+)
+from portfolio_capital_learning_repository import (
+    PortfolioCapitalExecutionNotFoundError,
+    PortfolioCapitalLearningConflictError,
+    PortfolioCapitalOutcomeNotFoundError,
 )
 from portfolio_valuation_repository import (
     PortfolioValuationNotFoundError,
@@ -180,6 +195,35 @@ class PortfolioTransactionRequest(BaseModel):
     fee: float = Field(default=0, ge=0)
     note: str = Field(default="", max_length=300)
     source: str = Field(default="manual", max_length=80)
+
+
+class CapitalExecutionTransactionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    transaction_id: int = Field(gt=0)
+    settled_amount_cny: float = Field(gt=0, le=100_000_000)
+
+
+class CapitalExecutionEventRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    transactions: list[CapitalExecutionTransactionRequest] = Field(
+        min_length=1, max_length=100
+    )
+    acknowledged: bool
+    expected_previous_event_hash: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+
+
+class CapitalExecutionDeviationReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    note: str = Field(min_length=10, max_length=500)
+    acknowledged: bool
+    expected_previous_event_hash: str = Field(
+        pattern=r"^[0-9a-f]{64}$"
+    )
 
 
 class PortfolioSnapshotRequest(BaseModel):
@@ -1010,6 +1054,216 @@ def get_portfolio_capital_decision_plan(
     except PortfolioCapitalPlanNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     return item
+
+
+@router.get("/api/portfolio/capital-decision/learning")
+def get_portfolio_capital_learning(
+    limit: int = Query(default=50, ge=1, le=100),
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        return portfolio_capital_learning_service.learning_overview(
+            tenant_id=_tenant_id(principal),
+            user_id=_subject_id(principal),
+            limit=limit,
+        )
+    except Exception as error:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "资本计划学习中枢读取失败:"
+                f"{sanitize_worker_error(error)}"
+            ),
+        ) from error
+
+
+@router.get(
+    "/api/portfolio/capital-decision/plans/{plan_id}/execution"
+)
+def get_portfolio_capital_plan_execution(
+    plan_id: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        return (
+            portfolio_capital_learning_service
+            .get_plan_execution_context(
+                plan_id,
+                tenant_id=_tenant_id(principal),
+                user_id=_subject_id(principal),
+            )
+        )
+    except PortfolioCapitalPlanNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except PortfolioCapitalLearningConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@router.post(
+    "/api/portfolio/capital-decision/plans/{plan_id}/execution-events"
+)
+def create_portfolio_capital_execution_event(
+    plan_id: str,
+    req: CapitalExecutionEventRequest,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        item, created = (
+            portfolio_capital_learning_service.create_execution_event(
+                plan_id,
+                transactions=[
+                    item.model_dump() for item in req.transactions
+                ],
+                acknowledged=req.acknowledged,
+                expected_previous_event_hash=(
+                    req.expected_previous_event_hash
+                ),
+                tenant_id=_tenant_id(principal),
+                user_id=_subject_id(principal),
+                actor_id=_actor_id(principal),
+            )
+        )
+        return {"item": item, "created": created}
+    except PortfolioCapitalPlanNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except PortfolioCapitalLearningConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.post(
+    "/api/portfolio/capital-decision/plans/{plan_id}/execution-review"
+)
+def review_portfolio_capital_execution_deviation(
+    plan_id: str,
+    req: CapitalExecutionDeviationReviewRequest,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        item, created = (
+            portfolio_capital_learning_service
+            .review_execution_deviation(
+                plan_id,
+                note=req.note,
+                acknowledged=req.acknowledged,
+                expected_previous_event_hash=(
+                    req.expected_previous_event_hash
+                ),
+                tenant_id=_tenant_id(principal),
+                user_id=_subject_id(principal),
+                actor_id=_actor_id(principal),
+            )
+        )
+        return {"item": item, "created": created}
+    except (
+        PortfolioCapitalPlanNotFoundError,
+        PortfolioCapitalExecutionNotFoundError,
+    ) as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except PortfolioCapitalLearningConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.get(
+    "/api/portfolio/capital-decision/plans/{plan_id}/outcomes"
+)
+def get_portfolio_capital_plan_outcomes(
+    plan_id: str,
+    limit: int = Query(default=100, ge=1, le=500),
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        return portfolio_capital_learning_service.list_plan_outcomes(
+            plan_id,
+            tenant_id=_tenant_id(principal),
+            user_id=_subject_id(principal),
+            limit=limit,
+        )
+    except PortfolioCapitalPlanNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except PortfolioCapitalLearningConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@router.post(
+    "/api/portfolio/capital-decision/plans/{plan_id}/outcomes",
+    status_code=202,
+)
+def refresh_portfolio_capital_plan_outcome(
+    plan_id: str,
+    background_tasks: BackgroundTasks,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    def dispatch_embedded(job_id: str, database_target: str) -> None:
+        background_tasks.add_task(
+            portfolio_capital_learning_service.execute_embedded_plan_outcome_job,
+            job_id,
+            database_target,
+        )
+
+    try:
+        return portfolio_capital_learning_service.queue_plan_outcome_refresh(
+            plan_id,
+            tenant_id=_tenant_id(principal),
+            user_id=_subject_id(principal),
+            actor_id=_actor_id(principal),
+            embedded_dispatch=dispatch_embedded,
+        )
+    except PortfolioCapitalPlanNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except PortfolioCapitalLearningConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "资本计划结果观察任务创建失败:"
+                f"{sanitize_worker_error(error)}"
+            ),
+        ) from error
+
+
+@router.get(
+    "/api/portfolio/capital-decision/outcome-jobs/{job_id}"
+)
+def get_portfolio_capital_outcome_job(
+    job_id: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        return (
+            portfolio_capital_learning_service.get_plan_outcome_refresh_job(
+                job_id,
+                tenant_id=_tenant_id(principal),
+                user_id=_subject_id(principal),
+            )
+        )
+    except (
+        portfolio_capital_learning_service.PortfolioCapitalOutcomeJobNotFoundError
+    ) as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@router.get(
+    "/api/portfolio/capital-decision/outcomes/{outcome_id}"
+)
+def get_portfolio_capital_outcome(
+    outcome_id: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        return portfolio_capital_learning_service.get_outcome(
+            outcome_id,
+            tenant_id=_tenant_id(principal),
+            user_id=_subject_id(principal),
+        )
+    except PortfolioCapitalOutcomeNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
 
 
 def _decision_task_public(item: dict) -> dict:

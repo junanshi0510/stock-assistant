@@ -92,6 +92,18 @@ def _database_readiness() -> dict[str, Any]:
                 if database_dialect(connection) == "postgresql"
                 else True
             )
+            portfolio_capital_learning_schema = (
+                all(
+                    table_exists(connection, table)
+                    for table in (
+                        "portfolio_capital_execution_events",
+                        "portfolio_capital_transaction_bindings",
+                        "portfolio_capital_outcome_snapshots",
+                    )
+                )
+                if database_dialect(connection) == "postgresql"
+                else True
+            )
             portfolio_twin_schema = (
                 table_exists(connection, "portfolio_twin_runs")
                 if database_dialect(connection) == "postgresql"
@@ -127,6 +139,7 @@ def _database_readiness() -> dict[str, Any]:
                 and opportunity_committee_schema
                 and opportunity_regime_schema
                 and portfolio_capital_schema
+                and portfolio_capital_learning_schema
                 and portfolio_twin_schema
                 and portfolio_valuation_schema
                 and availability_schema
@@ -143,6 +156,9 @@ def _database_readiness() -> dict[str, Any]:
                 opportunity_regime_schema
             ),
             "portfolio_capital_schema": bool(portfolio_capital_schema),
+            "portfolio_capital_learning_schema": bool(
+                portfolio_capital_learning_schema
+            ),
             "portfolio_twin_schema": bool(portfolio_twin_schema),
             "portfolio_valuation_schema": bool(portfolio_valuation_schema),
             "availability_schema": bool(availability_schema),

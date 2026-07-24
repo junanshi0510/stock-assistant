@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   ArrowRight,
   CheckCircle2,
+  ChartNoAxesCombined,
   CircleDollarSign,
   Database,
   FlaskConical,
@@ -285,6 +286,9 @@ export default function CapitalDecisionCommand({ onNavigate }) {
           </button>
           <button type="button" className="ghost" onClick={toggleHistory}>
             <History size={16} aria-hidden="true" />历史审计
+          </button>
+          <button type="button" className="ghost" onClick={() => onNavigate?.('capital_learning')}>
+            <ChartNoAxesCombined size={16} aria-hidden="true" />兑现与学习
           </button>
         </div>
       </header>

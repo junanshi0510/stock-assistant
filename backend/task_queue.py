@@ -34,6 +34,9 @@ TASK_DECISION_CHECKS = "stock_assistant.scheduler.decision_checks"
 TASK_OPPORTUNITY_OBSERVATIONS = (
     "stock_assistant.scheduler.opportunity_observations"
 )
+TASK_CAPITAL_OUTCOMES = (
+    "stock_assistant.scheduler.capital_plan_outcomes"
+)
 TASK_WATCHLIST_SCAN = "stock_assistant.scheduler.watchlist_scan"
 TASK_AVAILABILITY_PROBE = "stock_assistant.scheduler.availability_probe"
 
@@ -133,6 +136,7 @@ celery_app.conf.update(
         TASK_STRATEGY_SHADOW: {"queue": QUEUE_SCHEDULER},
         TASK_DECISION_CHECKS: {"queue": QUEUE_SCHEDULER},
         TASK_OPPORTUNITY_OBSERVATIONS: {"queue": QUEUE_SCHEDULER},
+        TASK_CAPITAL_OUTCOMES: {"queue": QUEUE_SCHEDULER},
         TASK_WATCHLIST_SCAN: {"queue": QUEUE_MARKET},
         TASK_AVAILABILITY_PROBE: {"queue": QUEUE_SCHEDULER},
     },
@@ -169,6 +173,18 @@ celery_app.conf.update(
                 float(
                     os.getenv(
                         "OPPORTUNITY_OBSERVATION_INTERVAL_SECONDS", "3600"
+                    )
+                ),
+            ),
+            "options": {"expires": 900},
+        },
+        "observe-capital-plan-outcomes": {
+            "task": TASK_CAPITAL_OUTCOMES,
+            "schedule": max(
+                900.0,
+                float(
+                    os.getenv(
+                        "CAPITAL_OUTCOME_INTERVAL_SECONDS", "3600"
                     )
                 ),
             ),
@@ -287,6 +303,7 @@ def enqueue_scheduler_task(task_name: str) -> str:
         TASK_STRATEGY_SHADOW,
         TASK_DECISION_CHECKS,
         TASK_OPPORTUNITY_OBSERVATIONS,
+        TASK_CAPITAL_OUTCOMES,
         TASK_WATCHLIST_SCAN,
         TASK_OBJECT_CLEANUP,
         TASK_AVAILABILITY_PROBE,

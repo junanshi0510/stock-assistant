@@ -33,7 +33,7 @@ from portfolio_capital_repository import (
 
 
 SCHEMA_VERSION = "portfolio_capital_decision.v1"
-ENGINE_VERSION = "whole_portfolio_next_best_action.v3"
+ENGINE_VERSION = "whole_portfolio_next_best_action.v4"
 HARD_GLOBAL_PILOT_CAP_PCT = 5.0
 MAX_STRATEGIES = 3
 MAX_CANDIDATES = 12
@@ -688,6 +688,10 @@ def _assemble(
         [list[dict[str, Any]]], dict[str, Any]
     ]
     | None = None,
+    execution_summary_loader: Callable[
+        [dt.date], dict[str, Any]
+    ]
+    | None = None,
     profit_repo: OpportunityProfitRepository = opportunity_profit_repository,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     current = _now(now)
@@ -793,8 +797,34 @@ def _assemble(
         _number((valuation_payload.get("summary") or {}).get("total_value"))
         or sum(_number(item.get("amount")) or 0 for item in holdings)
     )
-    monthly_budget = (
+    policy_monthly_budget = (
         _number(profile.get("monthly_budget"), 0.0) or 0.0
+    )
+    execution_summary = (
+        execution_summary_loader(current.date())
+        if execution_summary_loader
+        else {
+            "schema_version": "portfolio_capital_month_execution.v1",
+            "month": current.date().strftime("%Y-%m"),
+            "confirmed_settled_amount_cny": 0.0,
+            "ready_plan_count": 0,
+            "latest_ready_plan": None,
+            "blocking_reason": None,
+            "plans": [],
+        }
+    )
+    confirmed_month_to_date = max(
+        0.0,
+        _number(
+            execution_summary.get(
+                "confirmed_settled_amount_cny"
+            ),
+            0.0,
+        )
+        or 0.0,
+    )
+    monthly_budget = max(
+        0.0, policy_monthly_budget - confirmed_month_to_date
     )
     allowed_markets = {
         market
@@ -931,13 +961,17 @@ def _assemble(
     if not exposure_ready:
         hard_blockers.append("portfolio_exposure_not_current")
 
-    if monthly_budget > 0:
+    if policy_monthly_budget > 0:
         gates.append(
             _gate(
                 "monthly_new_capital",
                 "月度新增资金",
                 "pass",
-                f"用户确认月度预算 ¥{monthly_budget:,.2f}",
+                (
+                    f"政策预算 ¥{policy_monthly_budget:,.2f}，"
+                    f"已确认成交 ¥{confirmed_month_to_date:,.2f}，"
+                    f"剩余 ¥{monthly_budget:,.2f}"
+                ),
                 source="已激活投资政策",
             )
         )
@@ -951,6 +985,28 @@ def _assemble(
                 source="已激活投资政策",
             )
         )
+    prior_plan_blocker = (
+        execution_summary.get("blocking_reason")
+        == "previous_capital_plan_open"
+    )
+    if prior_plan_blocker:
+        latest_ready_plan = (
+            execution_summary.get("latest_ready_plan") or {}
+        )
+        gates.append(
+            _gate(
+                "previous_capital_plan_execution",
+                "上一资本计划",
+                "block",
+                (
+                    f"计划 {latest_ready_plan.get('plan_id') or '-'} "
+                    f"处于 {latest_ready_plan.get('execution_status') or 'awaiting_execution'}；"
+                    "需先完成成交对账或偏差复核，不能叠加新的试投上限"
+                ),
+                source="capital_plan_execution_learning@1.0.0",
+            )
+        )
+        hard_blockers.append("previous_capital_plan_open")
 
     live_eligible_count = sum(
         1 for item in strategy_rows if item.get("capital_eligible")
@@ -1338,6 +1394,20 @@ def _assemble(
                 "金额是研究上限，不是订单。"
             ),
         }
+    elif "previous_capital_plan_open" in hard_blockers:
+        latest_ready_plan = (
+            execution_summary.get("latest_ready_plan") or {}
+        )
+        primary_action = {
+            "code": "reconcile_previous_capital_plan",
+            "label": "先完成成交对账",
+            "headline": "上一资本计划尚未闭环",
+            "description": (
+                f"当前执行状态为 "
+                f"{latest_ready_plan.get('execution_status') or 'awaiting_execution'}。"
+                "请先绑定真实买入流水、确认人民币结算金额并复核偏差。"
+            ),
+        }
     elif critical_actions:
         first = critical_actions[0]
         primary_action = {
@@ -1362,6 +1432,18 @@ def _assemble(
             or "资金决策暂不可用",
             "description": (first_gate or {}).get("detail")
             or "关键证据门禁未通过。",
+        }
+    elif monthly_budget <= 0 and policy_monthly_budget > 0:
+        primary_action = {
+            "code": "monthly_budget_consumed",
+            "label": "本月预算已使用",
+            "headline": (
+                f"本月已确认成交 ¥{confirmed_month_to_date:,.2f}，"
+                "不再重复分配"
+            ),
+            "description": (
+                "系统按不可变执行事件扣减月度预算；下个自然月或重新激活政策后再评估。"
+            ),
         }
     elif monthly_budget <= 0:
         primary_action = {
@@ -1525,6 +1607,7 @@ def _assemble(
             "hard_global_pilot_cap_pct": HARD_GLOBAL_PILOT_CAP_PCT,
             "maximum_strategy_count": MAX_STRATEGIES,
             "maximum_candidate_count": MAX_CANDIDATES,
+            "monthly_execution_summary": execution_summary,
             "candidate_industry_treatment": (
                 "候选股票行业未知时，全部新增金额按同一最坏行业桶占用容量"
             ),
@@ -1547,6 +1630,15 @@ def _assemble(
         "capital": {
             "base_currency": "CNY",
             "portfolio_value_cny": round(total_value, 2),
+            "policy_monthly_budget_cny": round(
+                policy_monthly_budget, 2
+            ),
+            "confirmed_month_to_date_cny": round(
+                confirmed_month_to_date, 2
+            ),
+            "remaining_monthly_budget_cny": round(
+                monthly_budget, 2
+            ),
             "monthly_new_capital_cny": round(monthly_budget, 2),
             "post_plan_total_cny": round(post_total, 2),
             "global_pilot_cap_pct": round(global_pilot_pct, 2),
@@ -1566,6 +1658,9 @@ def _assemble(
                 else 0
             ),
             "risk_scaling_factor": round(risk_scale, 4),
+            "previous_plan_gate": execution_summary.get(
+                "latest_ready_plan"
+            ),
             "cash_source_confirmed": False,
             "cash_source_notice": (
                 "月度预算来自投资政策，不代表券商账户实时可用现金；"
@@ -1604,6 +1699,7 @@ def _assemble(
             ],
             "critical_existing_action_count": len(critical_actions),
             "exposure_reasons": exposure_reasons,
+            "month_execution": execution_summary,
         },
         "data_lineage": bindings
         | {
@@ -1662,6 +1758,19 @@ def current_capital_decision(
     plan_repo: PortfolioCapitalRepository = capital_repository,
     **kwargs,
 ) -> dict[str, Any]:
+    if "execution_summary_loader" not in kwargs:
+        from portfolio_capital_learning_service import (
+            monthly_execution_summary,
+        )
+
+        kwargs["execution_summary_loader"] = lambda as_of: (
+            monthly_execution_summary(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                as_of=as_of,
+                plan_repo=plan_repo,
+            )
+        )
     result, evidence = _assemble(
         user_id=user_id,
         tenant_id=tenant_id,
@@ -1708,11 +1817,32 @@ def freeze_capital_decision(
     plan_repo: PortfolioCapitalRepository = capital_repository,
     **kwargs,
 ) -> tuple[dict[str, Any], bool]:
+    if "execution_summary_loader" not in kwargs:
+        from portfolio_capital_learning_service import (
+            monthly_execution_summary,
+        )
+
+        kwargs["execution_summary_loader"] = lambda as_of: (
+            monthly_execution_summary(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                as_of=as_of,
+                plan_repo=plan_repo,
+            )
+        )
     result, evidence = _assemble(
         user_id=user_id,
         tenant_id=tenant_id,
         **kwargs,
     )
+    if "previous_capital_plan_open" in (
+        result.get("blocking_reasons") or []
+    ):
+        latest = plan_repo.latest_plan(
+            tenant_id=tenant_id, user_id=user_id
+        )
+        if latest is not None and latest.get("status") == "ready":
+            return latest, False
     return plan_repo.create_plan(
         tenant_id=tenant_id,
         user_id=user_id,

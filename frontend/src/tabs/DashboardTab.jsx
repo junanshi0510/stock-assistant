@@ -105,6 +105,7 @@ export default function DashboardTab({ goPortfolio, goFunds, goMarket, goAgent, 
     else if (target === 'opportunity_profit') goOpportunities('profit')
     else if (target === 'opportunity_committee') goOpportunities('committee')
     else if (target === 'twin') goPortfolio('twin')
+    else if (target === 'capital_learning') goPortfolio('learning')
   }
 
   function taskUpdated(result) {

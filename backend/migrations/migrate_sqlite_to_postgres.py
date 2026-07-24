@@ -31,6 +31,9 @@ from migrations.opportunity_regime_v1 import (
 from migrations.portfolio_capital_decision_v1 import (
     install_portfolio_capital_schema,
 )
+from migrations.portfolio_capital_learning_v1 import (
+    install_portfolio_capital_learning_schema,
+)
 from migrations.portfolio_decision_twin_v1 import install_portfolio_twin_schema
 from migrations.portfolio_valuation_v1 import install_portfolio_valuation_schema
 
@@ -299,6 +302,9 @@ def migrate(
             install_opportunity_committee_schema(target_connection)
             install_opportunity_regime_schema(target_connection)
             install_portfolio_capital_schema(target_connection)
+            install_portfolio_capital_learning_schema(
+                target_connection
+            )
             install_portfolio_twin_schema(target_connection)
             install_portfolio_valuation_schema(target_connection)
 

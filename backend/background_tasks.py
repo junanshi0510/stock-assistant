@@ -18,6 +18,7 @@ from task_queue import (
     QUEUE_MARKET,
     TASK_AGENT_RUN,
     TASK_AVAILABILITY_PROBE,
+    TASK_CAPITAL_OUTCOMES,
     TASK_DECISION_CHECKS,
     TASK_DISPATCH_QUEUED,
     TASK_LLM_TOOL,
@@ -495,6 +496,15 @@ def process_opportunity_observations():
     from opportunity_profit_service import dispatch_due_observations
 
     return dispatch_due_observations(limit=50)
+
+
+@celery_app.task(name=TASK_CAPITAL_OUTCOMES, ignore_result=True)
+def process_capital_plan_outcomes():
+    from portfolio_capital_learning_service import (
+        dispatch_due_outcomes,
+    )
+
+    return dispatch_due_outcomes(limit=50)
 
 
 @celery_app.task(name=TASK_WATCHLIST_SCAN, ignore_result=True)

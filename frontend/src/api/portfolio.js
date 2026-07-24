@@ -210,6 +210,48 @@ export function fetchPortfolioCapitalDecisionPlan(planId) {
   return getJson(`/api/portfolio/capital-decision/plans/${encodeURIComponent(planId)}`)
 }
 
+export function fetchPortfolioCapitalLearning(limit = 50) {
+  return getJson(`/api/portfolio/capital-decision/learning?limit=${encodeURIComponent(limit)}`)
+}
+
+export function fetchPortfolioCapitalPlanExecution(planId) {
+  return getJson(`/api/portfolio/capital-decision/plans/${encodeURIComponent(planId)}/execution`)
+}
+
+export function createPortfolioCapitalExecutionEvent(planId, payload) {
+  return getJson(`/api/portfolio/capital-decision/plans/${encodeURIComponent(planId)}/execution-events`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export function reviewPortfolioCapitalExecutionDeviation(planId, payload) {
+  return getJson(`/api/portfolio/capital-decision/plans/${encodeURIComponent(planId)}/execution-review`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export function fetchPortfolioCapitalPlanOutcomes(planId, limit = 100) {
+  return getJson(`/api/portfolio/capital-decision/plans/${encodeURIComponent(planId)}/outcomes?limit=${encodeURIComponent(limit)}`)
+}
+
+export function refreshPortfolioCapitalPlanOutcome(planId) {
+  return getJson(`/api/portfolio/capital-decision/plans/${encodeURIComponent(planId)}/outcomes`, {
+    method: 'POST',
+  })
+}
+
+export function fetchPortfolioCapitalOutcomeJob(jobId) {
+  return getJson(`/api/portfolio/capital-decision/outcome-jobs/${encodeURIComponent(jobId)}`)
+}
+
+export function fetchPortfolioCapitalOutcome(outcomeId) {
+  return getJson(`/api/portfolio/capital-decision/outcomes/${encodeURIComponent(outcomeId)}`)
+}
+
 export function fetchDecisionTasks({ status = '', includeResolved = false, limit = 50 } = {}) {
   const query = new URLSearchParams({
     include_resolved: String(includeResolved),

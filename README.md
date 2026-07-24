@@ -8,6 +8,18 @@
 
 ## 最近更新
 
+### 2026-07-24：资本计划兑现、真实成交对账与决策学习中枢
+
+- 新增“我的资产 → 决策学习”大功能，把冻结资金计划继续推进为“真实成交绑定 → 人民币结算确认 → 计划/实际对账 → 偏差复核 → 5/20/60 交易日归因 → 跨计划学习”。首页投资指挥台新增“兑现与学习”入口，不再让系统建议与用户实际执行彼此断开。
+- 一笔用户确认股票买入只能归属一个计划；首次确认与后续追加均写入前序哈希连接的不可变执行事件。已确认流水和人民币金额不能删除、改小或换绑；当前交易流水被改动时动态完整性失败，但已经占用的月度预算不会释放，防止通过改账本重复使用资金。
+- 对账明确区分计划覆盖率、候选金额偏差、计划外买入和加权执行延迟。明显偏差必须追加不可变复核事件；复核只解除下一步流程门禁，不改写事实、偏差或预算。`blocked/watch` 计划直接显示“无需执行”，不要求虚构成交。
+- 结果层固定比较冻结计划篮子、真实执行篮子和同市场可交易基准，重建精确第 5/20/60 个交易日窗口；分别输出冻结选择超额、真实执行超额与实施差值。三条路径覆盖不足 90% 时保持不完整，至少 6 个独立成熟的 20 日样本后才允许把学习结果用于规则复核。
+- 全组合资金引擎升级为 `whole_portfolio_next_best_action.v4`：本月剩余预算扣除已确认真实结算额；上一份可执行计划尚未对账、偏差未复核或交易完整性失败时，不再叠加新的试投计划。历史盈利不会自动放大仓位，所有金额仍是人工研究上限。
+- 手动结果观察改为持久化后台作业：API 立即返回 `202 + job_id`，前端轮询用户隔离的任务状态；Redis 暂时不可用时任务保留到恢复后派发，本地 SQLite 在响应后执行。浏览器实测约 `0.6` 秒完成受理，长耗时行情读取不再锁住页面。
+- 新增 8 个受认证操作、3 张租户/用户隔离业务表、逐交易唯一绑定、Evidence/Result/Event SHA-256、PostgreSQL/SQLite UPDATE/DELETE 拒绝、`portfolio-capital-learning.v1` 迁移、`portfolio_capital_learning_schema` readiness 门禁和小时级 Celery 调度。当前 OpenAPI 共 `190` 个操作、`163` 条路径。
+- 后端全量回归 `554 passed`、`11 subtests passed`，前端 Vite 生产构建完成 `1854` 个模块转换。隔离浏览器账户真实验证了计划内/计划外成交、30.30% 偏差与复核、预算不释放、100% 对齐路径、异步观察、阻断计划“无需执行”和 0 条应用控制台错误。
+- 完整同行参考、执行与归因公式、数据模型、接口、高可用作业和验收记录见 [`docs/updates/2026-07-24-001-capital-plan-execution-learning.md`](docs/updates/2026-07-24-001-capital-plan-execution-learning.md)。
+
 ### 2026-07-23：市场状态、策略适配与动态风险预算中枢
 
 - 机会工厂新增“市场状态”大功能，把原来散落在单次扫描里的 A 股、港股、美股候选池状态提升为正式决策层，形成“不可变扫描共识 → 当前市场状态 → 同环境策略验证 → 风险预算 → 投资委员会 → 全组合资金计划”的完整链路。它回答的是“当前环境更适合哪些已经验证过的策略、原委员会限额还应保留多少”，不是把技术规则包装成某只股票的上涨概率。
@@ -787,6 +799,10 @@ backend/
   portfolio_review.py      FIFO、XIRR、行为、快照和归因
   portfolio_valuation.py   A/H/美股与基金统一人民币估值、来源和运行时门禁
   portfolio_valuation_repository.py  不可变市场观察与用户估值快照仓库
+  portfolio_capital_decision.py      全组合下一最佳行动与月度资金预算
+  portfolio_capital_repository.py    不可变冻结资金计划与双哈希证据
+  portfolio_capital_learning_service.py 真实成交对账、5/20/60 日归因与学习编排
+  portfolio_capital_learning_repository.py 不可变执行、交易绑定与结果快照
   availability_service.py    组件探针、能力门禁、内部 SLO 与安全降级
   availability_repository.py 不可变探针、事故状态机与哈希事件链
   runtime_identity.py         API 副本与内容寻址 release 身份
@@ -816,6 +832,7 @@ frontend/
   src/features/opportunities/  策略编辑、扫描结果与纸面跟踪组件
   src/features/funds/      基金研究组件和状态管理
   src/features/decision/   决策中心组件
+  src/features/portfolio/CapitalLearningHub.jsx 资金兑现、偏差复核与决策学习中枢
   src/api/                 按领域拆分的 API 客户端
   src/api/availability.js  用户与管理员可用性控制面客户端
 deploy/                    双 API systemd 模板、Nginx 上游、原子滚动发布与灾备脚本
@@ -868,6 +885,7 @@ npm run build
 - [当前架构约定](ARCHITECTURE.md)
 - [云服务器部署说明](DEPLOY.md)
 - [工业级 Agent PRD](docs/industrial-agent-prd.md)
+- [资本计划兑现与决策学习中枢更新记录](docs/updates/2026-07-24-001-capital-plan-execution-learning.md)
 - [高可用控制面与安全降级更新记录](docs/updates/2026-07-23-001-availability-control-plane.md)
 - [API 双副本与零停机滚动发布更新记录](docs/updates/2026-07-23-002-dual-api-high-availability.md)
 - [市场状态、策略适配与动态风险预算中枢更新记录](docs/updates/2026-07-23-006-market-regime-strategy-suitability.md)

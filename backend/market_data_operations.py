@@ -382,6 +382,47 @@ def _opportunity_observe(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _portfolio_capital_outcome(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    from portfolio_capital_learning_repository import (
+        PortfolioCapitalExecutionNotFoundError,
+        PortfolioCapitalLearningConflictError,
+    )
+    from portfolio_capital_learning_service import (
+        refresh_plan_outcome,
+    )
+    from portfolio_capital_repository import (
+        PortfolioCapitalPlanNotFoundError,
+    )
+
+    user_id = _portfolio_user(payload)
+    try:
+        item, created = refresh_plan_outcome(
+            str(payload["plan_id"]),
+            tenant_id=str(payload.get("tenant_id") or "public"),
+            user_id=user_id,
+            actor_id=str(payload.get("actor_id") or user_id),
+            execution_event_id=(
+                str(payload["execution_event_id"])
+                if payload.get("execution_event_id")
+                else None
+            ),
+        )
+        return {"item": item, "created": created}
+    except (
+        PortfolioCapitalPlanNotFoundError,
+        PortfolioCapitalExecutionNotFoundError,
+    ) as error:
+        raise MarketDataOperationClientError(
+            str(error), http_status=404
+        ) from error
+    except PortfolioCapitalLearningConflictError as error:
+        raise MarketDataOperationClientError(
+            str(error), http_status=409
+        ) from error
+
+
 _OPERATIONS: dict[str, OperationHandler] = {
     "fund.hot": lambda payload: _fund(funds_mod.get_hot_funds, payload),
     "fund.categories": lambda payload: _fund(funds_mod.get_fund_categories, payload),
@@ -428,6 +469,7 @@ _OPERATIONS: dict[str, OperationHandler] = {
     "portfolio.exposure": _portfolio_exposure,
     "portfolio.exposure_snapshot": _portfolio_exposure_snapshot,
     "portfolio.valuation_snapshot": _portfolio_valuation_snapshot,
+    "portfolio.capital_outcome": _portfolio_capital_outcome,
     "opportunity.observe": _opportunity_observe,
 }
 
