@@ -18,6 +18,8 @@
 - 手动结果观察改为持久化后台作业：API 立即返回 `202 + job_id`，前端轮询用户隔离的任务状态；Redis 暂时不可用时任务保留到恢复后派发，本地 SQLite 在响应后执行。浏览器实测约 `0.6` 秒完成受理，长耗时行情读取不再锁住页面。
 - 新增 8 个受认证操作、3 张租户/用户隔离业务表、逐交易唯一绑定、Evidence/Result/Event SHA-256、PostgreSQL/SQLite UPDATE/DELETE 拒绝、`portfolio-capital-learning.v1` 迁移、`portfolio_capital_learning_schema` readiness 门禁和小时级 Celery 调度。当前 OpenAPI 共 `190` 个操作、`163` 条路径。
 - 后端全量回归 `554 passed`、`11 subtests passed`，前端 Vite 生产构建完成 `1854` 个模块转换。隔离浏览器账户真实验证了计划内/计划外成交、30.30% 偏差与复核、预算不释放、100% 对齐路径、异步观察、阻断计划“无需执行”和 0 条应用控制台错误。
+- 功能提交 `1865cc9` 已推送 GitHub 并原子滚动部署到 `8001/8002` 双 API 副本；两个副本均报告 `full_service_ready=true`、`portfolio_capital_learning_schema=true`，6 个 Worker/Beat 服务正常。生产临时账户完成偏差复核和有效 A 股异步归因作业，随后全部停用且活跃会话为 0，认证审计链 `62` 个事件校验通过。
+- 发布前后各完成一次私有 OSS AES256 PostgreSQL 备份与隔离恢复；发布后备份 SHA-256 为 `6668c4202db5d74471d50c956c5da42b9ec3d1720832e22b9a13a12dc83eea96`，恢复结果为 `70` 张表、`11` 个迁移标记。
 - 完整同行参考、执行与归因公式、数据模型、接口、高可用作业和验收记录见 [`docs/updates/2026-07-24-001-capital-plan-execution-learning.md`](docs/updates/2026-07-24-001-capital-plan-execution-learning.md)。
 
 ### 2026-07-23：市场状态、策略适配与动态风险预算中枢
