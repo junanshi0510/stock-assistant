@@ -8,6 +8,17 @@
 
 ## 最近更新
 
+### 2026-07-24：量化组合 Walk-Forward 实验与模拟调仓中枢
+
+- “我的资产”新增“量化组合”大功能，把当前直接股票持仓、可信人民币估值和有效投资政策冻结为一次可恢复实验，形成“真实复权日线 → 严格滚动样本外验证 → 风险模型横向比较 → 成本后诊断 → 人民币目标金额 → 纸面调仓准入”的完整链路。
+- 同一次实验固定比较当前权重、等权、逆波动、风险平价和最小方差五种模型。每个测试窗口只使用此前紧邻的 126/252/504 个共同交易日估计权重，再在后续 21/63 个交易日验证；系统不会看到未来数据，也不会按历史结果自动替用户挑选“赢家”。
+- 风险模型只使用 25% 对角收缩后的协方差，不使用历史平均收益做预期收益优化。结果同时展示成本后年化收益、波动、Sharpe、Sortino、最大回撤、日度 95% CVaR、Probabilistic Sharpe、逐资产风险贡献、集中度和逐窗口换手；佣金、滑点和卖出税费均按每次真实权重变化扣除。
+- 当前持仓只能形成“当前持仓股票池的风险再分配研究”，不能冒充选股策略回测。多市场运行因未纳入历史汇率收益固定为 `research_only`；公开免费降级源可用于研究，但只有 Tushare、Massive/Polygon 或 Alpha Vantage 等专业历史源 100% 覆盖且不超过 7 天陈旧，才可能冻结纸面指令。
+- 纸面准入还要求有效投资政策、可信调仓金额、单一市场、至少 6 个完整样本外窗口、100% 资产历史覆盖、平均/最高/当前换手均不超限、样本外波动与回撤不恶化、成本后 PSR 至少 55%，以及波动下降 5% 或风险贡献集中度下降 10%。通过仅允许冻结不可变人民币目标金额，不计算股数、不连接券商、不授权下单。
+- 新增 7 个受认证操作、3 张租户/用户隔离业务表、持久化 `market-data` 后台作业、Evidence/Result/Event SHA-256、前序哈希事件链、PostgreSQL/SQLite UPDATE/DELETE 拒绝、`portfolio-quant-lab.v1` 迁移和 `portfolio_quant_schema` readiness 门禁。当前 OpenAPI 共 `197` 个操作、`169` 条路径。
+- 后端全量回归 `563 passed`、`11 subtests passed`，前端 Vite 生产构建完成 `1855` 个模块转换。隔离浏览器账户已真实验证桌面端与 `390×844` 响应式布局、方法/参数交互、完整模型对照、风险贡献、目标金额、样本外窗口、12 项准入门禁、哈希审计和 0 条应用控制台错误；验收期间未触发纸面指令，更未产生真实交易。
+- 完整同行参考、数学口径、数据模型、接口、异步执行、准入门禁和验收记录见 [`docs/updates/2026-07-24-002-portfolio-quant-walk-forward-lab.md`](docs/updates/2026-07-24-002-portfolio-quant-walk-forward-lab.md)。
+
 ### 2026-07-24：资本计划兑现、真实成交对账与决策学习中枢
 
 - 新增“我的资产 → 决策学习”大功能，把冻结资金计划继续推进为“真实成交绑定 → 人民币结算确认 → 计划/实际对账 → 偏差复核 → 5/20/60 交易日归因 → 跨计划学习”。首页投资指挥台新增“兑现与学习”入口，不再让系统建议与用户实际执行彼此断开。
@@ -805,6 +816,8 @@ backend/
   portfolio_capital_repository.py    不可变冻结资金计划与双哈希证据
   portfolio_capital_learning_service.py 真实成交对账、5/20/60 日归因与学习编排
   portfolio_capital_learning_repository.py 不可变执行、交易绑定与结果快照
+  portfolio_quant_service.py   滚动样本外风险模型、成本、统计门禁与人民币目标
+  portfolio_quant_repository.py 不可变量化实验、哈希事件链与纸面调仓指令
   availability_service.py    组件探针、能力门禁、内部 SLO 与安全降级
   availability_repository.py 不可变探针、事故状态机与哈希事件链
   runtime_identity.py         API 副本与内容寻址 release 身份
@@ -835,6 +848,7 @@ frontend/
   src/features/funds/      基金研究组件和状态管理
   src/features/decision/   决策中心组件
   src/features/portfolio/CapitalLearningHub.jsx 资金兑现、偏差复核与决策学习中枢
+  src/features/portfolio/QuantPortfolioLab.jsx  滚动样本外量化组合工作台
   src/api/                 按领域拆分的 API 客户端
   src/api/availability.js  用户与管理员可用性控制面客户端
 deploy/                    双 API systemd 模板、Nginx 上游、原子滚动发布与灾备脚本
@@ -851,7 +865,7 @@ DEPLOY.md                   云服务器部署说明
 ```powershell
 Set-Location C:\Project\backend
 ..\venv\Scripts\python.exe -m pip install -r requirements-dev.txt
-..\venv\Scripts\python.exe -m unittest discover -s tests -v
+..\venv\Scripts\python.exe -m pytest tests -q
 ```
 
 前端：
@@ -887,6 +901,7 @@ npm run build
 - [当前架构约定](ARCHITECTURE.md)
 - [云服务器部署说明](DEPLOY.md)
 - [工业级 Agent PRD](docs/industrial-agent-prd.md)
+- [量化组合 Walk-Forward 实验与模拟调仓中枢更新记录](docs/updates/2026-07-24-002-portfolio-quant-walk-forward-lab.md)
 - [资本计划兑现与决策学习中枢更新记录](docs/updates/2026-07-24-001-capital-plan-execution-learning.md)
 - [高可用控制面与安全降级更新记录](docs/updates/2026-07-23-001-availability-control-plane.md)
 - [API 双副本与零停机滚动发布更新记录](docs/updates/2026-07-23-002-dual-api-high-availability.md)

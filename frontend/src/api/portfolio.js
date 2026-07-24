@@ -152,6 +152,42 @@ export function fetchPortfolioTwinRun(runId) {
   return getJson(`/api/portfolio/decision-twin/runs/${encodeURIComponent(runId)}`)
 }
 
+export function fetchPortfolioQuantOverview(limit = 30) {
+  return getJson(`/api/portfolio/quant-lab/overview?limit=${encodeURIComponent(limit)}`)
+}
+
+export function createPortfolioQuantRun(payload) {
+  return getJson('/api/portfolio/quant-lab/runs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export function fetchPortfolioQuantRuns(limit = 30) {
+  return getJson(`/api/portfolio/quant-lab/runs?limit=${encodeURIComponent(limit)}`)
+}
+
+export function fetchPortfolioQuantRun(runId) {
+  return getJson(`/api/portfolio/quant-lab/runs/${encodeURIComponent(runId)}`)
+}
+
+export function createPortfolioQuantMandate(runId, payload) {
+  return getJson(`/api/portfolio/quant-lab/runs/${encodeURIComponent(runId)}/mandates`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export function fetchPortfolioQuantMandates(limit = 30) {
+  return getJson(`/api/portfolio/quant-lab/mandates?limit=${encodeURIComponent(limit)}`)
+}
+
+export function fetchPortfolioQuantMandate(mandateId) {
+  return getJson(`/api/portfolio/quant-lab/mandates/${encodeURIComponent(mandateId)}`)
+}
+
 export function fetchInvestmentProfile() {
   return getJson('/api/investment-profile')
 }

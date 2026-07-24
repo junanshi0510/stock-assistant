@@ -25,6 +25,7 @@ from task_queue import (
     TASK_MARKET_DATA,
     TASK_OPPORTUNITY_SCAN,
     TASK_OPPORTUNITY_OBSERVATIONS,
+    TASK_PORTFOLIO_QUANT_RUN,
     TASK_MARKET_TOOL,
     TASK_OBJECT_CLEANUP,
     TASK_OCR,
@@ -277,6 +278,110 @@ def execute_opportunity_scan_job(self, job_id: str):
             str(job_id),
             worker_id,
             error_code="OPPORTUNITY_SCAN_FAILED",
+            error_message=str(error),
+            retryable=False,
+        )
+    return {"job_id": str(job_id), "status": updated["status"]}
+
+
+@celery_app.task(
+    bind=True,
+    name=TASK_PORTFOLIO_QUANT_RUN,
+    ignore_result=True,
+)
+def execute_portfolio_quant_run_job(self, job_id: str):
+    """Run one durable walk-forward portfolio experiment."""
+    jobs = BackgroundJobRepository()
+    worker_id = _worker_id(self)
+    lease_seconds = int(
+        os.getenv("PORTFOLIO_QUANT_JOB_LEASE_SECONDS", "1200")
+    )
+    job = jobs.claim_job(
+        str(job_id),
+        worker_id,
+        lease_seconds=lease_seconds,
+    )
+    if job is None:
+        return {"job_id": str(job_id), "status": "not_claimed"}
+    if job["status"] in {
+        "succeeded",
+        "partial",
+        "failed",
+        "cancelled",
+    }:
+        return {"job_id": str(job_id), "status": job["status"]}
+    if (
+        job.get("queue_name") != QUEUE_MARKET
+        or job.get("job_type") != "portfolio_quant_run"
+    ):
+        jobs.fail_job(
+            str(job_id),
+            worker_id,
+            error_code="TASK_ROUTE_MISMATCH",
+            error_message="portfolio quant task route mismatch",
+            retryable=False,
+        )
+        return {"job_id": str(job_id), "status": "failed"}
+
+    payload = job.get("payload") or {}
+    run_id = str(payload.get("run_id") or "")
+    tenant_id = str(payload.get("tenant_id") or "")
+    user_id = str(payload.get("user_id") or "")
+    if (
+        not run_id
+        or not tenant_id
+        or not user_id
+        or tenant_id != str(job.get("tenant_id") or "")
+        or user_id != str(job.get("user_id") or "")
+    ):
+        jobs.fail_job(
+            str(job_id),
+            worker_id,
+            error_code="PORTFOLIO_QUANT_SCOPE_INVALID",
+            error_message="portfolio quant job scope is missing or invalid",
+            retryable=False,
+        )
+        return {"job_id": str(job_id), "status": "failed"}
+    try:
+        from portfolio_quant_service import execute_run
+
+        with _job_heartbeat(
+            jobs,
+            str(job_id),
+            worker_id,
+            lease_seconds,
+        ):
+            run = execute_run(
+                run_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                actor_id=worker_id,
+            )
+        output = {
+            "run_id": run_id,
+            "run_status": run.get("status"),
+        }
+        jobs.complete_job(str(job_id), worker_id, output)
+        return {
+            "job_id": str(job_id),
+            "status": "succeeded",
+            **output,
+        }
+    except SoftTimeLimitExceeded:
+        updated = jobs.fail_job(
+            str(job_id),
+            worker_id,
+            error_code="PORTFOLIO_QUANT_TIMEOUT",
+            error_message="portfolio quant run reached its execution limit",
+            retryable=False,
+        )
+    except BackgroundJobLeaseError:
+        return {"job_id": str(job_id), "status": "lease_lost"}
+    except Exception as error:
+        updated = jobs.fail_job(
+            str(job_id),
+            worker_id,
+            error_code="PORTFOLIO_QUANT_RUN_FAILED",
             error_message=str(error),
             retryable=False,
         )

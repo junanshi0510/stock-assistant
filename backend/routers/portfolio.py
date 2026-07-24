@@ -34,6 +34,7 @@ import portfolio_decision_twin
 import portfolio_action_report
 import portfolio_capital_decision
 import portfolio_capital_learning_service
+import portfolio_quant_service
 import portfolio_review
 import portfolio_valuation
 import storage
@@ -64,6 +65,11 @@ from portfolio_capital_learning_repository import (
     PortfolioCapitalExecutionNotFoundError,
     PortfolioCapitalLearningConflictError,
     PortfolioCapitalOutcomeNotFoundError,
+)
+from portfolio_quant_repository import (
+    PortfolioQuantConflictError,
+    PortfolioQuantNotFoundError,
+    repository as portfolio_quant_repository,
 )
 from portfolio_valuation_repository import (
     PortfolioValuationNotFoundError,
@@ -383,6 +389,36 @@ class PortfolioTransactionImportRequest(BaseModel):
     items: list[PortfolioTransactionRequest] = Field(min_length=1, max_length=1500)
     file_sha256: str = Field(min_length=64, max_length=64)
     filename: str = Field(default="", max_length=255)
+
+
+class PortfolioQuantRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    construction_method: Literal[
+        "equal_weight",
+        "inverse_volatility",
+        "risk_parity",
+        "minimum_variance",
+    ] = "risk_parity"
+    lookback_days: Literal[126, 252, 504] = 252
+    rebalance_days: Literal[21, 63] = 21
+    commission_bps: float = Field(default=5, ge=0, le=100)
+    slippage_bps: float = Field(default=10, ge=0, le=200)
+    sell_tax_bps: float = Field(default=0, ge=0, le=200)
+    max_turnover_pct: float = Field(default=35, ge=5, le=100)
+    max_position_pct: float = Field(default=30, ge=5, le=100)
+    minimum_trade_amount_cny: float = Field(
+        default=1000,
+        ge=0,
+        le=10_000_000,
+    )
+
+
+class PortfolioQuantMandateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    acknowledged: bool
+    expected_result_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 @router.get("/api/watchlist")
@@ -765,6 +801,147 @@ def get_portfolio_valuation(
         )
     except PortfolioValuationNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
+    return item
+
+
+@router.get("/api/portfolio/quant-lab/overview")
+def get_portfolio_quant_lab_overview(
+    limit: int = Query(default=30, ge=1, le=100),
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        return portfolio_quant_service.overview(
+            tenant_id=_tenant_id(principal),
+            user_id=_subject_id(principal),
+            limit=limit,
+        )
+    except Exception as error:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "量化组合实验室读取失败:"
+                f"{sanitize_worker_error(error)}"
+            ),
+        ) from error
+
+
+@router.post("/api/portfolio/quant-lab/runs", status_code=202)
+def create_portfolio_quant_run(
+    req: PortfolioQuantRunRequest,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        return portfolio_quant_service.start_run(
+            req.model_dump(mode="json"),
+            tenant_id=_tenant_id(principal),
+            user_id=_subject_id(principal),
+            actor_id=_actor_id(principal),
+        )
+    except PortfolioQuantConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except TaskQueueUnavailableError as error:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "量化组合实验任务队列暂不可用:"
+                f"{sanitize_worker_error(error)}"
+            ),
+        ) from error
+    except Exception as error:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "量化组合实验创建失败:"
+                f"{sanitize_worker_error(error)}"
+            ),
+        ) from error
+
+
+@router.get("/api/portfolio/quant-lab/runs")
+def get_portfolio_quant_runs(
+    limit: int = Query(default=30, ge=1, le=100),
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    items = portfolio_quant_repository.list_runs(
+        tenant_id=_tenant_id(principal),
+        user_id=_subject_id(principal),
+        limit=limit,
+    )
+    return {"items": items, "count": len(items)}
+
+
+@router.get("/api/portfolio/quant-lab/runs/{run_id}")
+def get_portfolio_quant_run(
+    run_id: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        item = portfolio_quant_service.refresh_run_status(
+            run_id,
+            tenant_id=_tenant_id(principal),
+            user_id=_subject_id(principal),
+        )
+    except PortfolioQuantConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    if item is None:
+        raise HTTPException(status_code=404, detail="量化组合实验不存在")
+    return item
+
+
+@router.post(
+    "/api/portfolio/quant-lab/runs/{run_id}/mandates",
+    status_code=201,
+)
+def create_portfolio_quant_mandate(
+    run_id: str,
+    req: PortfolioQuantMandateRequest,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        item, created = portfolio_quant_service.freeze_mandate(
+            run_id,
+            acknowledged=req.acknowledged,
+            expected_result_sha256=req.expected_result_sha256,
+            tenant_id=_tenant_id(principal),
+            user_id=_subject_id(principal),
+            actor_id=_actor_id(principal),
+        )
+        return {"item": item, "created": created}
+    except PortfolioQuantNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except PortfolioQuantConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.get("/api/portfolio/quant-lab/mandates")
+def get_portfolio_quant_mandates(
+    limit: int = Query(default=30, ge=1, le=100),
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    items = portfolio_quant_repository.list_mandates(
+        tenant_id=_tenant_id(principal),
+        user_id=_subject_id(principal),
+        limit=limit,
+    )
+    return {"items": items, "count": len(items)}
+
+
+@router.get("/api/portfolio/quant-lab/mandates/{mandate_id}")
+def get_portfolio_quant_mandate(
+    mandate_id: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    item = portfolio_quant_repository.get_mandate(
+        mandate_id,
+        tenant_id=_tenant_id(principal),
+        user_id=_subject_id(principal),
+    )
+    if item is None:
+        raise HTTPException(status_code=404, detail="量化纸面调仓指令不存在")
     return item
 
 

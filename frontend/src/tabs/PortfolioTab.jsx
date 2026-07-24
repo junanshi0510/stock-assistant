@@ -3,6 +3,7 @@ import WorkspaceHeader from '../components/WorkspaceHeader'
 import InvestmentPolicyPanel from '../features/portfolio/InvestmentPolicyPanel'
 import PortfolioDecisionTwin from '../features/portfolio/PortfolioDecisionTwin'
 import CapitalLearningHub from '../features/portfolio/CapitalLearningHub'
+import QuantPortfolioLab from '../features/portfolio/QuantPortfolioLab'
 import HoldingsTab from './HoldingsTab'
 import PortfolioLedgerTab from './PortfolioLedgerTab'
 import WatchlistTab from './WatchlistTab'
@@ -12,6 +13,7 @@ const VIEWS = [
   { id: 'policy', label: '投资政策', description: '确认预算、期限和组合风险边界' },
   { id: 'ledger', label: '交易账本', description: '记录真实现金流、费用和成本变化' },
   { id: 'twin', label: '情景实验室', description: '把真实组合放进压力情景并反推最小降险动作' },
+  { id: 'quant', label: '量化组合', description: '用滚动样本外检验和成本模型比较风险组合构建方法' },
   { id: 'learning', label: '决策学习', description: '对账冻结计划与真实成交，并用 5 / 20 / 60 交易日结果改进下一轮决策' },
   { id: 'watchlist', label: '观察清单', description: '跟踪尚未进入组合的研究对象' },
 ]
@@ -44,6 +46,7 @@ export default function PortfolioTab({ goAnalyze, activeView = 'holdings', onVie
       {view === 'policy' && <InvestmentPolicyPanel />}
       {view === 'ledger' && <PortfolioLedgerTab />}
       {view === 'twin' && <PortfolioDecisionTwin />}
+      {view === 'quant' && <QuantPortfolioLab />}
       {view === 'learning' && <CapitalLearningHub />}
       {view === 'watchlist' && <WatchlistTab goAnalyze={goAnalyze} />}
     </>
