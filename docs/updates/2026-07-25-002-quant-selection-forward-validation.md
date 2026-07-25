@@ -287,4 +287,86 @@ full_service_ready = false
 
 ## 14. 生产发布记录
 
-本节在同一功能完成 GitHub 推送、生产前备份恢复、PostgreSQL 迁移、双副本滚动发布、云端验收和生产后备份恢复后补录，未完成项不会提前写成已上线事实。
+### 14.1 提交、迁移与双副本发布
+
+- 功能提交：`28f63c30a131023dcc3bde5a09ec5502998a360d`；
+- OSS 备份脚本工作目录加固：`67503cb33158205eedf133de2b4e6910c759b578`；
+- 两个提交均已推送 GitHub `main`；
+- `quant-selection-forward-validation.v1` 已在 PostgreSQL 事务和 advisory lock 下应用；
+- 数据库由 `76` 张表、`13` 个迁移标记升级为 `77` 张表、`14` 个迁移标记；
+- 新表在线 `1` 个 PostgreSQL 不可变触发器、`7` 条跨域外键；
+- release `28f63c3` 已由原子发布器逐个排空并切换 `8001/8002` 两个 API 副本；
+- 两副本均返回 `ready=true`、`traffic_ready=true`、`full_service_ready=true`、`quant_selection_schema=true`，且 release ID 完全一致；
+- 静态站点链接指向同一 release 的 `frontend/dist`；
+- Nginx、PostgreSQL、Redis、双 API、5 类 Worker 和 Celery Beat 全部 `active`；
+- 5 条队列均为 0，systemd 失败单元为 0，发布后应用/Nginx error 级日志为 0；
+- Nginx 配置检查通过，Edge `/health/ready` 与首页均为 `200`。
+
+### 14.2 API、认证和运行 release
+
+生产 OpenAPI 实测为：
+
+```text
+178 paths
+207 operations
+```
+
+三个新增端点的方法均与契约一致。匿名前向列表返回 `401`。
+
+一个隔离普通账户完成：
+
+| 验收项 | 结果 |
+| --- | --- |
+| 登录后读取前向总览 | `200`，`quant_selection_forward_overview.v1` |
+| 初始前向验证数量 | `0` |
+| 不存在的 mandate 接入 | `404` |
+| 不存在的 validation 观察 | `404` |
+| 登出 | `200` |
+| 账户清理 | 已停用，活跃会话 `0` |
+| 认证审计 | `115` 个事件，前序哈希链通过 |
+
+该账户没有创建量化 Run、mandate 或前向业务记录。生产 `quant_selection_forward_validations` 仍为 `0`，因此没有把合成测试收益混入真实用户决策。
+
+运行 release 自身使用生产依赖直接执行 `9` 项前向功能 unittest，全部通过。完整路由测试脚本默认创建 SQLite，而 release 目录按发布器设计为只读，因此没有在 release 内强行写测试数据库；三条新路由改为直接从两个生产 OpenAPI 契约和真实 HTTP 状态验证。
+
+### 14.3 隔离 PostgreSQL 成功路径
+
+为验证不只在 SQLite 可用，发布前 OSS 备份被恢复到一次性隔离 PostgreSQL 数据库，然后应用第 14 个迁移并运行完整成功路径：
+
+| 验收项 | 隔离 PostgreSQL 结果 |
+| --- | --- |
+| 原子接入 | 成功 |
+| 相同 mandate 重试 | 内容寻址幂等复用 |
+| 延迟接入锚点 | `2026-08-17` |
+| 第一可用开盘 | `2026-08-18`，严格晚于锚点 |
+| 5/20/60 日结果 | 60 日最大窗口已精确完成 |
+| 20 日独立成熟批次 | `1` |
+| 资金门禁 | `collecting`，没有因单批漂亮结果提前放行 |
+| UPDATE 篡改 | PostgreSQL 触发器拒绝 |
+| Schema | `77` 张表、`14` 个迁移标记 |
+
+测试结束后隔离数据库已强制销毁；最终审计确认恢复演练库残留数量为 `0`。
+
+### 14.4 备份、恢复与运维加固
+
+发布前私有 OSS AES256 备份：
+
+```text
+object: backups/postgresql/2026/07/stock-assistant-iZn4ai1fm0tr284w21h4kmZ-20260725T155125Z.dump
+bytes: 2256212
+sha256: 2b864809911254513440685b44ab79961a00046466611250a64dae717acb5382
+restore: 76 tables / 13 migrations
+```
+
+最终发布后私有 OSS AES256 备份：
+
+```text
+object: backups/postgresql/2026/07/stock-assistant-iZn4ai1fm0tr284w21h4kmZ-20260725T160530Z.dump
+bytes: 2267209
+sha256: d02f376f9d9f880d0eee6a4a98576573cddeabe77e0bb58e61883dd3281298c9
+restore: 77 tables / 14 migrations
+```
+
+两份备份均完成 `pg_restore --list`、SHA-256 校验和真实隔离恢复。
+
+发布演练发现 `backup-postgres.sh` 的 OSS Python 模块解析曾依赖调用者先进入 `backend/`。脚本现根据自身路径确定应用后端目录，并允许显式 `APP_BACKEND` 覆盖；加固后从 `/opt/stock-assistant` 项目根目录执行，成功上传 OSS 并完成 `77/14` 隔离恢复，不再依赖运维人员的当前工作目录。
