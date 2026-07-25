@@ -8,6 +8,9 @@ umask 077
 : "${BACKUP_UPLOAD_ENABLED:=1}"
 : "${APP_VENV:=/opt/stock-assistant/venv}"
 
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+app_backend="${APP_BACKEND:-$(cd "$script_dir/../.." && pwd)/backend}"
+
 install -d -m 0700 "$BACKUP_DIR"
 exec 9>"$BACKUP_DIR/.backup.lock"
 flock -n 9 || { echo "backup already running" >&2; exit 75; }
@@ -36,8 +39,15 @@ mv -- "$partial" "$backup"
 sha256sum "$backup" >"$checksum"
 
 if [[ "$BACKUP_UPLOAD_ENABLED" == "1" ]]; then
+  [[ -d "$app_backend" ]] || {
+    echo "backup upload failed: application backend not found: $app_backend" >&2
+    exit 1
+  }
   digest="$(cut -d' ' -f1 "$checksum")"
-  "$APP_VENV/bin/python" -m backup_to_oss "$backup" --sha256 "$digest"
+  (
+    cd "$app_backend"
+    "$APP_VENV/bin/python" -m backup_to_oss "$backup" --sha256 "$digest"
+  )
 fi
 
 find "$BACKUP_DIR" -maxdepth 1 -type f \
@@ -45,4 +55,3 @@ find "$BACKUP_DIR" -maxdepth 1 -type f \
   -mtime "+$BACKUP_RETENTION_DAYS" -delete
 
 echo "backup verified: $backup"
-
