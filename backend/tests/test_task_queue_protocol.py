@@ -78,6 +78,22 @@ class TaskQueueProtocolTests(unittest.TestCase):
                 },
                 task_queue.TASK_OPPORTUNITY_SCAN,
             ),
+            (
+                {
+                    "id": "job-portfolio-quant",
+                    "job_type": "portfolio_quant_run",
+                    "queue_name": task_queue.QUEUE_MARKET,
+                },
+                task_queue.TASK_PORTFOLIO_QUANT_RUN,
+            ),
+            (
+                {
+                    "id": "job-quant-selection",
+                    "job_type": "quant_selection_run",
+                    "queue_name": task_queue.QUEUE_MARKET,
+                },
+                task_queue.TASK_QUANT_SELECTION_RUN,
+            ),
         )
         for job, expected_task in cases:
             with self.subTest(job=job["id"]):

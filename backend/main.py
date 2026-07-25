@@ -30,7 +30,16 @@ from auth import (
     auth_service,
 )
 from agent.worker import start_worker
-from routers import agent, auth, availability, funds, market, opportunities, portfolio
+from routers import (
+    agent,
+    auth,
+    availability,
+    funds,
+    market,
+    opportunities,
+    portfolio,
+    quant_selection,
+)
 from task_queue import uses_celery_queue
 from observability import observe_http_request
 from runtime_identity import api_replica_identity
@@ -179,6 +188,7 @@ app.include_router(funds.router)
 app.include_router(portfolio.router)
 app.include_router(agent.router)
 app.include_router(opportunities.router)
+app.include_router(quant_selection.router)
 
 
 @app.on_event("startup")

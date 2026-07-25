@@ -1,14 +1,16 @@
 import { lazy, Suspense } from 'react'
-import { ChartNoAxesCombined, FlaskConical, Landmark } from 'lucide-react'
+import { Boxes, ChartNoAxesCombined, FlaskConical, Landmark } from 'lucide-react'
 import WorkspaceHeader from '../components/WorkspaceHeader'
 
 const FundTab = lazy(() => import('./FundTab'))
 const MarketTab = lazy(() => import('./MarketTab'))
 const BacktestTab = lazy(() => import('./BacktestTab'))
+const QuantSelectionLab = lazy(() => import('../features/research/QuantSelectionLab'))
 
 const DOMAINS = [
   { id: 'funds', label: '基金研究', description: '筛选、研究、比较与替代', icon: Landmark },
   { id: 'market', label: '股票与板块', description: '市场主线、板块和个股证据', icon: ChartNoAxesCombined },
+  { id: 'selection', label: '量化选股', description: '历史股票池、因子组合与成交回放', icon: Boxes },
   { id: 'tools', label: '策略验证', description: '用历史数据检验信号', icon: FlaskConical },
 ]
 
@@ -66,6 +68,7 @@ export default function ResearchTab({
             goAnalyze={goAnalyze}
           />
         )}
+        {domain === 'selection' && <QuantSelectionLab />}
         {domain === 'tools' && <><WorkspaceHeader eyebrow="研究中心" title="策略验证" description="使用真实历史数据检验既有信号，不把回测结果当作未来承诺。" /><BacktestTab markets={markets} /></>}
       </Suspense>
     </div>

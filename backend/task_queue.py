@@ -27,6 +27,9 @@ TASK_OPPORTUNITY_SCAN = "stock_assistant.market.execute_opportunity_scan"
 TASK_PORTFOLIO_QUANT_RUN = (
     "stock_assistant.market.execute_portfolio_quant_run"
 )
+TASK_QUANT_SELECTION_RUN = (
+    "stock_assistant.market.execute_quant_selection_run"
+)
 TASK_LLM_TOOL = "stock_assistant.llm.execute_tool_job"
 TASK_OCR = "stock_assistant.ocr.process_job"
 TASK_OBJECT_CLEANUP = "stock_assistant.ocr.cleanup_expired_objects"
@@ -132,6 +135,7 @@ celery_app.conf.update(
         TASK_MARKET_DATA: {"queue": QUEUE_MARKET},
         TASK_OPPORTUNITY_SCAN: {"queue": QUEUE_MARKET},
         TASK_PORTFOLIO_QUANT_RUN: {"queue": QUEUE_MARKET},
+        TASK_QUANT_SELECTION_RUN: {"queue": QUEUE_MARKET},
         TASK_LLM_TOOL: {"queue": QUEUE_LLM},
         TASK_OCR: {"queue": QUEUE_OCR},
         TASK_OBJECT_CLEANUP: {"queue": QUEUE_OCR},
@@ -152,6 +156,10 @@ celery_app.conf.update(
         TASK_PORTFOLIO_QUANT_RUN: {
             "soft_time_limit": 900,
             "time_limit": 960,
+        },
+        TASK_QUANT_SELECTION_RUN: {
+            "soft_time_limit": 1800,
+            "time_limit": 1860,
         },
         TASK_LLM_TOOL: {"soft_time_limit": 150, "time_limit": 180},
         TASK_OCR: {"soft_time_limit": 120, "time_limit": 150},
@@ -287,6 +295,7 @@ def enqueue_background_job(job: dict[str, Any], repository) -> str:
         (QUEUE_MARKET, "market_data_operation"): TASK_MARKET_DATA,
         (QUEUE_MARKET, "opportunity_scan"): TASK_OPPORTUNITY_SCAN,
         (QUEUE_MARKET, "portfolio_quant_run"): TASK_PORTFOLIO_QUANT_RUN,
+        (QUEUE_MARKET, "quant_selection_run"): TASK_QUANT_SELECTION_RUN,
         (QUEUE_LLM, "tool_execution"): TASK_LLM_TOOL,
         (QUEUE_OCR, "ocr"): TASK_OCR,
     }
