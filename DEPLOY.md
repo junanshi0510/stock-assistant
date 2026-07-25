@@ -124,9 +124,16 @@ AVAILABILITY_SLO_API_REDUNDANCY=99.0
 TUSHARE_TOKEN=服务端Token
 MASSIVE_API_KEY=服务端Key
 MASSIVE_API_BASE_URL=https://api.massive.com
+# Basic/低配套餐默认避免超过约 5 次/分钟；付费套餐按合同额度调整。
+MASSIVE_MIN_REQUEST_INTERVAL_SECONDS=12.5
+MASSIVE_RATE_LIMIT_MAX_ATTEMPTS=6
+MASSIVE_MAX_RETRY_AFTER_SECONDS=90
 # 旧 Polygon Key 仍兼容；新部署优先使用 MASSIVE_API_KEY。
 POLYGON_API_KEY=
 ALPHAVANTAGE_API_KEY=服务端Key
+ALPHAVANTAGE_MIN_REQUEST_INTERVAL_SECONDS=15
+ALPHAVANTAGE_RATE_LIMIT_MAX_ATTEMPTS=2
+ALPHAVANTAGE_MAX_RETRY_AFTER_SECONDS=90
 # 留空为日终；只有订阅明确授权时才设置 delayed 或 realtime。
 ALPHAVANTAGE_MARKET_DATA_ENTITLEMENT=
 
@@ -163,7 +170,7 @@ DEEPSEEK_API_KEY=服务端Key
 
 纯 IP HTTP 阶段使用 `AUTH_COOKIE_SECURE=false`。配置域名和 HTTPS 后改为 `true` 并重启 API。任何 Key 都不能写入 Git、前端变量或命令输出。
 
-`TUSHARE_TOKEN` 必须实际拥有所用 A 股日线权限；历史时点量化选股还要求 `index_weight` 权限，并应对 `000300.SH`、`000905.SH` 或 `000852.SH` 的历史月份做一次真实权限探测。港股日线/基础资料可能需要单独开通。Massive 免费档提供最近完整日终全市场聚合，不能标记为盘中实时；默认价格/成交量门槛用于避免极低流动性标的污染榜首。Alpha Vantage 留空 entitlement 时按日终榜使用，不能把免费或日终权限标记为实时。富途路线只有在 FutuOpenD 常驻、登录有效、行情权限与 `FUTU_OPEND_MARKETS` 一致时才算配置完成；OpenD 端口只允许本机或受控内网访问，不能直接暴露公网。公开降级默认开启只用于迁移期；专业源验收稳定后可设 `HOT_STOCK_PUBLIC_FALLBACK_ENABLED=false`。修改这些变量后至少重启 `stock-assistant-market-worker`。
+`TUSHARE_TOKEN` 必须实际拥有所用 A 股日线权限；历史时点量化选股还要求 `index_weight` 权限，并应对 `000300.SH`、`000905.SH` 或 `000852.SH` 的历史月份做一次真实权限探测。港股日线/基础资料可能需要单独开通。Massive 免费档提供最近完整日终全市场聚合，不能标记为盘中实时；默认价格/成交量门槛用于避免极低流动性标的污染榜首。默认 Massive 请求间隔会让冷启动大股票池排队，这是防止 `429` 的预期行为，不能为了提速盲目调成 0；只有确认付费套餐合同额度后才可调低。请求槽位在同一 POSIX 主机的进程间共享，Massive Key 使用 Bearer Header，不进入 Query URL。Alpha Vantage 留空 entitlement 时按日终榜使用，不能把免费或日终权限标记为实时。富途路线只有在 FutuOpenD 常驻、登录有效、行情权限与 `FUTU_OPEND_MARKETS` 一致时才算配置完成；OpenD 端口只允许本机或受控内网访问，不能直接暴露公网。公开降级默认开启只用于迁移期；专业源验收稳定后可设 `HOT_STOCK_PUBLIC_FALLBACK_ENABLED=false`。修改这些变量后至少重启 `stock-assistant-market-worker`。
 
 ## 5. 初始化 PostgreSQL 与 Redis
 

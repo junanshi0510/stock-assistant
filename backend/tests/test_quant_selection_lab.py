@@ -447,11 +447,22 @@ class QuantSelectionServiceTests(unittest.TestCase):
             "rebalance_days": 21,
         }
 
-        def load_asset(_market, symbol, _months):
+        raw_requirements = []
+
+        def load_asset(
+            _market,
+            symbol,
+            _months,
+            *,
+            require_raw=True,
+        ):
+            raw_requirements.append(require_raw)
             return frames[symbol], {
                 "adjusted_source": "Polygon",
-                "raw_source": "Polygon 未复权日线",
+                "raw_source": "adjusted_price_research_fallback",
                 "raw_error": None,
+                "raw_note": "research-only pool",
+                "raw_requested": require_raw,
             }
 
         universe = [
@@ -501,6 +512,60 @@ class QuantSelectionServiceTests(unittest.TestCase):
                 > pd.Timestamp(fill["signal_date"])
                 for fill in run["result"]["fills"]
             )
+        )
+        self.assertTrue(raw_requirements)
+        self.assertTrue(all(value is False for value in raw_requirements))
+        self.assertEqual(
+            run["result"]["data_quality"][
+                "independent_raw_source_coverage_pct"
+            ],
+            0.0,
+        )
+        self.assertEqual(
+            run["result"]["data_quality"][
+                "professional_adjusted_source_coverage_pct"
+            ],
+            100.0,
+        )
+
+    def test_research_only_pool_skips_duplicate_raw_provider_call(self):
+        adjusted = pd.DataFrame(
+            {
+                "date": pd.bdate_range("2025-01-02", periods=130),
+                "open": np.linspace(10, 12, 130),
+                "high": np.linspace(10.2, 12.2, 130),
+                "low": np.linspace(9.8, 11.8, 130),
+                "close": np.linspace(10.1, 12.1, 130),
+                "volume": np.full(130, 2_000_000),
+            }
+        )
+        adjusted.attrs["source"] = "Massive"
+        with (
+            patch.object(
+                service.data_fetch,
+                "get_history_months",
+                return_value=adjusted,
+            ),
+            patch.object(
+                service.data_fetch,
+                "get_price_level_history_months",
+            ) as raw_loader,
+        ):
+            frame, evidence = service._load_asset(
+                "美股",
+                "AAPL",
+                36,
+                require_raw=False,
+            )
+
+        raw_loader.assert_not_called()
+        self.assertFalse(evidence["raw_requested"])
+        self.assertEqual(
+            evidence["raw_source"],
+            "adjusted_price_research_fallback",
+        )
+        self.assertTrue(
+            np.allclose(frame["execution_open"], frame["open"])
         )
 
     def test_freeze_requires_ready_gate_and_matching_digest(self):

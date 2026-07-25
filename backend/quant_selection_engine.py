@@ -1373,20 +1373,46 @@ def run_selection_research(
     )
     source_rows = []
     professional = 0
+    professional_adjusted = 0
+    professional_raw = 0
+    independent_raw = 0
     for symbol in candidate_symbols:
         evidence = source_evidence.get(symbol) or {}
         adjusted = str(evidence.get("adjusted_source") or "")
         raw = str(evidence.get("raw_source") or "")
-        is_professional = adjusted.startswith(
+        has_independent_raw = bool(
+            raw
+            and raw
+            not in {
+                "adjusted_price_fallback",
+                "adjusted_price_research_fallback",
+            }
+        )
+        adjusted_professional = adjusted.startswith(
             PROFESSIONAL_SOURCE_PREFIXES
-        ) and raw.startswith(PROFESSIONAL_SOURCE_PREFIXES)
+        )
+        raw_professional = (
+            has_independent_raw
+            and raw.startswith(PROFESSIONAL_SOURCE_PREFIXES)
+        )
+        is_professional = adjusted_professional and raw_professional
         professional += int(is_professional)
+        professional_adjusted += int(adjusted_professional)
+        professional_raw += int(raw_professional)
+        independent_raw += int(has_independent_raw)
         frame = normalized.get(symbol)
         source_rows.append(
             {
                 "symbol": symbol,
                 "adjusted_source": adjusted or None,
                 "raw_source": raw or None,
+                "raw_requested": bool(
+                    evidence.get("raw_requested", True)
+                ),
+                "raw_note": evidence.get("raw_note"),
+                "independent_raw_source": has_independent_raw,
+                "adjusted_source_professional": adjusted_professional,
+                "raw_source_professional": raw_professional,
                 "professional_pair": is_professional,
                 "row_count": len(frame) if frame is not None else 0,
                 "first_date": (
@@ -1410,14 +1436,42 @@ def run_selection_research(
         "professional_source_coverage_pct": round(
             professional / max(len(candidate_symbols), 1) * 100, 1
         ),
+        "professional_adjusted_source_count": professional_adjusted,
+        "professional_adjusted_source_coverage_pct": round(
+            professional_adjusted
+            / max(len(candidate_symbols), 1)
+            * 100,
+            1,
+        ),
+        "professional_raw_source_count": professional_raw,
+        "professional_raw_source_coverage_pct": round(
+            professional_raw
+            / max(len(candidate_symbols), 1)
+            * 100,
+            1,
+        ),
+        "independent_raw_source_count": independent_raw,
+        "independent_raw_source_coverage_pct": round(
+            independent_raw
+            / max(len(candidate_symbols), 1)
+            * 100,
+            1,
+        ),
         "benchmark_symbol": benchmark_symbol,
         "benchmark_source": source_evidence.get(benchmark_symbol) or {},
         "assets": source_rows,
         "price_modes": {
             "factor_signal": "供应商复权 OHLC",
             "execution": (
-                "未复权开盘价映射到复权价格尺度；成交容量使用未复权"
-                "开盘价×原始成交量"
+                (
+                    "未复权开盘价映射到复权价格尺度；成交容量使用未复权"
+                    "开盘价×原始成交量"
+                )
+                if independent_raw == len(candidate_symbols)
+                else (
+                    "缺少独立未复权日线的资产使用复权价研究回退；"
+                    "该回退会如实降低数据覆盖并阻止策略升级"
+                )
             ),
         },
     }

@@ -396,7 +396,7 @@ function EvidencePanel({ run }) {
       <div className="qsel-evidence-grid">
         <article><Database size={17} /><span><small>股票池口径</small><b>{universe.label || universe.mode}</b><em>{universe.verification_detail}</em></span></article>
         <article><History size={17} /><span><small>历史快照</small><b>{universe.snapshot_count || 0} 期 / {universe.unique_symbol_count || 0} 只</b><em>{universe.first_snapshot_date} → {universe.last_snapshot_date}</em></span></article>
-        <article><ShieldCheck size={17} /><span><small>专业双价格覆盖</small><b>{pct(quality.professional_source_coverage_pct)}</b><em>复权信号 + 未复权成交容量</em></span></article>
+        <article><ShieldCheck size={17} /><span><small>专业复权 / 独立未复权</small><b>{pct(quality.professional_adjusted_source_coverage_pct)} / {pct(quality.independent_raw_source_coverage_pct)}</b><em>双价格同时满足 {pct(quality.professional_source_coverage_pct)}</em></span></article>
         <article><Fingerprint size={17} /><span><small>结果 SHA-256</small><b><code>{shortHash(run.result_sha256)}</code></b><em>输入 <code>{shortHash(run.policy_sha256)}</code></em></span></article>
       </div>
       {universe.warning && <div className="warning">{universe.warning}</div>}
@@ -407,7 +407,7 @@ function EvidencePanel({ run }) {
           {(quality.assets || []).map((item) => (
             <article key={item.symbol} className={item.professional_pair ? 'verified' : 'degraded'}>
               <b>{item.symbol}</b>
-              <span>{item.adjusted_source || '复权源缺失'}<small>{item.raw_source || '未复权源缺失'}</small></span>
+              <span>{item.adjusted_source || '复权源缺失'}<small>{item.raw_note || item.raw_source || '未复权源缺失'}</small></span>
               <em>{item.row_count} 日 · {item.first_date} → {item.last_date}</em>
             </article>
           ))}

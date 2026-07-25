@@ -48,6 +48,7 @@ import requests
 import akshare as ak
 
 import config
+from provider_transport import alpha_vantage_get, massive_get
 
 
 class SourceUnavailable(Exception):
@@ -146,7 +147,7 @@ def _massive_us_symbol_search(keyword: str) -> pd.DataFrame:
         if str(config.MASSIVE_API_KEY or "").strip()
         else "https://api.polygon.io"
     )
-    response = requests.get(
+    response = massive_get(
         f"{base_url}/v3/reference/tickers",
         params={
             "market": "stocks",
@@ -328,9 +329,16 @@ def _src_us_polygon(symbol, start, end):
     base_url = str(config.MASSIVE_API_BASE_URL).rstrip("/") if config.MASSIVE_API_KEY else "https://api.polygon.io"
     url = (f"{base_url}/v2/aggs/ticker/{symbol.upper()}"
            f"/range/1/day/{_ymd_dash(start)}/{_ymd_dash(end)}")
-    r = requests.get(url, params={"adjusted": "true", "sort": "asc",
-                                  "limit": 50000, "apiKey": api_key},
-                     timeout=15)
+    r = massive_get(
+        url,
+        params={
+            "adjusted": "true",
+            "sort": "asc",
+            "limit": 50000,
+            "apiKey": api_key,
+        },
+        timeout=15,
+    )
     r.raise_for_status()
     js = r.json()
     results = js.get("results") or []
@@ -347,7 +355,7 @@ def _src_us_polygon(symbol, start, end):
 def _src_us_alphavantage(symbol, start, end):
     if not config.ALPHAVANTAGE_API_KEY:
         raise SourceUnavailable("未配置 ALPHAVANTAGE_API_KEY")
-    r = requests.get("https://www.alphavantage.co/query", params={
+    r = alpha_vantage_get("https://www.alphavantage.co/query", params={
         "function": "TIME_SERIES_DAILY", "symbol": symbol.upper(),
         "outputsize": "full", "apikey": config.ALPHAVANTAGE_API_KEY}, timeout=20)
     r.raise_for_status()
@@ -536,7 +544,7 @@ def _src_us_polygon_raw(symbol, start, end):
     base_url = str(config.MASSIVE_API_BASE_URL).rstrip("/") if config.MASSIVE_API_KEY else "https://api.polygon.io"
     url = (f"{base_url}/v2/aggs/ticker/{symbol.upper()}"
            f"/range/1/day/{_ymd_dash(start)}/{_ymd_dash(end)}")
-    response = requests.get(
+    response = massive_get(
         url,
         params={"adjusted": "false", "sort": "asc", "limit": 50000, "apiKey": api_key},
         timeout=15,

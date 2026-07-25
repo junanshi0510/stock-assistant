@@ -28,6 +28,7 @@ from zoneinfo import ZoneInfo
 import requests
 
 import config
+from provider_transport import alpha_vantage_get, massive_get
 import data_fetch
 
 
@@ -606,7 +607,7 @@ def _massive_grouped_day(trade_date: str, *, force_refresh: bool = False) -> lis
             cached = _massive_day_cache.get(trade_date)
         if cached and time.time() - cached[0] < 21600:
             return copy.deepcopy(cached[1])
-    response = requests.get(
+    response = massive_get(
         f"{_massive_api_base()}/v2/aggs/grouped/locale/us/market/stocks/{trade_date}",
         params={"adjusted": "true", "include_otc": "false", "apiKey": _massive_api_key()},
         timeout=_TIMEOUT,
@@ -705,7 +706,7 @@ def _massive_bundle(
 def _massive_session_dates(end_date: str, days: int) -> list[str]:
     end = dt.date.fromisoformat(end_date)
     start = end - dt.timedelta(days=max(45, days * 3))
-    response = requests.get(
+    response = massive_get(
         f"{_massive_api_base()}/v2/aggs/ticker/SPY/range/1/day/{start.isoformat()}/{end.isoformat()}",
         params={"adjusted": "true", "sort": "asc", "limit": 5000, "apiKey": _massive_api_key()},
         timeout=_TIMEOUT,
@@ -1067,7 +1068,11 @@ def _alpha_vantage_bundle(types: tuple[str, ...], limit: int) -> dict[str, Any]:
     entitlement = str(config.ALPHAVANTAGE_MARKET_DATA_ENTITLEMENT).strip().lower()
     if entitlement:
         params["entitlement"] = entitlement
-    response = requests.get(_ALPHA_VANTAGE_URL, params=params, timeout=_TIMEOUT)
+    response = alpha_vantage_get(
+        _ALPHA_VANTAGE_URL,
+        params=params,
+        timeout=_TIMEOUT,
+    )
     response.raise_for_status()
     payload = response.json()
     error_message = payload.get("Error Message") or payload.get("Information") or payload.get("Note")

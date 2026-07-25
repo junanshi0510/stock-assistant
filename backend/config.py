@@ -40,9 +40,31 @@ POLYGON_API_KEY = os.environ.get("POLYGON_API_KEY", "")
 # 旧部署的 POLYGON_API_KEY 继续兼容，避免切换供应商品牌时中断历史行情。
 MASSIVE_API_KEY = os.environ.get("MASSIVE_API_KEY", "")
 MASSIVE_API_BASE_URL = os.environ.get("MASSIVE_API_BASE_URL", "https://api.massive.com").rstrip("/")
+MASSIVE_MIN_REQUEST_INTERVAL_SECONDS = _nonnegative_float_env(
+    "MASSIVE_MIN_REQUEST_INTERVAL_SECONDS", 12.5
+)
+MASSIVE_RATE_LIMIT_MAX_ATTEMPTS = min(
+    10,
+    _positive_int_env("MASSIVE_RATE_LIMIT_MAX_ATTEMPTS", 6, 1),
+)
+MASSIVE_MAX_RETRY_AFTER_SECONDS = _nonnegative_float_env(
+    "MASSIVE_MAX_RETRY_AFTER_SECONDS", 90.0
+)
 
 # 美股 —— Alpha Vantage 的 API Key
 ALPHAVANTAGE_API_KEY = os.environ.get("ALPHAVANTAGE_API_KEY", "")
+ALPHAVANTAGE_MIN_REQUEST_INTERVAL_SECONDS = _nonnegative_float_env(
+    "ALPHAVANTAGE_MIN_REQUEST_INTERVAL_SECONDS", 15.0
+)
+ALPHAVANTAGE_RATE_LIMIT_MAX_ATTEMPTS = min(
+    5,
+    _positive_int_env(
+        "ALPHAVANTAGE_RATE_LIMIT_MAX_ATTEMPTS", 2, 1
+    ),
+)
+ALPHAVANTAGE_MAX_RETRY_AFTER_SECONDS = _nonnegative_float_env(
+    "ALPHAVANTAGE_MAX_RETRY_AFTER_SECONDS", 90.0
+)
 
 # 美股热门榜的新鲜度授权。留空时 Alpha Vantage 官方接口返回日终榜；
 # 只有订阅相应权限后才可设置 delayed 或 realtime。

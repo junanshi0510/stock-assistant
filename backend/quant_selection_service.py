@@ -751,6 +751,8 @@ def _load_asset(
     market: str,
     symbol: str,
     history_months: int,
+    *,
+    require_raw: bool = True,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     adjusted = data_fetch.get_history_months(
         market,
@@ -764,19 +766,29 @@ def _load_asset(
     raw = None
     raw_source = None
     raw_error = None
-    try:
-        raw, raw_source = data_fetch.get_price_level_history_months(
-            market,
-            symbol,
-            history_months,
+    raw_note = None
+    if require_raw:
+        try:
+            raw, raw_source = data_fetch.get_price_level_history_months(
+                market,
+                symbol,
+                history_months,
+            )
+        except Exception as error:
+            raw_error = str(error)[:300]
+            raw_source = "adjusted_price_fallback"
+    else:
+        raw_source = "adjusted_price_research_fallback"
+        raw_note = (
+            "未请求第二份未复权行情：冻结自定义股票池本身只能用于研究，"
+            "避免为不具备升级资格的实验重复消耗专业数据额度"
         )
-    except Exception as error:
-        raw_error = str(error)[:300]
-        raw_source = "adjusted_price_fallback"
     return _combine_price_modes(adjusted, raw), {
         "adjusted_source": adjusted_source,
         "raw_source": raw_source,
         "raw_error": raw_error,
+        "raw_note": raw_note,
+        "raw_requested": bool(require_raw),
         "retrieved_at": adjusted.attrs.get("retrieved_at"),
     }
 
@@ -829,67 +841,106 @@ def execute_run(
                 "stage": "market_data",
                 "completed": 0,
                 "total": len(fetch_symbols),
-                "message": "正在读取复权与未复权专业日线",
+                "message": (
+                    "正在读取专业日线；具备升级资格的股票池"
+                    "同时读取未复权执行价"
+                ),
             },
         )
         frames: dict[str, pd.DataFrame] = {}
         sources: dict[str, dict[str, Any]] = {}
         failures: list[dict[str, str]] = []
+        # A frozen current-symbol pool can never clear the point-in-time
+        # universe gate, so a second provider call for raw prices cannot
+        # change its eligibility.  Historical index mode still requires both
+        # adjusted signal data and raw execution/capacity evidence.
+        require_raw = policy["universe_mode"] == "tushare_index"
         completed = 0
-        with ThreadPoolExecutor(
-            max_workers=min(6, len(fetch_symbols))
-        ) as pool:
-            futures = {
-                pool.submit(
-                    _load_asset,
-                    policy["market"],
-                    symbol,
-                    int(policy["history_months"]),
-                ): symbol
-                for symbol in fetch_symbols
+
+        # Load the benchmark first.  Under a quota-constrained provider this
+        # prevents a concurrent candidate burst from starving the one series
+        # without which no honest relative-performance result can be built.
+        try:
+            benchmark_frame, benchmark_evidence = _load_asset(
+                policy["market"],
+                benchmark,
+                int(policy["history_months"]),
+                require_raw=require_raw,
+            )
+            frames[benchmark] = benchmark_frame
+            sources[benchmark] = benchmark_evidence
+        except Exception as error:
+            detail = str(error)[:500]
+            failures.append({"symbol": benchmark, "error": detail})
+            sources[benchmark] = {
+                "adjusted_source": None,
+                "raw_source": None,
+                "error": detail,
             }
-            for future in as_completed(futures):
-                symbol = futures[future]
-                try:
-                    frame, evidence = future.result()
-                    frames[symbol] = frame
-                    sources[symbol] = evidence
-                except Exception as error:
-                    failures.append(
-                        {
-                            "symbol": symbol,
+        completed = 1
+        repo.update_progress(
+            run_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            progress={
+                "stage": "market_data",
+                "completed": completed,
+                "total": len(fetch_symbols),
+                "message": f"已处理基准 {benchmark}",
+            },
+        )
+        if benchmark not in frames:
+            raise QuantSelectionInputError(
+                f"基准 {benchmark} 行情失败:{failures[-1]['error']}"
+            )
+
+        remaining_symbols = [
+            symbol for symbol in fetch_symbols if symbol != benchmark
+        ]
+        if remaining_symbols:
+            with ThreadPoolExecutor(
+                max_workers=min(6, len(remaining_symbols))
+            ) as pool:
+                futures = {
+                    pool.submit(
+                        _load_asset,
+                        policy["market"],
+                        symbol,
+                        int(policy["history_months"]),
+                        require_raw=require_raw,
+                    ): symbol
+                    for symbol in remaining_symbols
+                }
+                for future in as_completed(futures):
+                    symbol = futures[future]
+                    try:
+                        frame, evidence = future.result()
+                        frames[symbol] = frame
+                        sources[symbol] = evidence
+                    except Exception as error:
+                        failures.append(
+                            {
+                                "symbol": symbol,
+                                "error": str(error)[:500],
+                            }
+                        )
+                        sources[symbol] = {
+                            "adjusted_source": None,
+                            "raw_source": None,
                             "error": str(error)[:500],
                         }
+                    completed += 1
+                    repo.update_progress(
+                        run_id,
+                        tenant_id=tenant_id,
+                        user_id=user_id,
+                        progress={
+                            "stage": "market_data",
+                            "completed": completed,
+                            "total": len(fetch_symbols),
+                            "message": f"已处理 {symbol}",
+                        },
                     )
-                    sources[symbol] = {
-                        "adjusted_source": None,
-                        "raw_source": None,
-                        "error": str(error)[:500],
-                    }
-                completed += 1
-                repo.update_progress(
-                    run_id,
-                    tenant_id=tenant_id,
-                    user_id=user_id,
-                    progress={
-                        "stage": "market_data",
-                        "completed": completed,
-                        "total": len(fetch_symbols),
-                        "message": f"已处理 {symbol}",
-                    },
-                )
-        if benchmark not in frames:
-            detail = next(
-                (
-                    item["error"]
-                    for item in failures
-                    if item["symbol"] == benchmark
-                ),
-                "基准行情不可用",
-            )
-            raise QuantSelectionInputError(
-                f"基准 {benchmark} 行情失败:{detail}"
-            )
         loaded_candidates = sum(symbol in frames for symbol in symbols)
         if loaded_candidates < 4:
             raise QuantSelectionInputError(

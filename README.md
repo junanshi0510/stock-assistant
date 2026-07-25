@@ -18,6 +18,8 @@
 - 新增 7 个受认证操作、3 张租户/用户隔离业务表、持久化 `market-data` 作业、Input/Result/Event SHA-256、前序哈希事件链、PostgreSQL/SQLite 不可变保护、`quant-selection-lab.v1` 迁移和 `quant_selection_schema` readiness 门禁。当前 OpenAPI 共 `204` 个操作、`175` 条路径。
 - 后端全量回归 `573 passed`、`13 subtests passed`；前端 Vite 生产构建完成 `1857` 个模块转换，生产依赖审计 `0 vulnerabilities`。真实浏览器从 UI 完成 6 只美股、36 个月实验，生成 641 个交易日、119 笔成交、5 个非重叠样本外窗口；公开降级行情未达到专业双源门槛时正确保持“仅研究”。
 - 浏览器验收覆盖桌面端和 `390×844` 移动端，无页面级横向溢出、应用控制台 0 条告警/错误；验收还修复了预设元数据污染严格请求和 FastAPI `422 detail[]` 被显示为 `[object Object]` 的问题。
+- 生产真实任务首次暴露 Massive 低配额度被 6 路并发打出 `429`。行情传输现增加同机跨线程/跨进程配额闸门、`Retry-After` 重试和 Bearer Header 鉴权；基准日线优先获取，避免候选请求耗尽额度后让整项研究失去基准。冻结研究池不会为本就不能升级的实验重复消耗一份未复权额度，结果会分别披露“专业复权、独立未复权、专业双价格”三种覆盖率，仍由双价格门禁阻止升级。
+- 限流加固后后端全量回归增至 `577 passed`、`13 subtests passed`；前端仍完成 `1857` 个模块的生产构建，依赖审计为 `0 vulnerabilities`。生产端到端复验、发布后备份与隔离恢复结果记录在同一更新文档。
 - 完整方法、股票池边界、因子口径、撮合模型、纸面门禁、数据模型、接口和验收记录见 [`docs/updates/2026-07-25-001-point-in-time-quant-selection-lab.md`](docs/updates/2026-07-25-001-point-in-time-quant-selection-lab.md)。
 
 ### 2026-07-24：量化组合 Walk-Forward 实验与模拟调仓中枢

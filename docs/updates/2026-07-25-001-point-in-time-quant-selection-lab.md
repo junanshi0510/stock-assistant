@@ -96,6 +96,8 @@ composite_score =
 
 服务把未复权开盘映射到复权信号坐标，同时保留原始成交额作为容量事实。调仓流程固定为：
 
+冻结自定义名单天然不能通过历史成员门禁，因此不会为了一个无法升级的实验重复消耗第二份未复权专业接口额度。此时模拟器明确使用复权价研究回退，并分别披露专业复权覆盖、独立未复权覆盖和专业双价格覆盖；独立未复权覆盖不足仍会阻止策略升级。Tushare 历史指数模式具备升级可能，继续强制读取复权/未复权两套数据。
+
 ```text
 交易日 t 收盘后：
   使用 universe_snapshot <= t
@@ -216,6 +218,17 @@ full_service_ready = false
 
 任务软/硬时限为 1800/1860 秒，Worker 租约为 2100 秒。API 副本不直接执行生产行情抓取；Redis 短时不可用时，冻结输入和作业仍保留在 PostgreSQL，由现有恢复调度重新派发。
 
+Massive/Alpha Vantage 等低配套餐不能承受候选池并发突发。`provider_transport.py` 在同一主机的线程和进程之间串行认领供应商请求槽位，默认 Massive 最短间隔 12.5 秒；收到 `429` 时读取 `Retry-After` 并在上限内重试。Massive API Key 会从旧的 Query 参数移到官方支持的 Bearer Header，避免反向代理访问日志和 HTTP 异常 URL 泄露凭据。量化选股还会先获取基准，再并发提交候选；基准失败立即给出真实失败，不会生成无基准的相对收益。付费套餐可按实际合同额度调整：
+
+```text
+MASSIVE_MIN_REQUEST_INTERVAL_SECONDS
+MASSIVE_RATE_LIMIT_MAX_ATTEMPTS
+MASSIVE_MAX_RETRY_AFTER_SECONDS
+ALPHAVANTAGE_MIN_REQUEST_INTERVAL_SECONDS
+ALPHAVANTAGE_RATE_LIMIT_MAX_ATTEMPTS
+ALPHAVANTAGE_MAX_RETRY_AFTER_SECONDS
+```
+
 ## 11. API
 
 新增 7 个受认证操作：
@@ -258,8 +271,9 @@ full_service_ready = false
 
 ## 13. 本地验收
 
-- 后端全量：`573 passed`、`13 subtests passed`；
-- 新功能专项：`10 passed`；
+- 后端全量：`577 passed`、`13 subtests passed`；
+- 新功能专项：`11 passed`；
+- 配额传输、量化选股与专业榜路由联合专项：`28 passed`；
 - 前端生产构建：`1857 modules transformed`；
 - 生产依赖审计：`0 vulnerabilities`；
 - OpenAPI：`175` 条路径、`204` 个操作；本功能新增 `6` 条路径、`7` 个操作；
@@ -275,6 +289,7 @@ full_service_ready = false
 ## 14. 已知限制与下一步
 
 - Tushare 历史指数成分模式依赖 Token 积分和 `index_weight` 权限；
+- Massive Basic/低配额度下，大股票池首次冷启动会按额度排队而不是突发请求；这是正确限流，后台进度会持续保留，付费套餐应按合同额度调整最短间隔；
 - 目前没有港股和美股的专业历史指数成员序列，冻结名单只能研究；
 - 因子仍是价格/波动/流动性因子，尚未接入 point-in-time 财务报表、分析师预期和公司行动完整账本；
 - 日线撮合没有订单簿、逐笔队列、真实涨跌停封单、券商拒单、港股整手和税务批次；
