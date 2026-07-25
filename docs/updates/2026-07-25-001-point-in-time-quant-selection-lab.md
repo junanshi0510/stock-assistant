@@ -35,6 +35,7 @@
 | [CFA Institute Backtesting and Simulation](https://www.cfainstitute.org/insights/professional-learning/refresher-readings/2026/backtesting-and-simulation) | 明确披露前视、幸存者、样本外和交易成本偏差 | 不把历史显著性解释为未来收益概率 |
 | [MSCI Diversified Multiple Factor Indexes Methodology](https://www.msci.com/eqb/methodology/meth_docs/MSCI_Diversified_Multiple_Factor_With_Low_Volatility_Indexes_Methodology_May2018.pdf) | 在母股票池内组合多个相互补充的因子，并同时约束风险与可投资性 | 本项目使用固定、透明的技术与流动性因子，不声称复制 MSCI 指数 |
 | [Tushare 股票列表](https://tushare.pro/document/1?doc_id=25) 与 [指数成分权重](https://tushare.pro/document/2?doc_id=96) | 证券上市/退市状态和历史指数权重应作为 point-in-time 股票池证据 | 实际可用性取决于用户 Tushare Token 的积分与接口权限 |
+| [Massive Stocks Plans](https://massive.com/pricing?product=stocks) 与 [Custom Bars](https://massive.com/docs/rest/stocks/aggregates/custom-bars) | Basic 当前为 5 次/分钟、2 年历史；Starter 为不限 API 调用、5 年历史，复权参数由官方聚合接口提供 | 平台按低额度默认节流，不把套餐历史上限伪装成用户请求的完整区间 |
 
 ## 3. 历史时点股票池
 
@@ -300,4 +301,61 @@ ALPHAVANTAGE_MAX_RETRY_AFTER_SECONDS
 
 ## 15. 生产发布记录
 
-生产迁移、双副本发布、Worker、认证隔离、真实供应商权限、不可变触发器、备份与隔离恢复结果将在本次发布完成后补入，避免用本地结果冒充生产事实。
+### 15.1 发布与基础设施
+
+- 功能提交：`87857cd84fa7e09b3cac18439eb75a3f4dc3737e`；
+- 显式执行边界提交：`620efee911def176121d787a071a279fa6b9c6db`；
+- 专业行情配额加固提交/最终运行 release：`6d3e8e4d6b978422859efd0723f8cf19cab6d497`；
+- 以上提交均已推送 GitHub `main`，最终 release 已原子滚动发布到 `8001/8002` 两个 API 副本；
+- 两副本均返回 `ready=true`、`full_service_ready=true`、`quant_selection_schema=true`，release 一致；
+- PostgreSQL、Redis、OSS、5 类 Worker 和 Celery Beat 正常；5 个队列深度均为 0；
+- 公网 Edge、首页均为 `200`，匿名量化选股接口为 `401`；
+- OpenAPI 为 `175` 条路径、`204` 个操作；量化选股为 `6` 条路径、`7` 个操作；
+- 数据库为 `76` 张表、`13` 个迁移标记，3 个量化选股不可变触发器在线；
+- 云端发布包专项 `45 tests` 通过。
+
+发布器第一次以临时 systemd 单元运行时在任何构建和切流前被 Git `safe.directory` 拒绝，线上旧 release 未受影响。为 root 配置精确的 `/opt/stock-assistant` 安全目录后重新发布成功，没有扩大到通配目录。
+
+### 15.2 真实供应商与端到端任务
+
+首次生产冷任务揭示 Massive Basic 配额会被旧的 6 路突发请求打出 `429`，基准 SPY 因而失败。加固后用两个隔离普通账户验证同一 8 只美股冻结池：账户 A 创建任务，账户 B 验证越权读取被拒绝。
+
+| 验收项 | 生产结果 |
+| --- | --- |
+| 冷启动 / Worker 缓存复跑 | 约 107 秒 / 约 6 秒 |
+| 候选加载 | 8/8；每只 501 根 Massive/Polygon 复权日线 |
+| 专业复权 / 独立未复权 / 专业双价格覆盖 | 100% / 0% / 0% |
+| 组合交易日 / 撮合 | 375 日 / 86 笔 |
+| 非重叠样本外窗口 / Rank IC | 3 段 / 17 次观察 |
+| 结果与事件链 | Input、Result、3 个 Event 全部校验通过 |
+| 跨用户读取 | `404` |
+| 未过门禁冻结 shadow mandate | `409` |
+| 数据库篡改 | policy、完成 result、event delete 共 3 类全部拒绝 |
+| 自动交易边界 | `execution_authorized=false`、`broker_connected=false`、`quantity_generated=false` |
+| 账户清理 | 2 个临时账户全部停用，活跃会话 0，认证审计链 111 个事件通过 |
+
+终态是预期的 `partial + research_only`，不是行情失败：`fetch_failures=[]`，`partial` 来自冻结当前名单的幸存者偏差警告。现有生产 Key 返回约 2 年/501 根日线，与 Massive 当前 Basic 的官方边界一致；扣除 126 日因子回看后只能形成 3 个 126 日窗口，未达到 4 窗口门禁。系统没有降低门槛或把不足历史包装成通过。若要让美股模式具备达到该门禁的基础，当前官方 Starter 为 5 年历史、Unlimited API Calls；这仍不保证 Rank IC、超额、回撤和容量等其余门禁通过。
+
+生产 Tushare Token 已配置，但实际 `index_weight` 权限探测返回无访问权限。因此 A 股历史指数成分模式目前会明确失败；用户需要在 Tushare 账户开通该接口权限后再复验，不能用当前成分替代。
+
+### 15.3 备份与恢复
+
+发布前私有 OSS AES256 备份：
+
+```text
+object: backups/postgresql/2026/07/stock-assistant-iZn4ai1fm0tr284w21h4kmZ-20260725T132448Z.dump
+bytes: 2144590
+sha256: 53bdafece45298c6d79ec0966db834770ea9447e0b02d1a136c01566db9d8af8
+restore: 73 tables / 12 migrations
+```
+
+发布后私有 OSS AES256 备份：
+
+```text
+object: backups/postgresql/2026/07/stock-assistant-iZn4ai1fm0tr284w21h4kmZ-20260725T141827Z.dump
+bytes: 2240591
+sha256: 0db20f4b88ce293208b4c948d331a7dc13f825a062c0d21ce866e6276ba4bf80
+restore: 76 tables / 13 migrations
+```
+
+两份备份均完成 SHA-256 校验；发布后备份已真实恢复到隔离数据库并核对表数与迁移标记。
