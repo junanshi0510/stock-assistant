@@ -1469,6 +1469,9 @@ def run_selection_research(
         "orders": base["orders"],
         "fills": base["fills"],
         "promotion_gate": promotion,
+        "execution_authorized": False,
+        "broker_connected": False,
+        "quantity_generated": False,
         "methodology": {
             "universe": (
                 "每个信号日只使用该日已生效的冻结股票池快照；"

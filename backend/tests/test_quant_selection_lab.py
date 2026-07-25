@@ -186,6 +186,9 @@ class QuantSelectionEngineTests(unittest.TestCase):
                 for fill in result["fills"]
             )
         )
+        self.assertFalse(result["execution_authorized"])
+        self.assertFalse(result["broker_connected"])
+        self.assertFalse(result["quantity_generated"])
 
     def test_future_prices_cannot_change_first_signal(self):
         frames, members, dates = synthetic_market()
