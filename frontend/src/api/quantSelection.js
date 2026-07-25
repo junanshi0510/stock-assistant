@@ -26,3 +26,24 @@ export function createQuantSelectionShadowMandate(runId, expectedResultSha256) {
     }),
   })
 }
+
+export function fetchQuantSelectionForwardValidations(limit = 100) {
+  return getJson(`/api/v1/quant-selection/forward-validations?limit=${encodeURIComponent(limit)}`)
+}
+
+export function createQuantSelectionForwardValidation(mandateId, expectedSnapshotSha256) {
+  return getJson(`/api/v1/quant-selection/shadow-mandates/${encodeURIComponent(mandateId)}/forward-validations`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      acknowledged: true,
+      expected_snapshot_sha256: expectedSnapshotSha256,
+    }),
+  })
+}
+
+export function observeQuantSelectionForwardValidation(validationId) {
+  return getJson(`/api/v1/quant-selection/forward-validations/${encodeURIComponent(validationId)}/observations`, {
+    method: 'POST',
+  })
+}

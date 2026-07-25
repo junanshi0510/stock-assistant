@@ -139,6 +139,7 @@ def _database_readiness() -> dict[str, Any]:
                         "quant_selection_runs",
                         "quant_selection_run_events",
                         "quant_selection_shadow_mandates",
+                        "quant_selection_forward_validations",
                     )
                 )
                 if database_dialect(connection) == "postgresql"

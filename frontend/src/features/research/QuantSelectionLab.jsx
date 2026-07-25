@@ -3,9 +3,11 @@ import {
   Activity,
   AlertTriangle,
   BarChart3,
+  CalendarClock,
   CheckCircle2,
   Database,
   Fingerprint,
+  FlaskConical,
   Gauge,
   History,
   LineChart,
@@ -16,14 +18,18 @@ import {
   SlidersHorizontal,
   Target,
   TrendingUp,
+  UsersRound,
   WalletCards,
   XCircle,
 } from 'lucide-react'
 import {
+  createQuantSelectionForwardValidation,
   createQuantSelectionRun,
   createQuantSelectionShadowMandate,
+  fetchQuantSelectionForwardValidations,
   fetchQuantSelectionOverview,
   fetchQuantSelectionRun,
+  observeQuantSelectionForwardValidation,
 } from '../../api/quantSelection'
 
 const DEFAULT_FORM = {
@@ -77,6 +83,13 @@ const RUN_STATUS = {
   partial: ['部分完成', 'warning'],
   failed: ['实验失败', 'danger'],
   cancelled: ['实验取消', 'danger'],
+}
+
+const FORWARD_STATE = {
+  awaiting_observation: ['等待首轮观察', 'waiting'],
+  awaiting_entry: ['等待下一开盘', 'warning'],
+  collecting: ['积累前向批次', 'running'],
+  complete: ['60 日观察完成', 'verified'],
 }
 
 const FACTOR_LABELS = {
@@ -417,7 +430,80 @@ function EvidencePanel({ run }) {
   )
 }
 
-function ResultView({ run, mandate, onFreeze, freezeBusy, acknowledged, setAcknowledged }) {
+function ForwardValidationPanel({ validation, busy, onObserve }) {
+  if (!validation) return null
+  const [stateLabel, stateTone] = FORWARD_STATE[validation.observation_state] || ['状态待核验', 'warning']
+  const scorecard = validation.scorecard || {}
+  const policy = scorecard.policy?.values || {}
+  const capitalGate = scorecard.capital_gate || {}
+  const latest = validation.latest_observation || {}
+  const latestHorizons = Object.fromEntries((latest.horizons || []).map((item) => [Number(item.trading_days), item]))
+  const aggregateHorizons = Object.fromEntries((scorecard.horizons || []).map((item) => [Number(item.horizon_trading_days), item]))
+  const primary = aggregateHorizons[20] || {}
+  const entryRules = validation.entry?.rules || {}
+  const gateLabel = {
+    empty: '尚无批次',
+    collecting: '证据积累中',
+    watch: '继续观察',
+    suspended: '策略暂停',
+    limited_manual_pilot: '受限人工试运行',
+  }[capitalGate.status] || capitalGate.status || '尚未计算'
+
+  return (
+    <section className="qsel-section qsel-forward">
+      <div className="qsel-section-head">
+        <div><span className="eyebrow">Causal forward validation</span><h3><FlaskConical size={18} />量化策略前向验证中枢</h3></div>
+        <span className={`qsel-state ${stateTone}`}><CalendarClock size={13} />{stateLabel}</span>
+      </div>
+
+      <div className="qsel-forward-kpis">
+        <article><CalendarClock size={17} /><span><small>最早建仓规则</small><b>{entryRules.entry_after_date ? `${entryRules.entry_after_date} 之后首个开盘` : '冻结后下一真实开盘'}</b><em>同日成交禁止 · 历史补填禁止</em></span></article>
+        <article><BarChart3 size={17} /><span><small>20 日独立成熟批次</small><b>{primary.mature_count || 0} / {policy.minimum_mature_baskets || 6}</b><em>重叠批次排除 {primary.overlap_excluded_count || 0} 份</em></span></article>
+        <article><WalletCards size={17} /><span><small>冻结往返成本压力</small><b>{ratio(policy.round_trip_cost_bps, 1)} bps</b><em>策略与基准从同一入场会话计算</em></span></article>
+        <article><UsersRound size={17} /><span><small>资金 / 委员会门禁</small><b>{gateLabel}</b><em>{validation.committee_ready ? '当前记分卡已具备委员会证据' : '不会生成订单或自动连接券商'}</em></span></article>
+      </div>
+
+      <div className="qsel-forward-horizons">
+        {[5, 20, 60].map((horizon) => {
+          const live = latestHorizons[horizon] || {}
+          const aggregate = aggregateHorizons[horizon] || {}
+          const complete = Boolean(live.complete)
+          return (
+            <article className={complete ? 'complete' : 'pending'} key={horizon}>
+              <div><b>{horizon} 交易日</b><span className={`qsel-mini-state ${complete ? 'passed' : 'warning'}`}>{complete ? '已精确结算' : '等待成熟'}</span></div>
+              <strong>{complete ? pct(live.net_excess_return_pct, 3, true) : `${live.covered_position_weight_pct || 0}% 覆盖`}</strong>
+              <small>本批成本后超额 · 历史独立成熟 {aggregate.mature_count || 0} 份</small>
+              <em>平均超额 {pct(aggregate.mean_net_excess_return_pct, 3, true)} · 胜基准 {pct(aggregate.positive_excess_rate_pct, 1)}</em>
+            </article>
+          )
+        })}
+      </div>
+
+      <div className="qsel-forward-action">
+        <span><b>{validation.next_action}</b><small>系统每小时自动观察；相同行情截面幂等去重，离开页面后任务仍会继续。</small></span>
+        <button type="button" disabled={busy} onClick={onObserve}>
+          {busy ? <Activity size={14} /> : <RefreshCw size={14} />}
+          {busy ? '正在派发' : '立即刷新前向结果'}
+        </button>
+      </div>
+      <p className="qsel-forward-boundary"><ShieldCheck size={14} />冻结前已知价格不会进入前向收益；只有 6 个独立 20 日批次、成本后超额、命中率、回撤与多重检验同时通过，才可能进入受限人工试运行评审。</p>
+    </section>
+  )
+}
+
+function ResultView({
+  run,
+  mandate,
+  validation,
+  onFreeze,
+  onEnroll,
+  onObserve,
+  freezeBusy,
+  forwardBusy,
+  observeBusy,
+  acknowledged,
+  setAcknowledged,
+}) {
   const result = run?.result
   if (!run) return (
     <section className="qsel-empty">
@@ -485,7 +571,15 @@ function ResultView({ run, mandate, onFreeze, freezeBusy, acknowledged, setAckno
           <span><b>冻结前向纸面策略</b><small>只保存最新目标、实验摘要和执行规则，不连接券商、不自动下单。</small></span>
         </div>
         {mandate ? (
-          <span className="qsel-shadow-created"><CheckCircle2 size={16} />已冻结 · {dateTime(mandate.created_at)}</span>
+          <div>
+            <span className="qsel-shadow-created"><CheckCircle2 size={16} />已冻结 · {dateTime(mandate.created_at)}</span>
+            {!validation && (
+              <button type="button" disabled={forwardBusy} onClick={onEnroll}>
+                {forwardBusy ? <Activity size={15} /> : <FlaskConical size={15} />}
+                {forwardBusy ? '正在接入' : '接入 5/20/60 日前向验证'}
+              </button>
+            )}
+          </div>
         ) : (
           <div>
             <label><input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} />我理解历史结果不保证未来收益，本策略仅用于前向纸面验证。</label>
@@ -497,6 +591,7 @@ function ResultView({ run, mandate, onFreeze, freezeBusy, acknowledged, setAckno
         )}
       </section>
 
+      <ForwardValidationPanel validation={validation} busy={observeBusy} onObserve={onObserve} />
       <EvidencePanel run={run} />
       <div className="warning qsel-limitations">
         <b>模型边界</b>
@@ -508,6 +603,7 @@ function ResultView({ run, mandate, onFreeze, freezeBusy, acknowledged, setAckno
 
 export default function QuantSelectionLab() {
   const [overview, setOverview] = useState(null)
+  const [forwardOverview, setForwardOverview] = useState(null)
   const [form, setForm] = useState(DEFAULT_FORM)
   const [symbols, setSymbols] = useState(SAMPLE_SYMBOLS.A股)
   const [selectedRunId, setSelectedRunId] = useState(null)
@@ -515,13 +611,20 @@ export default function QuantSelectionLab() {
   const [loading, setLoading] = useState(true)
   const [runBusy, setRunBusy] = useState(false)
   const [freezeBusy, setFreezeBusy] = useState(false)
+  const [forwardBusy, setForwardBusy] = useState(false)
+  const [observeBusy, setObserveBusy] = useState(false)
   const [acknowledged, setAcknowledged] = useState(false)
   const [error, setError] = useState('')
+  const [message, setMessage] = useState('')
   const [showAdvanced, setShowAdvanced] = useState(false)
 
   const refreshOverview = useCallback(async () => {
-    const result = await fetchQuantSelectionOverview()
+    const [result, forward] = await Promise.all([
+      fetchQuantSelectionOverview(),
+      fetchQuantSelectionForwardValidations(),
+    ])
     setOverview(result)
+    setForwardOverview(forward)
     setSelectedRunId((current) => current || result.runs?.[0]?.id || null)
     return result
   }, [])
@@ -573,6 +676,7 @@ export default function QuantSelectionLab() {
 
   const mandates = overview?.shadow_mandates || []
   const mandate = mandates.find((item) => item.run_id === run?.id) || null
+  const validation = (forwardOverview?.items || []).find((item) => item.quant_mandate_id === mandate?.id) || null
   const manualSymbols = useMemo(() => parseSymbols(symbols), [symbols])
 
   function update(key, value) {
@@ -616,7 +720,7 @@ export default function QuantSelectionLab() {
       symbols: form.universe_mode === 'frozen_symbols' ? manualSymbols : [],
       benchmark_symbol: form.benchmark_symbol || null,
     }
-    setRunBusy(true); setError(''); setAcknowledged(false)
+    setRunBusy(true); setError(''); setMessage(''); setAcknowledged(false)
     try {
       const created = await createQuantSelectionRun(payload)
       setRun(created)
@@ -631,14 +735,48 @@ export default function QuantSelectionLab() {
 
   async function freezeShadow() {
     if (!run?.result_sha256) return
-    setFreezeBusy(true); setError('')
+    setFreezeBusy(true); setError(''); setMessage('')
     try {
-      await createQuantSelectionShadowMandate(run.id, run.result_sha256)
+      const response = await createQuantSelectionShadowMandate(run.id, run.result_sha256)
+      const frozen = response.item
+      await createQuantSelectionForwardValidation(frozen.id, frozen.snapshot_sha256)
+      setMessage('纸面指令已冻结，并已接入无前视污染的 5/20/60 交易日前向验证。')
       await refreshOverview()
     } catch (requestError) {
       setError(requestError.message)
     } finally {
       setFreezeBusy(false)
+    }
+  }
+
+  async function enrollForward() {
+    if (!mandate?.id || !mandate?.snapshot_sha256) return
+    setForwardBusy(true); setError(''); setMessage('')
+    try {
+      await createQuantSelectionForwardValidation(mandate.id, mandate.snapshot_sha256)
+      setMessage('量化纸面指令已接入前向证据链；系统将等待冻结后的下一真实交易日开盘。')
+      await refreshOverview()
+    } catch (requestError) {
+      setError(requestError.message)
+    } finally {
+      setForwardBusy(false)
+    }
+  }
+
+  async function observeForward() {
+    if (!validation?.id) return
+    setObserveBusy(true); setError(''); setMessage('')
+    try {
+      const response = await observeQuantSelectionForwardValidation(validation.id)
+      setMessage(response.created === false ? '本小时的前向观察任务已存在，无需重复派发。' : '前向观察已进入持久化行情队列，离开页面后仍会继续。')
+      await refreshOverview()
+      globalThis.setTimeout(() => {
+        refreshOverview().catch((requestError) => setError(requestError.message))
+      }, 3000)
+    } catch (requestError) {
+      setError(requestError.message)
+    } finally {
+      setObserveBusy(false)
     }
   }
 
@@ -657,6 +795,7 @@ export default function QuantSelectionLab() {
       <Workflow />
 
       {error && <div className="error"><AlertTriangle size={16} />{error}</div>}
+      {message && <div className="qsel-message"><CheckCircle2 size={16} />{message}</div>}
 
       <div className="qsel-layout">
         <aside className="qsel-builder">
@@ -756,7 +895,19 @@ export default function QuantSelectionLab() {
             </div>
             {selectedRunId && <button type="button" className="icon-button ghost" onClick={async () => { try { setRun(await fetchQuantSelectionRun(selectedRunId)) } catch (requestError) { setError(requestError.message) } }} aria-label="刷新实验"><RefreshCw size={15} /></button>}
           </nav>
-          <ResultView run={run} mandate={mandate} onFreeze={freezeShadow} freezeBusy={freezeBusy} acknowledged={acknowledged} setAcknowledged={setAcknowledged} />
+          <ResultView
+            run={run}
+            mandate={mandate}
+            validation={validation}
+            onFreeze={freezeShadow}
+            onEnroll={enrollForward}
+            onObserve={observeForward}
+            freezeBusy={freezeBusy}
+            forwardBusy={forwardBusy}
+            observeBusy={observeBusy}
+            acknowledged={acknowledged}
+            setAcknowledged={setAcknowledged}
+          />
         </main>
       </div>
     </div>

@@ -15,6 +15,11 @@ from quant_selection_repository import (
     QuantSelectionNotFoundError,
     repository,
 )
+from quant_selection_forward_repository import (
+    QuantSelectionForwardConflictError,
+    QuantSelectionForwardNotFoundError,
+)
+import quant_selection_forward_service
 import quant_selection_service
 from task_queue import TaskQueueUnavailableError
 
@@ -159,6 +164,15 @@ class QuantSelectionShadowRequest(BaseModel):
     expected_result_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class QuantSelectionForwardRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    acknowledged: bool
+    expected_snapshot_sha256: str = Field(
+        pattern=r"^[0-9a-f]{64}$"
+    )
+
+
 @router.get("/overview")
 def get_quant_selection_overview(
     limit: int = Query(default=30, ge=1, le=100),
@@ -196,6 +210,14 @@ def create_quant_selection_run(
         raise HTTPException(status_code=409, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "量化前向验证接入失败:"
+                f"{sanitize_worker_error(error)}"
+            ),
+        ) from error
     except TaskQueueUnavailableError as error:
         raise HTTPException(
             status_code=503,
@@ -298,3 +320,91 @@ def get_quant_selection_shadow_mandate(
     if item is None:
         raise HTTPException(status_code=404, detail="前向纸面策略不存在")
     return item
+
+
+@router.get("/forward-validations")
+def list_quant_selection_forward_validations(
+    limit: int = Query(default=100, ge=1, le=200),
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        return quant_selection_forward_service.forward_overview(
+            tenant_id=_tenant_id(principal),
+            user_id=_subject_id(principal),
+            limit=limit,
+        )
+    except Exception as error:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "量化前向验证读取失败:"
+                f"{sanitize_worker_error(error)}"
+            ),
+        ) from error
+
+
+@router.post(
+    "/shadow-mandates/{mandate_id}/forward-validations",
+    status_code=status.HTTP_201_CREATED,
+)
+def create_quant_selection_forward_validation(
+    mandate_id: str,
+    request: QuantSelectionForwardRequest,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        item, created = (
+            quant_selection_forward_service.enroll_validation(
+                mandate_id,
+                acknowledged=request.acknowledged,
+                expected_snapshot_sha256=(
+                    request.expected_snapshot_sha256
+                ),
+                tenant_id=_tenant_id(principal),
+                user_id=_subject_id(principal),
+                actor_id=_actor_id(principal),
+            )
+        )
+        return {"item": item, "created": created}
+    except QuantSelectionForwardNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except QuantSelectionForwardConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.post(
+    "/forward-validations/{validation_id}/observations",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def observe_quant_selection_forward_validation(
+    validation_id: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        return quant_selection_forward_service.request_observation(
+            validation_id,
+            tenant_id=_tenant_id(principal),
+            user_id=_subject_id(principal),
+        )
+    except QuantSelectionForwardNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except QuantSelectionForwardConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except TaskQueueUnavailableError as error:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "量化前向观察队列暂不可用:"
+                f"{sanitize_worker_error(error)}"
+            ),
+        ) from error
+    except Exception as error:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "量化前向观察失败:"
+                f"{sanitize_worker_error(error)}"
+            ),
+        ) from error

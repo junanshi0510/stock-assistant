@@ -1115,7 +1115,27 @@ def observe_paper_basket(
         raise OpportunityNotFoundError("纸面组合不存在")
     if not basket.get("snapshot_verified"):
         raise OpportunityConflictError("纸面组合快照完整性校验失败")
-    positions = basket["snapshot"].get("positions") or []
+    snapshot = basket["snapshot"]
+    positions = snapshot.get("positions") or []
+    configured_cost = snapshot.get(
+        "round_trip_cost_scenario_bps",
+        PAPER_COST_SCENARIO_BPS,
+    )
+    try:
+        round_trip_cost_bps = min(
+            500.0, max(0.0, float(configured_cost))
+        )
+    except (TypeError, ValueError):
+        round_trip_cost_bps = PAPER_COST_SCENARIO_BPS
+    benchmark_catalog = {
+        **PAPER_BENCHMARKS,
+        **{
+            str(market): dict(value or {})
+            for market, value in (
+                snapshot.get("benchmarks") or {}
+            ).items()
+        },
+    }
     loader = history_loader or data_fetch.get_history_months
 
     def normalized_history(market: str, symbol: str, entry_date: str) -> pd.DataFrame:
@@ -1130,6 +1150,10 @@ def observe_paper_basket(
             raise ValueError("真实历史行情为空")
         frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
         frame["close"] = pd.to_numeric(frame["close"], errors="coerce")
+        if "open" in frame.columns:
+            frame["open"] = pd.to_numeric(
+                frame["open"], errors="coerce"
+            )
         frame = frame.dropna(subset=["date", "close"]).sort_values("date")
         if frame.empty:
             raise ValueError("真实历史行情缺少有效日期或收盘价")
@@ -1137,20 +1161,72 @@ def observe_paper_basket(
 
     def observe(position: dict[str, Any]) -> dict[str, Any]:
         try:
-            entry_date = str(position.get("entry_date") or "")[:10]
-            frame = normalized_history(
-                str(position["market"]), str(position["symbol"]), entry_date
+            entry_timing = str(
+                position.get("entry_timing") or "frozen_price"
             )
-            entry_timestamp = pd.Timestamp(entry_date)
+            entry_anchor = str(
+                position.get("entry_after_date")
+                or position.get("entry_date")
+                or ""
+            )[:10]
+            frame = normalized_history(
+                str(position["market"]),
+                str(position["symbol"]),
+                entry_anchor,
+            )
+            if entry_timing == "next_trading_day_open":
+                anchor_timestamp = pd.Timestamp(entry_anchor)
+                entry_rows = frame[
+                    frame["date"] > anchor_timestamp
+                ].reset_index(drop=True)
+                if entry_rows.empty:
+                    return {
+                        "market": position["market"],
+                        "symbol": position["symbol"],
+                        "name": position.get("name"),
+                        "weight_pct": position.get("weight_pct"),
+                        "entry_timing": entry_timing,
+                        "entry_after_date": entry_anchor,
+                        "status": "pending_entry",
+                        "reason": (
+                            "冻结后的下一真实交易日开盘价尚未形成"
+                        ),
+                        "source": str(
+                            frame.attrs.get("source")
+                            or "source_not_exposed"
+                        ),
+                    }
+                entry_row = entry_rows.iloc[0]
+                entry_date = pd.Timestamp(
+                    entry_row["date"]
+                ).strftime("%Y-%m-%d")
+                entry = float(entry_row.get("open"))
+                if not math.isfinite(entry) or entry <= 0:
+                    raise ValueError(
+                        "冻结后的下一交易日缺少有效复权开盘价"
+                    )
+                entry_timestamp = pd.Timestamp(entry_date)
+                future_rows = frame[
+                    frame["date"] >= entry_timestamp
+                ].reset_index(drop=True)
+                entry_price_source = (
+                    "first_adjusted_open_strictly_after_freeze"
+                )
+            else:
+                entry_date = str(
+                    position.get("entry_date") or ""
+                )[:10]
+                entry_timestamp = pd.Timestamp(entry_date)
+                entry = float(position["entry_price"])
+                future_rows = frame[
+                    frame["date"] > entry_timestamp
+                ].reset_index(drop=True)
+                entry_price_source = "frozen_snapshot_price"
             current = frame.iloc[-1]
             current_price = float(current["close"])
             current_date = pd.Timestamp(current["date"]).strftime("%Y-%m-%d")
-            entry = float(position["entry_price"])
             return_pct = (current_price / entry - 1) * 100 if entry else None
             weight = float(position["weight_pct"])
-            future_rows = frame[frame["date"] > entry_timestamp].reset_index(
-                drop=True
-            )
             elapsed = len(future_rows)
             horizon_returns: dict[str, dict[str, Any]] = {}
             for horizon in PAPER_VALIDATION_HORIZONS:
@@ -1205,7 +1281,10 @@ def observe_paper_basket(
                 "name": position.get("name"),
                 "weight_pct": weight,
                 "entry_price": entry,
-                "entry_date": position.get("entry_date"),
+                "entry_date": entry_date,
+                "entry_timing": entry_timing,
+                "entry_after_date": entry_anchor,
+                "entry_price_source": entry_price_source,
                 "current_price": round(current_price, 4),
                 "current_date": current_date,
                 "trading_days_elapsed": elapsed,
@@ -1221,6 +1300,8 @@ def observe_paper_basket(
                 "symbol": position["symbol"],
                 "name": position.get("name"),
                 "weight_pct": position.get("weight_pct"),
+                "entry_timing": position.get("entry_timing"),
+                "entry_after_date": position.get("entry_after_date"),
                 "status": "unavailable",
                 "error": str(error)[:300],
             }
@@ -1229,14 +1310,19 @@ def observe_paper_basket(
         {
             str(position.get("market") or "")
             for position in positions
-            if str(position.get("market") or "") in PAPER_BENCHMARKS
+            if str(position.get("market") or "")
+            in benchmark_catalog
         }
     )
 
     def load_benchmark(market: str) -> tuple[str, dict[str, Any]]:
-        benchmark = PAPER_BENCHMARKS[market]
+        benchmark = benchmark_catalog[market]
         entry_dates = [
-            str(item.get("entry_date") or "")[:10]
+            str(
+                item.get("entry_after_date")
+                or item.get("entry_date")
+                or ""
+            )[:10]
             for item in positions
             if item.get("market") == market
         ]
@@ -1282,7 +1368,10 @@ def observe_paper_basket(
             continue
         entry_timestamp = pd.Timestamp(str(item.get("entry_date") or "")[:10])
         current_timestamp = pd.Timestamp(str(item.get("current_date") or "")[:10])
-        baseline_rows = frame[frame["date"] <= entry_timestamp]
+        if item.get("entry_timing") == "next_trading_day_open":
+            baseline_rows = frame[frame["date"] == entry_timestamp]
+        else:
+            baseline_rows = frame[frame["date"] <= entry_timestamp]
         current_rows = frame[frame["date"] <= current_timestamp]
         if baseline_rows.empty or current_rows.empty:
             item["benchmark"] = {
@@ -1293,7 +1382,31 @@ def observe_paper_basket(
             continue
         baseline = baseline_rows.iloc[-1]
         current = current_rows.iloc[-1]
-        baseline_price = float(baseline["close"])
+        if item.get("entry_timing") == "next_trading_day_open":
+            baseline_price = float(baseline.get("open"))
+            if not math.isfinite(baseline_price) or baseline_price <= 0:
+                item["benchmark"] = {
+                    **{
+                        key: value
+                        for key, value in benchmark.items()
+                        if key != "frame"
+                    },
+                    "status": "unavailable",
+                    "error": (
+                        "基准缺少与纸面组合同一交易日的有效复权开盘价"
+                    ),
+                }
+                continue
+            benchmark_future = frame[
+                frame["date"] >= pd.Timestamp(baseline["date"])
+            ].reset_index(drop=True)
+            baseline_source = "same_session_adjusted_open"
+        else:
+            baseline_price = float(baseline["close"])
+            benchmark_future = frame[
+                frame["date"] > pd.Timestamp(baseline["date"])
+            ].reset_index(drop=True)
+            baseline_source = "latest_close_on_or_before_entry"
         current_price = float(current["close"])
         benchmark_return = (
             (current_price / baseline_price - 1) * 100 if baseline_price else None
@@ -1310,6 +1423,7 @@ def observe_paper_basket(
             "name": benchmark["name"],
             "entry_date": pd.Timestamp(baseline["date"]).strftime("%Y-%m-%d"),
             "entry_price": round(baseline_price, 4),
+            "entry_price_source": baseline_source,
             "current_date": pd.Timestamp(current["date"]).strftime("%Y-%m-%d"),
             "current_price": round(current_price, 4),
             "return_pct": round(benchmark_return, 3),
@@ -1320,9 +1434,6 @@ def observe_paper_basket(
         benchmark_coverage += weight
         benchmark_contribution += contribution or 0.0
 
-        benchmark_future = frame[
-            frame["date"] > pd.Timestamp(baseline["date"])
-        ].reset_index(drop=True)
         for horizon in PAPER_VALIDATION_HORIZONS:
             position_horizon = (item.get("horizon_returns") or {}).get(
                 str(horizon)
@@ -1363,7 +1474,7 @@ def observe_paper_basket(
     coverage_weight = sum(float(item["weight_pct"]) for item in available)
     invested_weight = sum(float(item.get("weight_pct") or 0) for item in positions)
     weighted_return = sum(float(item["contribution_pct"]) for item in available)
-    cost_drag = invested_weight / 100 * PAPER_COST_SCENARIO_BPS / 100
+    cost_drag = invested_weight / 100 * round_trip_cost_bps / 100
     net_return = weighted_return - cost_drag
     net_excess = net_return - benchmark_contribution
     elapsed_values = [
@@ -1402,7 +1513,7 @@ def observe_paper_basket(
                     benchmark_metric.get("contribution_pct") or 0
                 )
         horizon_cost_drag = (
-            invested_weight / 100 * PAPER_COST_SCENARIO_BPS / 100
+            invested_weight / 100 * round_trip_cost_bps / 100
         )
         exact_complete = bool(
             position_coverage >= 90
@@ -1423,7 +1534,7 @@ def observe_paper_basket(
                 "gross_weighted_return_pct": round(
                     gross_horizon_return, 3
                 ),
-                "round_trip_cost_scenario_bps": PAPER_COST_SCENARIO_BPS,
+                "round_trip_cost_scenario_bps": round_trip_cost_bps,
                 "cost_drag_pct": round(horizon_cost_drag, 3),
                 "net_return_after_cost_pct": round(
                     gross_horizon_return - horizon_cost_drag, 3
@@ -1466,6 +1577,8 @@ def observe_paper_basket(
                     "symbol": item.get("symbol"),
                     "current_date": item.get("current_date"),
                     "current_price": item.get("current_price"),
+                    "entry_date": item.get("entry_date"),
+                    "entry_price": item.get("entry_price"),
                     "benchmark_date": (item.get("benchmark") or {}).get(
                         "current_date"
                     ),
@@ -1513,7 +1626,7 @@ def observe_paper_basket(
         ),
         "gross_weighted_return_pct": round(weighted_return, 3),
         "weighted_return_pct": round(weighted_return, 3),
-        "round_trip_cost_scenario_bps": PAPER_COST_SCENARIO_BPS,
+        "round_trip_cost_scenario_bps": round_trip_cost_bps,
         "cost_drag_pct": round(cost_drag, 3),
         "net_return_after_cost_pct": round(net_return, 3),
         "benchmark_return_pct": round(benchmark_contribution, 3),
@@ -1521,7 +1634,7 @@ def observe_paper_basket(
         "covered_position_weight_pct": round(coverage_weight, 2),
         "benchmark_coverage_weight_pct": round(benchmark_coverage, 2),
         "invested_weight_pct": round(invested_weight, 2),
-        "cash_pct": basket["snapshot"].get("cash_pct"),
+        "cash_pct": snapshot.get("cash_pct"),
         "observed_trading_days_min": elapsed_min,
         "observed_trading_days_max": elapsed_max,
         "horizons": horizon_status,
@@ -1533,15 +1646,34 @@ def observe_paper_basket(
             {key: value for key, value in item.items() if key != "frame"}
             for item in benchmarks.values()
         ],
-        "failed_count": len(observations) - len(available),
+        "failed_count": sum(
+            item.get("status") == "unavailable"
+            for item in observations
+        ),
+        "pending_entry_count": sum(
+            item.get("status") == "pending_entry"
+            for item in observations
+        ),
+        "entry_timing": (
+            "next_trading_day_open_after_freeze"
+            if any(
+                item.get("entry_timing") == "next_trading_day_open"
+                for item in positions
+            )
+            else "frozen_snapshot_price"
+        ),
         "method": (
-            "各标的按冻结后第 5/20/60 个真实交易日取本币复权收盘价并乘冻结权重；"
+            "动态入场组合只取冻结后下一真实交易日复权开盘价，禁止回填冻结前已知价格；"
+            "各标的按入场起第 5/20/60 个真实交易日取本币复权收盘价并乘冻结权重；"
             "市场基准从同一冻结基线按相同交易日序号计算；成本后结果扣除冻结投入仓位"
             "的往返成本情景，现金按 0 处理"
         ),
         "limitations": [
             "跨市场收益仍是各本币收益加权近似，未计入持有期汇率变化。",
-            "30 bps 是统一往返成本压力情景，不代表任何券商、市场或账户的实际收费。",
+            (
+                f"{round_trip_cost_bps:g} bps 是冻结时确定的往返成本压力情景，"
+                "不代表任何券商、市场或账户的实际收费。"
+            ),
             "未模拟整手、涨跌停、停牌、成交冲击、分红税和资金利息。",
             "数据源切换或复权口径修订可能影响历史可比性。",
         ],

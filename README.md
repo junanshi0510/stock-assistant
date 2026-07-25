@@ -8,6 +8,18 @@
 
 ## 最近更新
 
+### 2026-07-25：量化策略无前视前向验证与资金委员会桥
+
+- “量化选股”不再止步于历史回测和一张 shadow mandate。通过 10 项研究门槛的不可变纸面指令现在可以一键接入现有“收益实验室 → 策略投资委员会 → 全组合资金计划”主链，形成“历史样本外通过 → 真实接入时间冻结 → 下一交易日开盘 → 5/20/60 日前向证据 → 资金资格 → 委员会复核”的闭环。
+- 前向建仓起点固定为接入时所在市场日期与原信号日期两者的较晚者，并且只接受严格晚于该日期的首个真实交易日复权开盘价。旧指令今天接入也只能从今天之后开始，不能补算已经知道的历史涨跌；开盘尚未形成时显示“等待入场”，不记作失败，也不偷用信号日收盘价。
+- 策略和同市场基准使用同一入场交易日的复权开盘价，随后精确结算第 5/20/60 个持有交易日。每个批次冻结 `2 × (佣金 + 滑点) + 卖出税` 的往返成本压力，覆盖不足 90% 时不算成熟结果。
+- 相同引擎与完全相同量化政策映射到同一策略家族，每份 mandate 形成独立不可变纸面批次；任何因子、股票池、调仓、成交或风险政策变化都会进入新策略家族，避免把换过规则的结果混在一起。重叠起点由既有收益引擎排除，不会重复增加样本量。
+- 资金门禁沿用收益实验室的严格口径：至少 6 个独立成熟的 20 日批次，同时检查成本后平均基准超额、跑赢比例、保守成分回撤、双侧 95% 区间和跨策略 Bonferroni 校正。即使全部通过，也只允许最高 3% 的人工研究上限；进入投资委员会前仍须冻结当前不可变记分卡。
+- 新增 3 个受认证 API、1 张租户/用户隔离的不可变桥接表、确定性内容寻址、跨系统外键、单事务原子接入、PostgreSQL/SQLite UPDATE/DELETE 拒绝、`quant-selection-forward-validation.v1` 迁移，并复用现有持久化 `market-data` 队列和小时级调度；OpenAPI 现为 `178` 条路径、`207` 个操作。
+- 后端全量回归 `587 passed`、`13 subtests passed`；前端 Vite 生产构建完成 `1857` 个模块转换，生产依赖审计 `0 vulnerabilities`。隔离数据库浏览器验收确认 5 日已精确结算、20/60 日等待成熟、36 bps 成本压力、0/6 独立批次门槛、刷新入口、无页面级横向溢出和 0 条控制台错误。
+- 本功能只修复“回测结果如何进入真实、可审计的前向证据链”，不预测必涨股票、不生成股数、不连接券商、不自动下单，也不保证盈利。生产发布、迁移、备份和恢复结果见完整更新记录。
+- 完整因果口径、策略家族、数据模型、接口、测试和发布记录见 [`docs/updates/2026-07-25-002-quant-selection-forward-validation.md`](docs/updates/2026-07-25-002-quant-selection-forward-validation.md)。
+
 ### 2026-07-25：历史时点量化选股、样本外验证与事件驱动撮合实验室
 
 - “研究中心”新增“量化选股”大功能，形成“历史时点可投资股票池 → 固定多因子横截面排名 → 目标组合 → 次日开盘事件驱动撮合 → 非重叠样本外窗口 → Rank IC → 成本翻倍压力 → 前向纸面门禁”的完整链路，不再拿今天的股票名单回填过去。
@@ -838,6 +850,8 @@ backend/
   portfolio_capital_learning_repository.py 不可变执行、交易绑定与结果快照
   portfolio_quant_service.py   滚动样本外风险模型、成本、统计门禁与人民币目标
   portfolio_quant_repository.py 不可变量化实验、哈希事件链与纸面调仓指令
+  quant_selection_forward_service.py 历史选股指令到真实前向证据/资金门禁的因果桥
+  quant_selection_forward_repository.py 跨量化与机会域的原子不可变映射
   availability_service.py    组件探针、能力门禁、内部 SLO 与安全降级
   availability_repository.py 不可变探针、事故状态机与哈希事件链
   runtime_identity.py         API 副本与内容寻址 release 身份
@@ -921,6 +935,8 @@ npm run build
 - [当前架构约定](ARCHITECTURE.md)
 - [云服务器部署说明](DEPLOY.md)
 - [工业级 Agent PRD](docs/industrial-agent-prd.md)
+- [量化策略无前视前向验证与资金委员会桥更新记录](docs/updates/2026-07-25-002-quant-selection-forward-validation.md)
+- [历史时点量化选股实验室更新记录](docs/updates/2026-07-25-001-point-in-time-quant-selection-lab.md)
 - [量化组合 Walk-Forward 实验与模拟调仓中枢更新记录](docs/updates/2026-07-24-002-portfolio-quant-walk-forward-lab.md)
 - [资本计划兑现与决策学习中枢更新记录](docs/updates/2026-07-24-001-capital-plan-execution-learning.md)
 - [高可用控制面与安全降级更新记录](docs/updates/2026-07-23-001-availability-control-plane.md)
