@@ -43,6 +43,9 @@ TASK_OPPORTUNITY_OBSERVATIONS = (
 TASK_CAPITAL_OUTCOMES = (
     "stock_assistant.scheduler.capital_plan_outcomes"
 )
+TASK_QUANT_RESEARCH_PROGRAMS = (
+    "stock_assistant.scheduler.quant_research_programs"
+)
 TASK_WATCHLIST_SCAN = "stock_assistant.scheduler.watchlist_scan"
 TASK_AVAILABILITY_PROBE = "stock_assistant.scheduler.availability_probe"
 
@@ -145,6 +148,7 @@ celery_app.conf.update(
         TASK_DECISION_CHECKS: {"queue": QUEUE_SCHEDULER},
         TASK_OPPORTUNITY_OBSERVATIONS: {"queue": QUEUE_SCHEDULER},
         TASK_CAPITAL_OUTCOMES: {"queue": QUEUE_SCHEDULER},
+        TASK_QUANT_RESEARCH_PROGRAMS: {"queue": QUEUE_SCHEDULER},
         TASK_WATCHLIST_SCAN: {"queue": QUEUE_MARKET},
         TASK_AVAILABILITY_PROBE: {"queue": QUEUE_SCHEDULER},
     },
@@ -205,6 +209,19 @@ celery_app.conf.update(
                 ),
             ),
             "options": {"expires": 900},
+        },
+        "reconcile-quant-research-programs": {
+            "task": TASK_QUANT_RESEARCH_PROGRAMS,
+            "schedule": max(
+                300.0,
+                float(
+                    os.getenv(
+                        "QUANT_RESEARCH_PROGRAM_INTERVAL_SECONDS",
+                        "900",
+                    )
+                ),
+            ),
+            "options": {"expires": 240},
         },
         "scan-watchlist": {
             "task": TASK_WATCHLIST_SCAN,
@@ -322,6 +339,7 @@ def enqueue_scheduler_task(task_name: str) -> str:
         TASK_DECISION_CHECKS,
         TASK_OPPORTUNITY_OBSERVATIONS,
         TASK_CAPITAL_OUTCOMES,
+        TASK_QUANT_RESEARCH_PROGRAMS,
         TASK_WATCHLIST_SCAN,
         TASK_OBJECT_CLEANUP,
         TASK_AVAILABILITY_PROBE,

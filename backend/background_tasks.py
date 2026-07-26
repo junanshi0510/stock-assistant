@@ -27,6 +27,7 @@ from task_queue import (
     TASK_OPPORTUNITY_OBSERVATIONS,
     TASK_PORTFOLIO_QUANT_RUN,
     TASK_QUANT_SELECTION_RUN,
+    TASK_QUANT_RESEARCH_PROGRAMS,
     TASK_MARKET_TOOL,
     TASK_OBJECT_CLEANUP,
     TASK_OCR,
@@ -715,6 +716,13 @@ def process_capital_plan_outcomes():
     )
 
     return dispatch_due_outcomes(limit=50)
+
+
+@celery_app.task(name=TASK_QUANT_RESEARCH_PROGRAMS, ignore_result=True)
+def process_quant_research_programs():
+    from quant_research_program_service import reconcile_due_programs
+
+    return reconcile_due_programs(limit=100)
 
 
 @celery_app.task(name=TASK_WATCHLIST_SCAN, ignore_result=True)

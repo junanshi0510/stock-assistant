@@ -19,8 +19,14 @@ from quant_selection_forward_repository import (
     QuantSelectionForwardConflictError,
     QuantSelectionForwardNotFoundError,
 )
+from quant_research_program_repository import (
+    QuantResearchProgramConflict,
+    QuantResearchProgramNotFound,
+    repository as research_program_repository,
+)
 import quant_selection_forward_service
 import quant_selection_service
+import quant_research_program_service
 from task_queue import TaskQueueUnavailableError
 
 
@@ -65,6 +71,8 @@ class QuantSelectionFactorWeightsRequest(BaseModel):
     trend_quality: float = Field(default=25, ge=0, le=100)
     low_volatility: float = Field(default=25, ge=0, le=100)
     liquidity: float = Field(default=15, ge=0, le=100)
+    fundamental_quality: float = Field(default=0, ge=0, le=100)
+    value: float = Field(default=0, ge=0, le=100)
 
     @model_validator(mode="after")
     def at_least_one_factor(self):
@@ -73,6 +81,8 @@ class QuantSelectionFactorWeightsRequest(BaseModel):
             + self.trend_quality
             + self.low_volatility
             + self.liquidity
+            + self.fundamental_quality
+            + self.value
             <= 0
         ):
             raise ValueError("至少一个因子权重必须大于 0")
@@ -118,6 +128,12 @@ class QuantSelectionRunRequest(BaseModel):
         le=1_000_000_000_000,
     )
     max_price_staleness_days: int = Field(default=7, ge=3, le=30)
+    max_fundamental_staleness_days: int = Field(
+        default=550, ge=90, le=900
+    )
+    max_valuation_staleness_days: int = Field(
+        default=7, ge=3, le=30
+    )
     construction_method: Literal[
         "equal_weight",
         "inverse_volatility",
@@ -154,6 +170,11 @@ class QuantSelectionRunRequest(BaseModel):
             raise ValueError("Tushare 历史指数成分模式当前只支持 A股")
         if self.universe_mode == "frozen_symbols" and len(self.symbols) < 6:
             raise ValueError("冻结自定义股票池至少需要 6 只股票")
+        if self.market != "A股" and (
+            self.factor_weights.fundamental_quality > 0
+            or self.factor_weights.value > 0
+        ):
+            raise ValueError("披露日财务与时点估值因子当前只支持 A 股")
         return self
 
 
@@ -171,6 +192,36 @@ class QuantSelectionForwardRequest(BaseModel):
     expected_snapshot_sha256: str = Field(
         pattern=r"^[0-9a-f]{64}$"
     )
+
+
+class QuantResearchScheduleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cadence: Literal["monthly", "quarterly"] = "monthly"
+    first_run_date: str | None = Field(
+        default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"
+    )
+    run_time_local: str = Field(
+        default="20:30", pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$"
+    )
+    planned_cycles: int = Field(default=6, ge=6, le=24)
+
+
+class QuantResearchProgramRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=2, max_length=100)
+    policy: QuantSelectionRunRequest
+    schedule: QuantResearchScheduleRequest = Field(
+        default_factory=QuantResearchScheduleRequest
+    )
+    acknowledged: bool
+
+
+class QuantResearchProgramRetireRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=8, max_length=500)
 
 
 @router.get("/overview")
@@ -194,6 +245,94 @@ def get_quant_selection_overview(
         ) from error
 
 
+@router.get("/research-programs")
+def get_quant_research_programs(
+    limit: int = Query(default=30, ge=1, le=100),
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    return quant_research_program_service.overview(
+        tenant_id=_tenant_id(principal),
+        user_id=_subject_id(principal),
+        limit=limit,
+    )
+
+
+@router.post(
+    "/research-programs",
+    status_code=status.HTTP_201_CREATED,
+)
+def create_quant_research_program(
+    request: QuantResearchProgramRequest,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        return quant_research_program_service.create_program(
+            request.model_dump(mode="json"),
+            tenant_id=_tenant_id(principal),
+            user_id=_subject_id(principal),
+            actor_id=_actor_id(principal),
+        )
+    except QuantResearchProgramConflict as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.get("/research-programs/{program_id}")
+def get_quant_research_program(
+    program_id: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    item = research_program_repository.get_program(
+        program_id,
+        tenant_id=_tenant_id(principal),
+        user_id=_subject_id(principal),
+    )
+    if item is None:
+        raise HTTPException(status_code=404, detail="量化研究计划不存在")
+    return item
+
+
+@router.post("/research-programs/{program_id}/reconcile")
+def reconcile_quant_research_program(
+    program_id: str,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    item = research_program_repository.get_program(
+        program_id,
+        tenant_id=_tenant_id(principal),
+        user_id=_subject_id(principal),
+    )
+    if item is None:
+        raise HTTPException(status_code=404, detail="量化研究计划不存在")
+    return quant_research_program_service.reconcile_due_programs(
+        tenant_id=_tenant_id(principal),
+        user_id=_subject_id(principal),
+        program_id=program_id,
+        actor_id=_actor_id(principal),
+    )
+
+
+@router.post("/research-programs/{program_id}/retire")
+def retire_quant_research_program(
+    program_id: str,
+    request: QuantResearchProgramRetireRequest,
+    principal: AuthPrincipal = Depends(principal_from_request),
+):
+    try:
+        return quant_research_program_service.retire_program(
+            program_id,
+            reason=request.reason,
+            tenant_id=_tenant_id(principal),
+            user_id=_subject_id(principal),
+            actor_id=_actor_id(principal),
+        )
+    except QuantResearchProgramNotFound as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
 @router.post("/runs", status_code=status.HTTP_202_ACCEPTED)
 def create_quant_selection_run(
     request: QuantSelectionRunRequest,
@@ -210,14 +349,6 @@ def create_quant_selection_run(
         raise HTTPException(status_code=409, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
-    except Exception as error:
-        raise HTTPException(
-            status_code=502,
-            detail=(
-                "量化前向验证接入失败:"
-                f"{sanitize_worker_error(error)}"
-            ),
-        ) from error
     except TaskQueueUnavailableError as error:
         raise HTTPException(
             status_code=503,

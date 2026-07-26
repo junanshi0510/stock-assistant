@@ -26,10 +26,14 @@ import {
   createQuantSelectionForwardValidation,
   createQuantSelectionRun,
   createQuantSelectionShadowMandate,
+  createQuantResearchProgram,
   fetchQuantSelectionForwardValidations,
   fetchQuantSelectionOverview,
+  fetchQuantResearchPrograms,
   fetchQuantSelectionRun,
   observeQuantSelectionForwardValidation,
+  reconcileQuantResearchProgram,
+  retireQuantResearchProgram,
 } from '../../api/quantSelection'
 
 const DEFAULT_FORM = {
@@ -50,11 +54,15 @@ const DEFAULT_FORM = {
     trend_quality: 25,
     low_volatility: 25,
     liquidity: 15,
+    fundamental_quality: 0,
+    value: 0,
   },
   minimum_composite_score: 55,
   minimum_price: 1,
   minimum_average_turnover: 50000000,
   max_price_staleness_days: 7,
+  max_fundamental_staleness_days: 550,
+  max_valuation_staleness_days: 7,
   construction_method: 'score_inverse_volatility',
   max_positions: 6,
   max_position_pct: 20,
@@ -97,6 +105,29 @@ const FACTOR_LABELS = {
   trend_quality: '趋势质量',
   low_volatility: '低波动',
   liquidity: '流动性',
+  fundamental_quality: '披露日财务质量',
+  value: '时点估值',
+}
+
+const CYCLE_STATUS = {
+  scheduled: ['已预登记', 'waiting'],
+  dispatching: ['正在派发', 'running'],
+  run_queued: ['等待研究', 'waiting'],
+  run_running: ['研究运行中', 'running'],
+  research_only: ['未通过并留痕', 'warning'],
+  forward_enrolled: ['已进入前向验证', 'verified'],
+  failed: ['失败并留痕', 'danger'],
+  retired_unrun: ['计划终止留痕', 'danger'],
+}
+
+function defaultFirstRunDate() {
+  const value = new Date()
+  value.setMonth(value.getMonth() + 1, 1)
+  return [
+    value.getFullYear(),
+    String(value.getMonth() + 1).padStart(2, '0'),
+    '01',
+  ].join('-')
 }
 
 function formFromPolicy(policy) {
@@ -274,7 +305,7 @@ function LatestBasket({ signal }) {
       {!targets.length ? <div className="warning">最新调仓日没有股票同时通过数据、流动性和综合分门槛。</div> : (
         <div className="qsel-table-wrap">
           <table className="qsel-table">
-            <thead><tr><th>排名 / 股票</th><th>目标权重</th><th>综合分</th><th>动量</th><th>趋势质量</th><th>低波动</th><th>流动性</th><th>年化波动</th><th>近三月均额</th></tr></thead>
+            <thead><tr><th>排名 / 股票</th><th>目标权重</th><th>综合分</th>{Object.values(FACTOR_LABELS).map((label) => <th key={label}>{label}</th>)}<th>年化波动</th><th>近三月均额</th></tr></thead>
             <tbody>
               {targets.map((item) => {
                 const full = (signal.ranked || []).find((row) => row.symbol === item.symbol) || item
@@ -397,6 +428,7 @@ function EvidencePanel({ run }) {
   const result = run.result || {}
   const universe = result.universe || {}
   const quality = result.data_quality || {}
+  const fundamentals = quality.fundamentals || {}
   return (
     <section className="qsel-section">
       <div className="qsel-section-head">
@@ -412,8 +444,15 @@ function EvidencePanel({ run }) {
         <article><ShieldCheck size={17} /><span><small>专业复权 / 独立未复权</small><b>{pct(quality.professional_adjusted_source_coverage_pct)} / {pct(quality.independent_raw_source_coverage_pct)}</b><em>双价格同时满足 {pct(quality.professional_source_coverage_pct)}</em></span></article>
         <article><Fingerprint size={17} /><span><small>结果 SHA-256</small><b><code>{shortHash(run.result_sha256)}</code></b><em>输入 <code>{shortHash(run.policy_sha256)}</code></em></span></article>
       </div>
+      <div className={`qsel-fundamental-audit ${fundamentals.point_in_time_verified ? 'verified' : 'blocked'}`}>
+        <Database size={17} />
+        <span><small>Point-in-time 财务因子</small><b>{fundamentals.requested ? fundamentals.source || '专业财务源待核验' : '本策略未启用'}</b><em>{fundamentals.verification_detail}</em></span>
+        <span><small>信号截面覆盖</small><b>{pct(fundamentals.coverage_pct)}</b><em>{fundamentals.eligible_observation_count || 0} / {fundamentals.signal_observation_count || 0} 个时点</em></span>
+        <span><small>严格可见日期</small><b>公告日 + 交易日</b><em>报告期不作为可见日 · 歧义修订不回填</em></span>
+      </div>
       {universe.warning && <div className="warning">{universe.warning}</div>}
       {!!result.fetch_failures?.length && <div className="warning">行情失败：{result.fetch_failures.map((item) => `${item.symbol}: ${item.error}`).join('；')}</div>}
+      {!!fundamentals.failed_symbols?.length && <div className="warning">财务数据失败：{fundamentals.failed_symbols.map((item) => `${item.symbol}: ${item.error}`).join('；')}</div>}
       <details className="qsel-details">
         <summary>查看逐股票行情来源（{quality.assets?.length || 0}）</summary>
         <div className="qsel-source-list">
@@ -487,6 +526,66 @@ function ForwardValidationPanel({ validation, busy, onObserve }) {
         </button>
       </div>
       <p className="qsel-forward-boundary"><ShieldCheck size={14} />冻结前已知价格不会进入前向收益；只有 6 个独立 20 日批次、成本后超额、命中率、回撤与多重检验同时通过，才可能进入受限人工试运行评审。</p>
+    </section>
+  )
+}
+
+function ResearchProgramPanel({
+  programs,
+  schedule,
+  setSchedule,
+  acknowledged,
+  setAcknowledged,
+  busy,
+  onCreate,
+  onReconcile,
+  onRetire,
+}) {
+  return (
+    <section className="qsel-program">
+      <div className="qsel-program-head">
+        <div>
+          <span className="eyebrow">Pre-registered research program</span>
+          <h3><CalendarClock size={19} />固定日历量化研究计划</h3>
+          <p>策略、权重和未来批次在首轮运行前一次性冻结。到期后的通过、未通过与失败都永久保留，不能只挑好看的结果。</p>
+        </div>
+        <span><LockKeyhole size={15} />不可跳批 · 不可删失败样本</span>
+      </div>
+      <div className="qsel-program-create">
+        <label><span>频率</span><select value={schedule.cadence} onChange={(event) => setSchedule((current) => ({ ...current, cadence: event.target.value }))}><option value="monthly">每月</option><option value="quarterly">每季度</option></select></label>
+        <label><span>首次运行日</span><input type="date" value={schedule.first_run_date} onChange={(event) => setSchedule((current) => ({ ...current, first_run_date: event.target.value }))} /></label>
+        <label><span>收盘后时间</span><input type="time" value={schedule.run_time_local} onChange={(event) => setSchedule((current) => ({ ...current, run_time_local: event.target.value }))} /></label>
+        <label><span>预登记批次</span><select value={schedule.planned_cycles} onChange={(event) => setSchedule((current) => ({ ...current, planned_cycles: Number(event.target.value) }))}><option value="6">6</option><option value="9">9</option><option value="12">12</option><option value="18">18</option><option value="24">24</option></select></label>
+        <label className="qsel-program-ack"><input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} /><span>我确认固定策略和日历，接受失败批次永久留痕；系统只做纸面验证，不自动下单。</span></label>
+        <button type="button" disabled={!acknowledged || busy} onClick={onCreate}>{busy ? <Activity size={15} /> : <CalendarClock size={15} />}{busy ? '正在预登记' : '创建完整研究计划'}</button>
+      </div>
+      <div className="qsel-program-list">
+        {(programs || []).map((program) => (
+          <article key={program.id}>
+            <header>
+              <div><b>{program.name}</b><small>{program.schedule?.cadence === 'quarterly' ? '每季度' : '每月'} · {program.schedule?.run_time_local} · {program.schedule?.timezone}</small></div>
+              <span className={`qsel-state ${program.state === 'active' ? 'verified' : 'danger'}`}>{program.state === 'active' ? '计划生效' : '已终止'}</span>
+            </header>
+            <div className="qsel-program-summary">
+              <span><small>预登记</small><b>{program.summary?.planned_cycle_count || 0}</b></span>
+              <span><small>已完成</small><b>{program.summary?.completed_cycle_count || 0}</b></span>
+              <span><small>前向验证</small><b>{program.summary?.forward_enrolled_count || 0}</b></span>
+              <span><small>未通过 / 失败</small><b>{(program.summary?.research_only_count || 0) + (program.summary?.failed_count || 0)}</b></span>
+            </div>
+            <div className="qsel-cycle-strip">
+              {(program.cycles || []).map((cycle) => {
+                const [label, tone] = CYCLE_STATUS[cycle.status] || [cycle.status, 'waiting']
+                return <span className={tone} key={cycle.id} title={`${cycle.scheduled_local} · ${label}`}><b>{cycle.sequence_no}</b><small>{String(cycle.scheduled_local || '').slice(0, 10)}</small></span>
+              })}
+            </div>
+            <footer>
+              <span>下一批：{dateTime(program.summary?.next_scheduled_for)} · 策略哈希 <code>{shortHash(program.policy_sha256)}</code></span>
+              {program.state === 'active' && <div><button type="button" className="ghost" onClick={() => onReconcile(program.id)}><RefreshCw size={13} />核对到期批次</button><button type="button" className="ghost danger" onClick={() => onRetire(program)}><XCircle size={13} />终止并留痕</button></div>}
+            </footer>
+          </article>
+        ))}
+        {!programs?.length && <div className="qsel-program-empty"><CalendarClock size={23} /><span><b>尚未建立固定日历研究</b><small>单次回测可以探索；持续决策需要预先登记的重复批次来约束挑样本。</small></span></div>}
+      </div>
     </section>
   )
 }
@@ -604,6 +703,7 @@ function ResultView({
 export default function QuantSelectionLab() {
   const [overview, setOverview] = useState(null)
   const [forwardOverview, setForwardOverview] = useState(null)
+  const [programOverview, setProgramOverview] = useState(null)
   const [form, setForm] = useState(DEFAULT_FORM)
   const [symbols, setSymbols] = useState(SAMPLE_SYMBOLS.A股)
   const [selectedRunId, setSelectedRunId] = useState(null)
@@ -613,18 +713,28 @@ export default function QuantSelectionLab() {
   const [freezeBusy, setFreezeBusy] = useState(false)
   const [forwardBusy, setForwardBusy] = useState(false)
   const [observeBusy, setObserveBusy] = useState(false)
+  const [programBusy, setProgramBusy] = useState(false)
   const [acknowledged, setAcknowledged] = useState(false)
+  const [programAcknowledged, setProgramAcknowledged] = useState(false)
+  const [programSchedule, setProgramSchedule] = useState({
+    cadence: 'monthly',
+    first_run_date: defaultFirstRunDate(),
+    run_time_local: '20:30',
+    planned_cycles: 6,
+  })
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [showAdvanced, setShowAdvanced] = useState(false)
 
   const refreshOverview = useCallback(async () => {
-    const [result, forward] = await Promise.all([
+    const [result, forward, programs] = await Promise.all([
       fetchQuantSelectionOverview(),
       fetchQuantSelectionForwardValidations(),
+      fetchQuantResearchPrograms(),
     ])
     setOverview(result)
     setForwardOverview(forward)
+    setProgramOverview(programs)
     setSelectedRunId((current) => current || result.runs?.[0]?.id || null)
     return result
   }, [])
@@ -706,8 +816,19 @@ export default function QuantSelectionLab() {
       benchmark_symbol: { A股: '510300', 港股: '02800', 美股: 'SPY' }[market],
       minimum_average_turnover: { A股: 50000000, 港股: 5000000, 美股: 10000000 }[market],
       sell_tax_bps: market === 'A股' ? 10 : 0,
+      factor_weights: isA
+        ? current.factor_weights
+        : { ...current.factor_weights, fundamental_quality: 0, value: 0 },
     }))
     setSymbols(SAMPLE_SYMBOLS[market])
+  }
+
+  function currentPolicyPayload() {
+    return {
+      ...formFromPolicy(form),
+      symbols: form.universe_mode === 'frozen_symbols' ? manualSymbols : [],
+      benchmark_symbol: form.benchmark_symbol || null,
+    }
   }
 
   async function startRun() {
@@ -715,11 +836,7 @@ export default function QuantSelectionLab() {
       setError('冻结自定义股票池至少需要 6 只股票，每行格式为“代码,名称”。')
       return
     }
-    const payload = {
-      ...formFromPolicy(form),
-      symbols: form.universe_mode === 'frozen_symbols' ? manualSymbols : [],
-      benchmark_symbol: form.benchmark_symbol || null,
-    }
+    const payload = currentPolicyPayload()
     setRunBusy(true); setError(''); setMessage(''); setAcknowledged(false)
     try {
       const created = await createQuantSelectionRun(payload)
@@ -780,6 +897,58 @@ export default function QuantSelectionLab() {
     }
   }
 
+  async function createProgram() {
+    if (form.universe_mode === 'frozen_symbols' && manualSymbols.length < 6) {
+      setError('固定日历计划的冻结股票池至少需要 6 只股票。')
+      return
+    }
+    setProgramBusy(true); setError(''); setMessage('')
+    try {
+      const created = await createQuantResearchProgram({
+        name: `${form.name}｜固定日历`,
+        policy: currentPolicyPayload(),
+        schedule: programSchedule,
+        acknowledged: programAcknowledged,
+      })
+      setProgramAcknowledged(false)
+      setMessage(`研究计划已创建：${created.cycles?.length || 0} 个未来批次已一次性预登记，失败记录不会被删除。`)
+      await refreshOverview()
+    } catch (requestError) {
+      setError(requestError.message)
+    } finally {
+      setProgramBusy(false)
+    }
+  }
+
+  async function reconcileProgram(programId) {
+    setProgramBusy(true); setError(''); setMessage('')
+    try {
+      const result = await reconcileQuantResearchProgram(programId)
+      setMessage(result.processed ? `已核对 ${result.processed} 个到期批次。` : '目前没有到期批次；未来槽位仍保持预登记。')
+      if (result.errors?.length) setError(result.errors.map((item) => item.error).join('；'))
+      await refreshOverview()
+    } catch (requestError) {
+      setError(requestError.message)
+    } finally {
+      setProgramBusy(false)
+    }
+  }
+
+  async function retireProgram(program) {
+    const reason = globalThis.prompt('请输入终止原因（至少 8 个字符）。未来批次不会删除，而会标记为“计划终止留痕”。', '')
+    if (!reason) return
+    setProgramBusy(true); setError(''); setMessage('')
+    try {
+      await retireQuantResearchProgram(program.id, reason)
+      setMessage('计划已终止；所有未来槽位已保留为终止留痕。')
+      await refreshOverview()
+    } catch (requestError) {
+      setError(requestError.message)
+    } finally {
+      setProgramBusy(false)
+    }
+  }
+
   if (loading) return <div className="page-loading"><span className="spinner" />正在读取组合选股实验室</div>
 
   return (
@@ -796,6 +965,18 @@ export default function QuantSelectionLab() {
 
       {error && <div className="error"><AlertTriangle size={16} />{error}</div>}
       {message && <div className="qsel-message"><CheckCircle2 size={16} />{message}</div>}
+
+      <ResearchProgramPanel
+        programs={programOverview?.programs || []}
+        schedule={programSchedule}
+        setSchedule={setProgramSchedule}
+        acknowledged={programAcknowledged}
+        setAcknowledged={setProgramAcknowledged}
+        busy={programBusy}
+        onCreate={createProgram}
+        onReconcile={reconcileProgram}
+        onRetire={retireProgram}
+      />
 
       <div className="qsel-layout">
         <aside className="qsel-builder">
@@ -842,7 +1023,7 @@ export default function QuantSelectionLab() {
           <fieldset className="qsel-factors">
             <legend>固定因子权重</legend>
             {Object.entries(FACTOR_LABELS).map(([key, label]) => (
-              <label key={key}><span>{label}</span><input type="number" min="0" max="100" value={form.factor_weights[key]} onChange={(event) => updateFactor(key, Number(event.target.value))} /><em>%</em></label>
+              <label key={key}><span>{label}</span><input type="number" min="0" max="100" disabled={form.market !== 'A股' && ['fundamental_quality', 'value'].includes(key)} value={form.factor_weights[key]} onChange={(event) => updateFactor(key, Number(event.target.value))} /><em>%</em></label>
             ))}
           </fieldset>
 
@@ -859,6 +1040,8 @@ export default function QuantSelectionLab() {
               <div className="qsel-form-grid">
                 <label className="qsel-field"><span>基准代码</span><input value={form.benchmark_symbol} onChange={(event) => update('benchmark_symbol', event.target.value)} /></label>
                 <label className="qsel-field"><span>样本外窗口</span><select value={form.oos_segment_days} onChange={(event) => update('oos_segment_days', Number(event.target.value))}><option value="126">126 日</option><option value="252">252 日</option></select></label>
+                <label className="qsel-field"><span>财务最大陈旧天数</span><input type="number" min="90" max="900" value={form.max_fundamental_staleness_days} onChange={(event) => update('max_fundamental_staleness_days', Number(event.target.value))} /></label>
+                <label className="qsel-field"><span>估值最大陈旧天数</span><input type="number" min="3" max="30" value={form.max_valuation_staleness_days} onChange={(event) => update('max_valuation_staleness_days', Number(event.target.value))} /></label>
                 <label className="qsel-field"><span>最低综合分</span><input type="number" value={form.minimum_composite_score} onChange={(event) => update('minimum_composite_score', Number(event.target.value))} /></label>
                 <label className="qsel-field"><span>最低均成交额</span><input type="number" value={form.minimum_average_turnover} onChange={(event) => update('minimum_average_turnover', Number(event.target.value))} /></label>
                 <label className="qsel-field"><span>模拟资金</span><input type="number" value={form.initial_capital} onChange={(event) => update('initial_capital', Number(event.target.value))} /></label>

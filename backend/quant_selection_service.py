@@ -20,6 +20,7 @@ from quant_selection_engine import (
     QuantSelectionInputError,
     run_selection_research,
 )
+from quant_fundamentals import load_tushare_point_in_time_fundamentals
 from quant_selection_repository import (
     QuantSelectionConflictError,
     QuantSelectionNotFoundError,
@@ -35,7 +36,7 @@ from task_queue import (
 )
 
 
-POLICY_VERSION = "quant_selection_policy@1.0.0"
+POLICY_VERSION = "quant_selection_policy@2.0.0"
 MAX_MANUAL_SYMBOLS = 40
 MAX_INDEX_UNION_SYMBOLS = 80
 INDEX_OPTIONS = {
@@ -62,6 +63,8 @@ DEFAULT_FACTOR_WEIGHTS = {
     "trend_quality": 25.0,
     "low_volatility": 25.0,
     "liquidity": 15.0,
+    "fundamental_quality": 0.0,
+    "value": 0.0,
 }
 
 
@@ -183,6 +186,14 @@ def normalize_policy(payload: dict[str, Any] | None) -> dict[str, Any]:
     }
     if sum(factor_weights.values()) <= 0:
         raise ValueError("至少一个因子权重必须大于 0")
+    fundamental_requested = any(
+        factor_weights[key] > 0
+        for key in ("fundamental_quality", "value")
+    )
+    if fundamental_requested and market != "A股":
+        raise ValueError(
+            "披露日财务质量与时点估值因子当前只支持 A 股 Tushare 专业数据"
+        )
 
     max_positions = int(
         _bounded(source.get("max_positions", 6), 2, 12, "最大持仓数")
@@ -290,6 +301,22 @@ def normalize_policy(payload: dict[str, Any] | None) -> dict[str, Any]:
                 "最大行情陈旧天数",
             )
         ),
+        "max_fundamental_staleness_days": int(
+            _bounded(
+                source.get("max_fundamental_staleness_days", 550),
+                90,
+                900,
+                "财务指标最大陈旧天数",
+            )
+        ),
+        "max_valuation_staleness_days": int(
+            _bounded(
+                source.get("max_valuation_staleness_days", 7),
+                3,
+                30,
+                "估值最大陈旧天数",
+            )
+        ),
         "construction_method": construction,
         "max_positions": max_positions,
         "max_position_pct": max_position_pct,
@@ -355,6 +382,35 @@ def normalize_policy(payload: dict[str, Any] | None) -> dict[str, Any]:
 
 def presets() -> list[dict[str, Any]]:
     return [
+        {
+            "id": "a_csi300_pit_quality_value",
+            "label": "沪深300 披露日质量价值",
+            "description": (
+                "预先冻结因子权重；财务质量只读取信号日之前已经公告的财报，"
+                "估值只读取当时交易日的 PE/PB，并与价格、容量和成本共同验证。"
+            ),
+            "promotion_capable": True,
+            "policy": normalize_policy(
+                {
+                    "name": "沪深300 披露日质量价值多因子",
+                    "market": "A股",
+                    "universe_mode": "tushare_index",
+                    "index_code": "000300.SH",
+                    "index_member_limit": 12,
+                    "history_months": 60,
+                    "minimum_average_turnover": 50_000_000,
+                    "sell_tax_bps": 10,
+                    "factor_weights": {
+                        "momentum": 20,
+                        "trend_quality": 15,
+                        "low_volatility": 15,
+                        "liquidity": 10,
+                        "fundamental_quality": 25,
+                        "value": 15,
+                    },
+                }
+            ),
+        },
         {
             "id": "a_csi300_point_in_time",
             "label": "沪深300历史成分",
@@ -946,6 +1002,48 @@ def execute_run(
             raise QuantSelectionInputError(
                 f"只有 {loaded_candidates} 只候选股行情可用，至少需要 4 只"
             )
+        fundamental_inputs: dict[str, dict[str, Any]] = {}
+        fundamental_evidence: dict[str, Any] = {
+            "source": None,
+            "point_in_time_verified": True,
+            "verification_detail": "本策略没有启用财务或估值因子",
+            "requested_symbol_count": 0,
+            "loaded_symbol_count": 0,
+            "failed_symbols": [],
+        }
+        requested_fundamental_factors = {
+            key
+            for key in ("fundamental_quality", "value")
+            if float(policy["factor_weights"].get(key, 0)) > 0
+        }
+        if requested_fundamental_factors:
+            repo.update_progress(
+                run_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                progress={
+                    "stage": "point_in_time_fundamentals",
+                    "completed": 0,
+                    "total": loaded_candidates,
+                    "message": (
+                        "正在读取财报公告日与历史每日估值；"
+                        "报告期不会被当作数据可见日期"
+                    ),
+                },
+            )
+            fundamental_inputs, fundamental_evidence = (
+                load_tushare_point_in_time_fundamentals(
+                    _tushare_pro(),
+                    [symbol for symbol in symbols if symbol in frames],
+                    history_months=int(policy["history_months"]),
+                    required_factors=requested_fundamental_factors,
+                )
+            )
+            if len(fundamental_inputs) < 4:
+                raise QuantSelectionInputError(
+                    "启用财务因子后只有 "
+                    f"{len(fundamental_inputs)} 只股票具备可审计历史，至少需要 4 只"
+                )
         repo.update_progress(
             run_id,
             tenant_id=tenant_id,
@@ -964,6 +1062,8 @@ def execute_run(
             policy=policy,
             universe_evidence=universe_evidence,
             source_evidence=sources,
+            fundamental_inputs=fundamental_inputs,
+            fundamental_evidence=fundamental_evidence,
         )
         result["run_id"] = run_id
         result["generated_at"] = dt.datetime.now(
@@ -979,6 +1079,10 @@ def execute_run(
             or any(
                 (item or {}).get("raw_error")
                 for item in sources.values()
+            )
+            or bool(fundamental_evidence.get("failed_symbols"))
+            or not bool(
+                fundamental_evidence.get("point_in_time_verified", True)
             )
         )
         return repo.complete_run(

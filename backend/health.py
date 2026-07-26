@@ -145,6 +145,19 @@ def _database_readiness() -> dict[str, Any]:
                 if database_dialect(connection) == "postgresql"
                 else True
             )
+            quant_research_program_schema = (
+                all(
+                    table_exists(connection, table)
+                    for table in (
+                        "quant_research_programs",
+                        "quant_research_program_events",
+                        "quant_research_cycles",
+                        "quant_research_cycle_events",
+                    )
+                )
+                if database_dialect(connection) == "postgresql"
+                else True
+            )
             availability_schema = (
                 all(
                     table_exists(connection, table)
@@ -169,6 +182,7 @@ def _database_readiness() -> dict[str, Any]:
                 and portfolio_valuation_schema
                 and portfolio_quant_schema
                 and quant_selection_schema
+                and quant_research_program_schema
                 and availability_schema
             ),
             "dialect": database_dialect(target),
@@ -190,6 +204,9 @@ def _database_readiness() -> dict[str, Any]:
             "portfolio_valuation_schema": bool(portfolio_valuation_schema),
             "portfolio_quant_schema": bool(portfolio_quant_schema),
             "quant_selection_schema": bool(quant_selection_schema),
+            "quant_research_program_schema": bool(
+                quant_research_program_schema
+            ),
             "availability_schema": bool(availability_schema),
         }
     except Exception as error:

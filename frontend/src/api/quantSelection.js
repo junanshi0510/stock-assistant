@@ -47,3 +47,29 @@ export function observeQuantSelectionForwardValidation(validationId) {
     method: 'POST',
   })
 }
+
+export function fetchQuantResearchPrograms(limit = 30) {
+  return getJson(`/api/v1/quant-selection/research-programs?limit=${encodeURIComponent(limit)}`)
+}
+
+export function createQuantResearchProgram(payload) {
+  return getJson('/api/v1/quant-selection/research-programs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export function reconcileQuantResearchProgram(programId) {
+  return getJson(`/api/v1/quant-selection/research-programs/${encodeURIComponent(programId)}/reconcile`, {
+    method: 'POST',
+  })
+}
+
+export function retireQuantResearchProgram(programId, reason) {
+  return getJson(`/api/v1/quant-selection/research-programs/${encodeURIComponent(programId)}/retire`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason }),
+  })
+}

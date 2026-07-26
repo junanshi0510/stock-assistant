@@ -17,14 +17,17 @@ import numpy as np
 import pandas as pd
 
 
-ENGINE_VERSION = "point_in_time_quant_selection@1.0.0"
-RESULT_SCHEMA_VERSION = "quant_selection_research.v1"
+ENGINE_VERSION = "point_in_time_quant_selection@2.0.0"
+RESULT_SCHEMA_VERSION = "quant_selection_research.v2"
 FACTOR_LABELS = {
     "momentum": "中期动量（跳过最近一月）",
     "trend_quality": "趋势质量",
     "low_volatility": "低波动",
     "liquidity": "流动性",
+    "fundamental_quality": "披露日可见财务质量",
+    "value": "时点估值",
 }
+FUNDAMENTAL_FACTORS = {"fundamental_quality", "value"}
 PROFESSIONAL_SOURCE_PREFIXES = (
     "Tushare",
     "Polygon",
@@ -137,6 +140,199 @@ def _normalize_snapshots(
     return output
 
 
+def _normalize_fundamental_inputs(
+    inputs: dict[str, dict[str, Any]] | None,
+) -> dict[str, dict[str, pd.DataFrame]]:
+    """Normalize announcement and valuation histories without forward filling.
+
+    Financial rows become visible on ``ann_date``. Valuation rows become
+    visible on ``trade_date``. Missing or malformed dates are discarded so a
+    report-period date can never accidentally act as an availability date.
+    """
+    output: dict[str, dict[str, pd.DataFrame]] = {}
+    for symbol, payload in (inputs or {}).items():
+        financials = (payload or {}).get("financials")
+        valuations = (payload or {}).get("valuations")
+        if not isinstance(financials, pd.DataFrame):
+            financials = pd.DataFrame()
+        if not isinstance(valuations, pd.DataFrame):
+            valuations = pd.DataFrame()
+
+        financials = financials.copy()
+        if not financials.empty and {
+            "ann_date",
+            "end_date",
+        }.issubset(financials.columns):
+            financials["ann_date"] = pd.to_datetime(
+                financials["ann_date"], errors="coerce"
+            ).dt.normalize()
+            financials["end_date"] = pd.to_datetime(
+                financials["end_date"], errors="coerce"
+            ).dt.normalize()
+            for column in (
+                "roe",
+                "grossprofit_margin",
+                "ocf_to_or",
+                "debt_to_assets",
+            ):
+                if column in financials:
+                    financials[column] = pd.to_numeric(
+                        financials[column], errors="coerce"
+                    )
+            financials = (
+                financials.dropna(subset=["ann_date", "end_date"])
+                .sort_values(["ann_date", "end_date"])
+                .reset_index(drop=True)
+            )
+        else:
+            financials = pd.DataFrame()
+
+        valuations = valuations.copy()
+        if not valuations.empty and "trade_date" in valuations:
+            valuations["trade_date"] = pd.to_datetime(
+                valuations["trade_date"], errors="coerce"
+            ).dt.normalize()
+            for column in ("pe_ttm", "pb"):
+                if column in valuations:
+                    valuations[column] = pd.to_numeric(
+                        valuations[column], errors="coerce"
+                    )
+            valuations = (
+                valuations.dropna(subset=["trade_date"])
+                .drop_duplicates(subset=["trade_date"], keep="last")
+                .sort_values("trade_date")
+                .reset_index(drop=True)
+            )
+        else:
+            valuations = pd.DataFrame()
+        output[str(symbol)] = {
+            "financials": financials,
+            "valuations": valuations,
+        }
+    return output
+
+
+def _point_in_time_fundamental_values(
+    *,
+    symbol: str,
+    signal_date: pd.Timestamp,
+    fundamentals: dict[str, dict[str, pd.DataFrame]],
+    active_factors: set[str],
+    max_financial_staleness_days: int,
+    max_valuation_staleness_days: int,
+) -> tuple[dict[str, float | None], dict[str, Any], str | None]:
+    values: dict[str, float | None] = {
+        "fundamental_quality": None,
+        "value": None,
+    }
+    metadata: dict[str, Any] = {}
+    if not (active_factors & FUNDAMENTAL_FACTORS):
+        return values, metadata, None
+    payload = fundamentals.get(symbol) or {}
+
+    if "fundamental_quality" in active_factors:
+        financials = payload.get("financials")
+        if not isinstance(financials, pd.DataFrame) or financials.empty:
+            return values, metadata, "缺少带公告日期的财务指标"
+        visible = financials.loc[
+            (financials["ann_date"] <= signal_date)
+            & (financials["end_date"] <= signal_date)
+        ]
+        if visible.empty:
+            return values, metadata, "信号日之前没有已公告财务指标"
+        latest = visible.sort_values(
+            ["end_date", "ann_date"], ascending=[True, True]
+        ).iloc[-1]
+        announcement_date = pd.Timestamp(latest["ann_date"]).normalize()
+        report_period = pd.Timestamp(latest["end_date"]).normalize()
+        financial_stale_days = int((signal_date - report_period).days)
+        if financial_stale_days > max_financial_staleness_days:
+            return (
+                values,
+                metadata,
+                f"最近已公告财务指标已陈旧 {financial_stale_days} 天",
+            )
+        components = {
+            key: _number(latest.get(key))
+            for key in (
+                "roe",
+                "grossprofit_margin",
+                "ocf_to_or",
+                "debt_to_assets",
+            )
+        }
+        component_weights = {
+            "roe": 0.35,
+            "grossprofit_margin": 0.25,
+            "ocf_to_or": 0.25,
+            "debt_to_assets": -0.15,
+        }
+        available_components = {
+            key: float(value)
+            for key, value in components.items()
+            if value is not None
+        }
+        if len(available_components) < 3:
+            return values, metadata, "最新已公告财务指标少于三个有效分项"
+        active_weight = sum(
+            abs(component_weights[key]) for key in available_components
+        )
+        values["fundamental_quality"] = sum(
+            component_weights[key] * value
+            for key, value in available_components.items()
+        ) / active_weight
+        metadata["financial"] = {
+            "ann_date": announcement_date.strftime("%Y-%m-%d"),
+            "report_period": report_period.strftime("%Y-%m-%d"),
+            "staleness_days": financial_stale_days,
+            "announcement_lag_days": int(
+                (announcement_date - report_period).days
+            ),
+            "components": {
+                key: _rounded(value, 6)
+                for key, value in components.items()
+            },
+            "component_count": len(available_components),
+            "missing_components": sorted(
+                set(components) - set(available_components)
+            ),
+        }
+
+    if "value" in active_factors:
+        valuations = payload.get("valuations")
+        if not isinstance(valuations, pd.DataFrame) or valuations.empty:
+            return values, metadata, "缺少历史每日估值"
+        visible = valuations.loc[valuations["trade_date"] <= signal_date]
+        if visible.empty:
+            return values, metadata, "信号日之前没有可见估值"
+        latest = visible.sort_values("trade_date").iloc[-1]
+        valuation_date = pd.Timestamp(latest["trade_date"]).normalize()
+        stale_days = int((signal_date - valuation_date).days)
+        if stale_days > max_valuation_staleness_days:
+            return values, metadata, f"估值数据已陈旧 {stale_days} 天"
+        pe_ttm = _number(latest.get("pe_ttm"))
+        pb = _number(latest.get("pb"))
+        if pb is None or pb <= 0:
+            return values, metadata, "市净率缺失或非正"
+        # Tushare leaves loss-making PE empty. Penalize it explicitly instead
+        # of dropping the company and creating a hidden profitability filter.
+        earnings_yield_pct = 100.0 / pe_ttm if pe_ttm and pe_ttm > 0 else -25.0
+        book_to_price_pct = 100.0 / pb
+        values["value"] = (
+            0.65 * earnings_yield_pct + 0.35 * book_to_price_pct
+        )
+        metadata["valuation"] = {
+            "trade_date": valuation_date.strftime("%Y-%m-%d"),
+            "staleness_days": stale_days,
+            "pe_ttm": _rounded(pe_ttm, 6),
+            "pb": _rounded(pb, 6),
+            "earnings_yield_pct": _rounded(earnings_yield_pct, 6),
+            "book_to_price_pct": _rounded(book_to_price_pct, 6),
+            "loss_pe_penalty_applied": not bool(pe_ttm and pe_ttm > 0),
+        }
+    return values, metadata, None
+
+
 def _members_for(
     snapshots: list[dict[str, Any]],
     signal_date: pd.Timestamp,
@@ -189,11 +385,16 @@ def _factor_snapshot(
     signal_date: pd.Timestamp,
     members: list[dict[str, Any]],
     frames: dict[str, pd.DataFrame],
+    fundamentals: dict[str, dict[str, pd.DataFrame]],
     policy: dict[str, Any],
 ) -> dict[str, Any]:
     weights = policy["factor_weights"]
+    active_factors = {
+        factor for factor, weight in weights.items() if float(weight) > 0
+    }
     raw_rows: list[dict[str, Any]] = []
     exclusions: list[dict[str, Any]] = []
+    fundamental_observation_count = 0
     lookback = int(policy["lookback_days"])
     skip = 21
     volatility_window = min(63, lookback)
@@ -298,7 +499,7 @@ def _factor_snapshot(
         skip_close = float(close.iloc[skip_index])
         momentum = skip_close / base - 1 if base > 0 else None
         trend = _trend_quality(close, min(126, lookback))
-        values = {
+        values: dict[str, float | None] = {
             "momentum": momentum,
             "trend_quality": trend,
             "low_volatility": (
@@ -310,7 +511,40 @@ def _factor_snapshot(
                 else None
             ),
         }
-        if any(_number(value) is None for value in values.values()):
+        if active_factors & FUNDAMENTAL_FACTORS:
+            fundamental_observation_count += 1
+        fundamental_values, fundamental_metadata, fundamental_error = (
+            _point_in_time_fundamental_values(
+                symbol=symbol,
+                signal_date=signal_date,
+                fundamentals=fundamentals,
+                active_factors=active_factors,
+                max_financial_staleness_days=int(
+                    policy.get("max_fundamental_staleness_days", 550)
+                ),
+                max_valuation_staleness_days=int(
+                    policy.get(
+                        "max_valuation_staleness_days",
+                        policy.get("max_price_staleness_days", 7),
+                    )
+                ),
+            )
+        )
+        values.update(fundamental_values)
+        if fundamental_error:
+            exclusions.append(
+                {
+                    "symbol": symbol,
+                    "name": member.get("name") or symbol,
+                    "code": "fundamental_unavailable",
+                    "detail": fundamental_error,
+                }
+            )
+            continue
+        if any(
+            _number(values.get(factor)) is None
+            for factor in active_factors
+        ):
             exclusions.append(
                 {
                     "symbol": symbol,
@@ -330,6 +564,7 @@ def _factor_snapshot(
                 "average_turnover": average_turnover,
                 "annual_volatility": annual_volatility,
                 "raw_factors": values,
+                "fundamental_as_of": fundamental_metadata,
             }
         )
 
@@ -340,7 +575,7 @@ def _factor_snapshot(
                 for item in raw_rows
             }
         )
-        for factor in FACTOR_LABELS
+        for factor in active_factors
     }
     total_weight = float(sum(float(value) for value in weights.values()))
     ranked: list[dict[str, Any]] = []
@@ -348,13 +583,20 @@ def _factor_snapshot(
         factor_rows = {}
         composite = 0.0
         for factor, label in FACTOR_LABELS.items():
-            grade = float(grades[factor][item["symbol"]])
-            factor_weight = float(weights[factor])
-            composite += factor_weight * grade
+            factor_weight = float(weights.get(factor, 0))
+            grade = (
+                float(grades[factor][item["symbol"]])
+                if factor_weight > 0
+                else None
+            )
+            if grade is not None:
+                composite += factor_weight * grade
             factor_rows[factor] = {
                 "label": label,
                 "raw_value": _rounded(item["raw_factors"][factor], 6),
-                "percentile": round(grade, 2),
+                "percentile": (
+                    round(grade, 2) if grade is not None else None
+                ),
                 "weight": factor_weight,
                 "peer_count": len(raw_rows),
             }
@@ -371,6 +613,7 @@ def _factor_snapshot(
                 ),
                 "composite_score": round(composite / total_weight, 3),
                 "factors": factor_rows,
+                "fundamental_as_of": item.get("fundamental_as_of") or {},
             }
         )
     ranked.sort(key=lambda item: (-item["composite_score"], item["symbol"]))
@@ -386,6 +629,17 @@ def _factor_snapshot(
         "member_count": len(members),
         "eligible_count": len(ranked),
         "selected_count": len(selected),
+        "fundamental_factor_active": bool(
+            active_factors & FUNDAMENTAL_FACTORS
+        ),
+        "fundamental_observation_count": (
+            fundamental_observation_count
+            if active_factors & FUNDAMENTAL_FACTORS
+            else None
+        ),
+        "fundamental_eligible_count": (
+            len(ranked) if active_factors & FUNDAMENTAL_FACTORS else None
+        ),
         "ranked": ranked,
         "selected": selected,
         "exclusions": exclusions,
@@ -613,6 +867,7 @@ def _simulate_core(
     frames: dict[str, pd.DataFrame],
     benchmark: pd.DataFrame,
     snapshots: list[dict[str, Any]],
+    fundamentals: dict[str, dict[str, pd.DataFrame]],
     policy: dict[str, Any],
     cost_multiplier: float,
     include_details: bool,
@@ -858,6 +1113,7 @@ def _simulate_core(
             signal_date=date,
             members=members,
             frames=frames,
+            fundamentals=fundamentals,
             policy=policy,
         )
         targets = _target_weights(factor_snapshot["selected"], policy)
@@ -1231,6 +1487,37 @@ def _promotion_gate(
             ),
         },
         {
+            "code": "point_in_time_fundamentals",
+            "label": "财务披露日可见性",
+            "passed": bool(
+                (data_quality.get("fundamentals") or {}).get(
+                    "point_in_time_verified"
+                )
+            ),
+            "detail": str(
+                (data_quality.get("fundamentals") or {}).get(
+                    "verification_detail"
+                )
+                or "启用财务因子时必须保留公告日期"
+            ),
+        },
+        {
+            "code": "fundamental_coverage",
+            "label": "财务因子覆盖",
+            "passed": float(
+                (data_quality.get("fundamentals") or {}).get(
+                    "coverage_pct"
+                )
+                or 0
+            )
+            >= 80,
+            "detail": (
+                "信号截面有效覆盖 "
+                f"{(data_quality.get('fundamentals') or {}).get('coverage_pct') or 0:.1f}%"
+                "，最低 80%"
+            ),
+        },
+        {
             "code": "minimum_oos_segments",
             "label": "样本外窗口",
             "passed": int(walk_forward.get("segment_count") or 0) >= 4,
@@ -1331,6 +1618,8 @@ def run_selection_research(
     policy: dict[str, Any],
     universe_evidence: dict[str, Any],
     source_evidence: dict[str, dict[str, Any]],
+    fundamental_inputs: dict[str, dict[str, Any]] | None = None,
+    fundamental_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run deterministic point-in-time selection and execution research."""
     if benchmark_symbol not in frames:
@@ -1341,10 +1630,14 @@ def run_selection_research(
     }
     benchmark = normalized[benchmark_symbol]
     snapshots = _normalize_snapshots(universe_snapshots)
+    normalized_fundamentals = _normalize_fundamental_inputs(
+        fundamental_inputs
+    )
     base = _simulate_core(
         frames=normalized,
         benchmark=benchmark,
         snapshots=snapshots,
+        fundamentals=normalized_fundamentals,
         policy=policy,
         cost_multiplier=1.0,
         include_details=True,
@@ -1353,6 +1646,7 @@ def run_selection_research(
         frames=normalized,
         benchmark=benchmark,
         snapshots=snapshots,
+        fundamentals=normalized_fundamentals,
         policy=policy,
         cost_multiplier=2.0,
         include_details=False,
@@ -1427,6 +1721,56 @@ def run_selection_research(
                 ),
             }
         )
+    active_fundamental_factors = [
+        factor
+        for factor in FUNDAMENTAL_FACTORS
+        if float((policy.get("factor_weights") or {}).get(factor, 0)) > 0
+    ]
+    fundamental_observation_count = sum(
+        int(signal.get("fundamental_observation_count") or 0)
+        for signal in base["signals"]
+    )
+    fundamental_eligible_count = sum(
+        int(signal.get("fundamental_eligible_count") or 0)
+        for signal in base["signals"]
+        if signal.get("fundamental_factor_active")
+    )
+    evidence = dict(fundamental_evidence or {})
+    fundamental_quality = {
+        "requested": bool(active_fundamental_factors),
+        "active_factors": sorted(active_fundamental_factors),
+        "source": evidence.get("source"),
+        "point_in_time_verified": (
+            bool(evidence.get("point_in_time_verified"))
+            if active_fundamental_factors
+            else True
+        ),
+        "verification_detail": (
+            evidence.get("verification_detail")
+            if active_fundamental_factors
+            else "本策略没有启用财务或估值因子"
+        ),
+        "requested_symbol_count": int(
+            evidence.get("requested_symbol_count") or 0
+        ),
+        "loaded_symbol_count": int(
+            evidence.get("loaded_symbol_count") or 0
+        ),
+        "failed_symbols": evidence.get("failed_symbols") or [],
+        "ambiguous_revision_count": int(
+            evidence.get("ambiguous_revision_count") or 0
+        ),
+        "signal_observation_count": fundamental_observation_count,
+        "eligible_observation_count": fundamental_eligible_count,
+        "coverage_pct": round(
+            fundamental_eligible_count
+            / max(fundamental_observation_count, 1)
+            * 100,
+            1,
+        )
+        if active_fundamental_factors
+        else 100.0,
+    }
     data_quality = {
         "requested_asset_count": len(candidate_symbols),
         "loaded_asset_count": sum(
@@ -1459,6 +1803,7 @@ def run_selection_research(
         ),
         "benchmark_symbol": benchmark_symbol,
         "benchmark_source": source_evidence.get(benchmark_symbol) or {},
+        "fundamentals": fundamental_quality,
         "assets": source_rows,
         "price_modes": {
             "factor_signal": "供应商复权 OHLC",
@@ -1533,7 +1878,8 @@ def run_selection_research(
             ),
             "factors": (
                 "中期动量跳过最近 21 个交易日，另用趋势拟合质量、"
-                "63 日波动与 63 日平均成交额做横截面百分位。"
+                "63 日波动与 63 日平均成交额做横截面百分位；启用财务"
+                "因子时，财务质量严格按公告日可见，估值严格按交易日可见。"
             ),
             "timing": (
                 "信号在收盘后生成，订单最早在下一交易日开盘处理，"
@@ -1552,6 +1898,8 @@ def run_selection_research(
             "这是日线级事件模拟，不含盘口队列、涨跌停封单、逐笔成交与券商实际拒单规则。",
             "港股每只证券的真实整手数量未纳入，结果只适合研究和前向纸面验证。",
             "专业历史指数成分可降低幸存者偏差，但不能消除数据修订、供应商回填和公司行动模型误差。",
+            "Tushare 财务接口只提供日期级公告可见性；同一公告日无法排序的不同修订会被排除，不能模拟日内公告先后。",
+            "财务质量是跨行业固定线性分数，尚未做历史行业中性化；金融与非金融企业之间的比较必须结合因子覆盖和排除记录审阅。",
             "因子历史有效不代表未来继续有效；任何纸面资格都不是买入建议或收益承诺。",
         ],
     }
