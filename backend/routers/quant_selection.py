@@ -120,6 +120,9 @@ class QuantSelectionRunRequest(BaseModel):
     factor_weights: QuantSelectionFactorWeightsRequest = Field(
         default_factory=QuantSelectionFactorWeightsRequest
     )
+    factor_data_mode: Literal[
+        "warehouse_only", "provider_direct"
+    ] = "warehouse_only"
     minimum_composite_score: float = Field(default=55, ge=0, le=100)
     minimum_price: float = Field(default=1, ge=0.01, le=10_000)
     minimum_average_turnover: float = Field(

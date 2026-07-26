@@ -48,6 +48,9 @@ from migrations.quant_selection_forward_v1 import (
 from migrations.quant_research_program_v1 import (
     install_quant_research_program_schema,
 )
+from migrations.quant_factor_warehouse_v1 import (
+    install_quant_factor_warehouse_schema,
+)
 
 
 MIGRATION_ID = "sqlite-to-postgres.v1"
@@ -323,6 +326,7 @@ def migrate(
             install_quant_selection_lab_schema(target_connection)
             install_quant_selection_forward_schema(target_connection)
             install_quant_research_program_schema(target_connection)
+            install_quant_factor_warehouse_schema(target_connection)
 
             for table in metadata.sorted_tables:
                 source_count, source_digest = _table_digest(source_connection, table)

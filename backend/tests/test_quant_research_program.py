@@ -492,8 +492,12 @@ class QuantProductionDataPathTests(unittest.TestCase):
             0,
         )
         self.assertIn(
-            "Tushare daily_basic 历史估值批量额度或本地历史缓存",
+            "本地时点因子仓库至少覆盖 4 只股票和研究窗口",
             value_preset["data_requirements"],
+        )
+        self.assertEqual(
+            value_preset["policy"]["factor_data_mode"],
+            "warehouse_only",
         )
         self.assertEqual(
             opportunity_service.PAPER_BENCHMARKS["A股"]["symbol"],

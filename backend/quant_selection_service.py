@@ -21,6 +21,9 @@ from quant_selection_engine import (
     run_selection_research,
 )
 from quant_fundamentals import load_tushare_point_in_time_fundamentals
+from quant_factor_warehouse_service import (
+    load_point_in_time_fundamentals as load_warehouse_fundamentals,
+)
 from quant_selection_repository import (
     QuantSelectionConflictError,
     QuantSelectionNotFoundError,
@@ -204,6 +207,13 @@ def normalize_policy(payload: dict[str, Any] | None) -> dict[str, Any]:
         raise ValueError(
             "披露日财务质量与时点估值因子当前只支持 A 股 Tushare 专业数据"
         )
+    factor_data_mode = str(
+        source.get("factor_data_mode") or "warehouse_only"
+    )
+    if factor_data_mode not in {"warehouse_only", "provider_direct"}:
+        raise ValueError(
+            "财务因子数据模式只能是 warehouse_only 或 provider_direct"
+        )
 
     max_positions = int(
         _bounded(source.get("max_positions", 6), 2, 12, "最大持仓数")
@@ -285,6 +295,7 @@ def normalize_policy(payload: dict[str, Any] | None) -> dict[str, Any]:
         "rebalance_days": rebalance_days,
         "oos_segment_days": segment_days,
         "factor_weights": factor_weights,
+        "factor_data_mode": factor_data_mode,
         "minimum_composite_score": _bounded(
             source.get("minimum_composite_score", 55),
             0,
@@ -447,18 +458,18 @@ def presets() -> list[dict[str, Any]]:
         },
         {
             "id": "a_frozen_pit_value_research",
-            "label": "A股时点估值研究池（需批量额度）",
+            "label": "A股仓库时点估值研究池",
             "description": (
-                "在同一冻结样本上加入历史 PE/PB；需要足够的 Tushare "
-                "daily_basic 调用频次或已经预热的历史因子缓存。"
+                "在同一冻结样本上加入仓库中的历史 PE/PB；研究运行本身"
+                "不再调用供应商，由额度安全调度器逐日沉淀历史。"
             ),
             "promotion_capable": False,
             "data_requirements": [
                 "A股配额安全价格日线",
-                "Tushare daily_basic 历史估值批量额度或本地历史缓存",
+                "本地时点因子仓库至少覆盖 4 只股票和研究窗口",
             ],
             "known_limitations": [
-                "每小时仅 1 次的账号不能即时加载 12 只股票历史估值",
+                "首次部署需要等待每日增量或历史回填计划逐步形成覆盖",
                 "冻结当前名单存在幸存者偏差，只能用于研究",
             ],
             "policy": normalize_policy(
@@ -471,6 +482,7 @@ def presets() -> list[dict[str, Any]]:
                     "history_months": 36,
                     "minimum_average_turnover": 50_000_000,
                     "sell_tax_bps": 10,
+                    "factor_data_mode": "warehouse_only",
                     "factor_weights": {
                         "momentum": 30,
                         "trend_quality": 20,
@@ -510,6 +522,7 @@ def presets() -> list[dict[str, Any]]:
                     "history_months": 60,
                     "minimum_average_turnover": 50_000_000,
                     "sell_tax_bps": 10,
+                    "factor_data_mode": "warehouse_only",
                     "factor_weights": {
                         "momentum": 20,
                         "trend_quality": 15,
@@ -1171,6 +1184,9 @@ def execute_run(
             if float(policy["factor_weights"].get(key, 0)) > 0
         }
         if requested_fundamental_factors:
+            factor_data_mode = str(
+                policy.get("factor_data_mode") or "warehouse_only"
+            )
             repo.update_progress(
                 run_id,
                 tenant_id=tenant_id,
@@ -1180,19 +1196,36 @@ def execute_run(
                     "completed": 0,
                     "total": loaded_candidates,
                     "message": (
-                        "正在读取财报公告日与历史每日估值；"
-                        "报告期不会被当作数据可见日期"
+                        (
+                            "正在从本地时点因子仓库读取不可变历史；"
+                            if factor_data_mode == "warehouse_only"
+                            else "正在直接读取供应商财报公告日与历史每日估值；"
+                        )
+                        + "报告期不会被当作数据可见日期"
                     ),
                 },
             )
-            fundamental_inputs, fundamental_evidence = (
-                load_tushare_point_in_time_fundamentals(
-                    _tushare_pro(),
-                    [symbol for symbol in symbols if symbol in frames],
-                    history_months=int(policy["history_months"]),
-                    required_factors=requested_fundamental_factors,
+            if factor_data_mode == "warehouse_only":
+                fundamental_inputs, fundamental_evidence = (
+                    load_warehouse_fundamentals(
+                        [symbol for symbol in symbols if symbol in frames],
+                        history_months=int(policy["history_months"]),
+                        required_factors=requested_fundamental_factors,
+                    )
                 )
-            )
+            else:
+                fundamental_inputs, fundamental_evidence = (
+                    load_tushare_point_in_time_fundamentals(
+                        _tushare_pro(),
+                        [
+                            symbol
+                            for symbol in symbols
+                            if symbol in frames
+                        ],
+                        history_months=int(policy["history_months"]),
+                        required_factors=requested_fundamental_factors,
+                    )
+                )
             if len(fundamental_inputs) < 4:
                 raise QuantSelectionInputError(
                     "启用财务因子后只有 "

@@ -298,6 +298,13 @@ def collect_components(
             "opportunity_schema": database.get("opportunity_schema"),
             "portfolio_twin_schema": database.get("portfolio_twin_schema"),
             "portfolio_valuation_schema": database.get("portfolio_valuation_schema"),
+            "quant_selection_schema": database.get("quant_selection_schema"),
+            "quant_research_program_schema": database.get(
+                "quant_research_program_schema"
+            ),
+            "quant_factor_warehouse_schema": database.get(
+                "quant_factor_warehouse_schema"
+            ),
             "availability_schema": database.get("availability_schema"),
             "error_type": database.get("error"),
         },

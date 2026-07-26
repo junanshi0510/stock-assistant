@@ -122,6 +122,13 @@ AVAILABILITY_SLO_API_REDUNDANCY=99.0
 
 # 生产热门榜支持多专业源接力。Key 只写入本文件；不要写入 Git、前端或 systemd unit。
 TUSHARE_TOKEN=服务端Token
+# A 股时点因子仓库一次只执行一个供应商目标。以下三个时间值分别有
+# 3900/3900/60 秒代码硬下限；租约默认长于 330 秒任务硬时限。
+QUANT_FACTOR_SYNC_INTERVAL_SECONDS=3900
+QUANT_FACTOR_RETRY_COOLDOWN_SECONDS=3900
+QUANT_FACTOR_QUEUE_REDISPATCH_SECONDS=600
+QUANT_FACTOR_SYNC_LEASE_SECONDS=600
+QUANT_FACTOR_MAX_BACKFILL_DAYS=1830
 MASSIVE_API_KEY=服务端Key
 MASSIVE_API_BASE_URL=https://api.massive.com
 # Basic/低配套餐默认避免超过约 5 次/分钟；付费套餐按合同额度调整。
@@ -170,7 +177,7 @@ DEEPSEEK_API_KEY=服务端Key
 
 纯 IP HTTP 阶段使用 `AUTH_COOKIE_SECURE=false`。配置域名和 HTTPS 后改为 `true` 并重启 API。任何 Key 都不能写入 Git、前端变量或命令输出。
 
-`TUSHARE_TOKEN` 必须实际拥有所用 A 股日线权限；历史时点量化选股还要求 `index_weight` 权限，并应对 `000300.SH`、`000905.SH` 或 `000852.SH` 的历史月份做一次真实权限探测。港股日线/基础资料可能需要单独开通。Massive 免费档提供最近完整日终全市场聚合，不能标记为盘中实时；默认价格/成交量门槛用于避免极低流动性标的污染榜首。默认 Massive 请求间隔会让冷启动大股票池排队，这是防止 `429` 的预期行为，不能为了提速盲目调成 0；只有确认付费套餐合同额度后才可调低。请求槽位在同一 POSIX 主机的进程间共享，Massive Key 使用 Bearer Header，不进入 Query URL。Alpha Vantage 留空 entitlement 时按日终榜使用，不能把免费或日终权限标记为实时。富途路线只有在 FutuOpenD 常驻、登录有效、行情权限与 `FUTU_OPEND_MARKETS` 一致时才算配置完成；OpenD 端口只允许本机或受控内网访问，不能直接暴露公网。公开降级默认开启只用于迁移期；专业源验收稳定后可设 `HOT_STOCK_PUBLIC_FALLBACK_ENABLED=false`。修改这些变量后至少重启 `stock-assistant-market-worker`。
+`TUSHARE_TOKEN` 必须实际拥有所用 A 股日线权限；历史时点量化选股还要求 `index_weight` 权限，并应对 `000300.SH`、`000905.SH` 或 `000852.SH` 的历史月份做一次真实权限探测。因子仓库用 `daily_basic(trade_date=...)` 每次保存一个全市场截面；低额度账号不得把 `QUANT_FACTOR_SYNC_INTERVAL_SECONDS` 调低到合同额度之外，代码也会强制至少 3900 秒。未被 Worker 领取的 queued 运行超过 `QUANT_FACTOR_QUEUE_REDISPATCH_SECONDS` 后会复用原 `run_id` 重派，不能通过手工删库或重复建计划恢复。港股日线/基础资料可能需要单独开通。Massive 免费档提供最近完整日终全市场聚合，不能标记为盘中实时；默认价格/成交量门槛用于避免极低流动性标的污染榜首。默认 Massive 请求间隔会让冷启动大股票池排队，这是防止 `429` 的预期行为，不能为了提速盲目调成 0；只有确认付费套餐合同额度后才可调低。请求槽位在同一 POSIX 主机的进程间共享，Massive Key 使用 Bearer Header，不进入 Query URL。Alpha Vantage 留空 entitlement 时按日终榜使用，不能把免费或日终权限标记为实时。富途路线只有在 FutuOpenD 常驻、登录有效、行情权限与 `FUTU_OPEND_MARKETS` 一致时才算配置完成；OpenD 端口只允许本机或受控内网访问，不能直接暴露公网。公开降级默认开启只用于迁移期；专业源验收稳定后可设 `HOT_STOCK_PUBLIC_FALLBACK_ENABLED=false`。修改这些变量后至少重启 `stock-assistant-market-worker`、`stock-assistant-scheduler-worker` 和 `stock-assistant-celery-beat`。
 
 ## 5. 初始化 PostgreSQL 与 Redis
 
@@ -454,6 +461,7 @@ sudo bash -lc '
   /opt/stock-assistant/venv/bin/python -m migrations.portfolio_capital_learning_v1
   /opt/stock-assistant/venv/bin/python -m migrations.portfolio_quant_lab_v1
   /opt/stock-assistant/venv/bin/python -m migrations.quant_selection_lab_v1
+  /opt/stock-assistant/venv/bin/python -m migrations.quant_factor_warehouse_v1
   /opt/stock-assistant/venv/bin/python -m migrations.portfolio_decision_twin_v1
   /opt/stock-assistant/venv/bin/python -m migrations.portfolio_valuation_v1
   /opt/stock-assistant/venv/bin/python -m migrations.availability_control_v1
@@ -479,7 +487,7 @@ curl -fsS http://127.0.0.1:8002/health/full
 curl -fsS http://127.0.0.1/health/ready
 ```
 
-`opportunity-factory.v1` 会在单个 PostgreSQL 事务和 advisory lock 内建立 6 张机会工厂表、不可变触发器和迁移标记；`opportunity-profit-engine.v1` 会给纸面观察增加部分唯一幂等索引，并建立用户隔离、拒绝 UPDATE/DELETE 的收益政策版本表和收益记分卡表；`opportunity-investment-committee.v1` 会建立用户隔离、按 Evidence 内容寻址并拒绝 UPDATE/DELETE 的委员会指令表；`opportunity-regime-allocation.v1` 会建立用户隔离、按 Evidence 内容寻址、拒绝 UPDATE/DELETE 的市场状态与策略适配快照表；`portfolio-capital-decision.v1` 会建立租户/用户隔离、按证据幂等并拒绝 UPDATE/DELETE 的组合资金计划表；`portfolio-capital-learning.v1` 会建立追加式执行事件、跨计划唯一交易绑定和精确交易日结果快照三张表，并对执行与结果历史安装 UPDATE/DELETE 拒绝触发器；`portfolio-quant-lab.v1` 会建立租户/用户隔离的量化运行、前序哈希事件和纸面调仓指令三张表，完成结果与事件/指令拒绝 UPDATE/DELETE，运行冻结输入与完成结果也不能被改写；`quant-selection-lab.v1` 会建立历史时点量化选股运行、前序哈希事件和 shadow mandate 三张用户隔离表，冻结输入与完成结果不可重写，事件和 mandate 拒绝 UPDATE/DELETE；`portfolio-decision-twin.v1` 会建立用户隔离的 `portfolio_twin_runs` 表；`portfolio-valuation.v1` 会建立共享公开行情观察与用户隔离估值快照两张表；`availability-control.v1` 会建立不可变探针与事故事件两张表及哈希链所需索引。失败会整体回滚，首次成功后无需在无数据库变更的日常发布中重复执行。数据库结构升级必须先备份并执行对应迁移，不能依赖应用启动时自动建表；readiness 必须同时返回 `opportunity_schema=true`、`opportunity_profit_schema=true`、`opportunity_committee_schema=true`、`opportunity_regime_schema=true`、`portfolio_capital_schema=true`、`portfolio_capital_learning_schema=true`、`portfolio_quant_schema=true`、`quant_selection_schema=true`、`portfolio_twin_schema=true`、`portfolio_valuation_schema=true` 和 `availability_schema=true` 才能接流量。量化运行分别由 API 创建持久 `portfolio_quant_run` 或 `quant_selection_run` 作业，完整输入留在 PostgreSQL，队列消息只携带作业 ID，真实行情和计算只路由到 `market-data` Worker；量化选股任务软/硬时限为 1800/1860 秒，租约为 2100 秒。
+`opportunity-factory.v1` 会在单个 PostgreSQL 事务和 advisory lock 内建立 6 张机会工厂表、不可变触发器和迁移标记；`opportunity-profit-engine.v1` 会给纸面观察增加部分唯一幂等索引，并建立用户隔离、拒绝 UPDATE/DELETE 的收益政策版本表和收益记分卡表；`opportunity-investment-committee.v1` 会建立用户隔离、按 Evidence 内容寻址并拒绝 UPDATE/DELETE 的委员会指令表；`opportunity-regime-allocation.v1` 会建立用户隔离、按 Evidence 内容寻址、拒绝 UPDATE/DELETE 的市场状态与策略适配快照表；`portfolio-capital-decision.v1` 会建立租户/用户隔离、按证据幂等并拒绝 UPDATE/DELETE 的组合资金计划表；`portfolio-capital-learning.v1` 会建立追加式执行事件、跨计划唯一交易绑定和精确交易日结果快照三张表，并对执行与结果历史安装 UPDATE/DELETE 拒绝触发器；`portfolio-quant-lab.v1` 会建立租户/用户隔离的量化运行、前序哈希事件和纸面调仓指令三张表，完成结果与事件/指令拒绝 UPDATE/DELETE，运行冻结输入与完成结果也不能被改写；`quant-selection-lab.v1` 会建立历史时点量化选股运行、前序哈希事件和 shadow mandate 三张用户隔离表，冻结输入与完成结果不可重写，事件和 mandate 拒绝 UPDATE/DELETE；`quant-factor-warehouse.v1` 会建立共享市场数据的回填计划、同步运行、哈希链事件、每日估值观察和公告日财务观察五张表，原始观察与事件拒绝 UPDATE/DELETE，计划和运行只允许受控生命周期变化；`portfolio-decision-twin.v1` 会建立用户隔离的 `portfolio_twin_runs` 表；`portfolio-valuation.v1` 会建立共享公开行情观察与用户隔离估值快照两张表；`availability-control.v1` 会建立不可变探针与事故事件两张表及哈希链所需索引。失败会整体回滚，首次成功后无需在无数据库变更的日常发布中重复执行。数据库结构升级必须先备份并执行对应迁移，不能依赖应用启动时自动建表；readiness 必须同时返回 `opportunity_schema=true`、`opportunity_profit_schema=true`、`opportunity_committee_schema=true`、`opportunity_regime_schema=true`、`portfolio_capital_schema=true`、`portfolio_capital_learning_schema=true`、`portfolio_quant_schema=true`、`quant_selection_schema=true`、`quant_research_program_schema=true`、`quant_factor_warehouse_schema=true`、`portfolio_twin_schema=true`、`portfolio_valuation_schema=true` 和 `availability_schema=true` 才能接流量。量化运行分别由 API 创建持久 `portfolio_quant_run`、`quant_selection_run` 或 `quant_factor_sync_run` 作业，完整输入留在 PostgreSQL，队列消息只携带作业 ID，真实行情和计算只路由到 `market-data` Worker；量化选股任务软/硬时限为 1800/1860 秒，租约为 2100 秒；单个因子采集任务软/硬时限为 300/330 秒，默认租约为 600 秒，Beat 至少间隔 3900 秒且每次只调用一个供应商目标。
 
 ## 14. 回滚
 

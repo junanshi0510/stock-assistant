@@ -160,6 +160,48 @@ class TaskQueueProtocolTests(unittest.TestCase):
         self.assertGreaterEqual(float(schedule["schedule"]), 900.0)
         self.assertEqual(schedule["options"]["expires"], 900)
 
+    def test_quant_factor_collection_is_quota_spaced_and_split_across_queues(self):
+        self.assertEqual(
+            task_queue.celery_app.conf.task_routes[
+                task_queue.TASK_QUANT_FACTOR_SYNC
+            ],
+            {"queue": task_queue.QUEUE_MARKET},
+        )
+        self.assertEqual(
+            task_queue.celery_app.conf.task_routes[
+                task_queue.TASK_QUANT_FACTOR_SCHEDULER
+            ],
+            {"queue": task_queue.QUEUE_SCHEDULER},
+        )
+        schedule = task_queue.celery_app.conf.beat_schedule[
+            "sync-quant-factor-warehouse"
+        ]
+        self.assertEqual(
+            schedule["task"],
+            task_queue.TASK_QUANT_FACTOR_SCHEDULER,
+        )
+        self.assertGreaterEqual(float(schedule["schedule"]), 3900.0)
+        self.assertEqual(schedule["options"]["expires"], 300)
+
+    def test_quant_factor_message_contains_only_sync_run_id(self):
+        with (
+            patch.object(task_queue, "uses_celery_queue", return_value=True),
+            patch.object(task_queue, "_assert_queue_ready"),
+            patch.object(
+                task_queue.celery_app,
+                "send_task",
+                return_value=SimpleNamespace(id="factor-task-1"),
+            ) as send_task,
+        ):
+            task_id = task_queue.enqueue_quant_factor_sync("qf_sync_123")
+        self.assertEqual(task_id, "factor-task-1")
+        send_task.assert_called_once_with(
+            task_queue.TASK_QUANT_FACTOR_SYNC,
+            args=["qf_sync_123"],
+            queue=task_queue.QUEUE_MARKET,
+            task_id="quant-factor-qf_sync_123",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

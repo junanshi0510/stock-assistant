@@ -26,7 +26,9 @@ import {
   createQuantSelectionForwardValidation,
   createQuantSelectionRun,
   createQuantSelectionShadowMandate,
+  createQuantFactorBackfillPlan,
   createQuantResearchProgram,
+  fetchQuantFactorWarehouse,
   fetchQuantSelectionForwardValidations,
   fetchQuantSelectionOverview,
   fetchQuantResearchPrograms,
@@ -34,6 +36,8 @@ import {
   observeQuantSelectionForwardValidation,
   reconcileQuantResearchProgram,
   retireQuantResearchProgram,
+  runNextQuantFactorSync,
+  updateQuantFactorBackfillPlan,
 } from '../../api/quantSelection'
 
 const DEFAULT_FORM = {
@@ -57,6 +61,7 @@ const DEFAULT_FORM = {
     fundamental_quality: 0,
     value: 0,
   },
+  factor_data_mode: 'warehouse_only',
   minimum_composite_score: 55,
   minimum_price: 1,
   minimum_average_turnover: 50000000,
@@ -127,6 +132,25 @@ function defaultFirstRunDate() {
     value.getFullYear(),
     String(value.getMonth() + 1).padStart(2, '0'),
     '01',
+  ].join('-')
+}
+
+function dateInputMonthsAgo(months = 36) {
+  const value = new Date()
+  value.setMonth(value.getMonth() - months)
+  return [
+    value.getFullYear(),
+    String(value.getMonth() + 1).padStart(2, '0'),
+    String(value.getDate()).padStart(2, '0'),
+  ].join('-')
+}
+
+function todayInput() {
+  const value = new Date()
+  return [
+    value.getFullYear(),
+    String(value.getMonth() + 1).padStart(2, '0'),
+    String(value.getDate()).padStart(2, '0'),
   ].join('-')
 }
 
@@ -449,6 +473,7 @@ function EvidencePanel({ run }) {
         <span><small>Point-in-time 财务因子</small><b>{fundamentals.requested ? fundamentals.source || '专业财务源待核验' : '本策略未启用'}</b><em>{fundamentals.verification_detail}</em></span>
         <span><small>信号截面覆盖</small><b>{pct(fundamentals.coverage_pct)}</b><em>{fundamentals.eligible_observation_count || 0} / {fundamentals.signal_observation_count || 0} 个时点</em></span>
         <span><small>严格可见日期</small><b>公告日 + 交易日</b><em>报告期不作为可见日 · 歧义修订不回填</em></span>
+        {fundamentals.warehouse_version && <span><small>仓库快照</small><b><code>{shortHash(fundamentals.warehouse_snapshot_sha256)}</code></b><em>{fundamentals.warehouse_row_count || 0} 行 · 研究期供应商调用 {fundamentals.research_provider_call_count || 0}</em></span>}
       </div>
       {universe.warning && <div className="warning">{universe.warning}</div>}
       {!!result.fetch_failures?.length && <div className="warning">行情失败：{result.fetch_failures.map((item) => `${item.symbol}: ${item.error}`).join('；')}</div>}
@@ -590,6 +615,99 @@ function ResearchProgramPanel({
   )
 }
 
+function FactorWarehousePanel({
+  warehouse,
+  busy,
+  planForm,
+  setPlanForm,
+  onCreatePlan,
+  onSchedule,
+  onPlanAction,
+}) {
+  if (!warehouse) return null
+  const valuation = warehouse.datasets?.valuation_daily || {}
+  const financial = warehouse.datasets?.financial_indicator || {}
+  const controls = warehouse.controls || {}
+  const coveredValue = (warehouse.research_pool_coverage || []).filter((item) => Number(item.valuation?.date_count || 0) > 0).length
+  const coveredQuality = (warehouse.research_pool_coverage || []).filter((item) => Number(item.financial?.report_count || 0) > 0).length
+  const statusLabel = {
+    ready: '仓库可读',
+    degraded: '存在冲突组',
+    empty: '等待首次采集',
+  }[warehouse.status] || warehouse.status
+  return (
+    <section className="qsel-warehouse">
+      <div className="qsel-warehouse-head">
+        <div>
+          <span className="eyebrow">Point-in-time factor warehouse</span>
+          <h3><Database size={19} />A 股时点因子数据仓库</h3>
+          <p>先采集、后研究。每日估值按交易日入库，财务质量按公告日入库；原始观察不可改写，研究运行不会重复消耗供应商额度。</p>
+        </div>
+        <span className={`qsel-state ${warehouse.status === 'ready' ? 'verified' : warehouse.status === 'degraded' ? 'danger' : 'waiting'}`}>
+          {warehouse.status === 'ready' ? <CheckCircle2 size={14} /> : <Activity size={14} />}
+          {statusLabel}
+        </span>
+      </div>
+
+      <div className="qsel-warehouse-metrics">
+        <article><span><small>每日估值观察</small><b>{money(valuation.row_count || 0)}</b><em>{valuation.symbol_count || 0} 只 · {valuation.date_count || 0} 个交易日</em></span></article>
+        <article><span><small>估值日期范围</small><b>{valuation.last_date || '尚未采集'}</b><em>{valuation.first_date || '—'} → {valuation.last_date || '—'}</em></span></article>
+        <article><span><small>公告日财务观察</small><b>{money(financial.row_count || 0)}</b><em>{financial.symbol_count || 0} 只 · {financial.date_count || 0} 个公告日</em></span></article>
+        <article><span><small>默认研究池覆盖</small><b>{coveredValue}/12 估值</b><em>{coveredQuality}/12 财务 · 冲突 {Number(valuation.conflict_key_count || 0) + Number(financial.conflict_key_count || 0)} 组</em></span></article>
+      </div>
+
+      {!warehouse.provider?.configured && <div className="warning"><AlertTriangle size={15} />云端尚未配置 TUSHARE_TOKEN；仓库保持只读，不会静默改用网页数据。</div>}
+
+      {controls.can_manage && (
+        <div className="qsel-warehouse-control">
+          <div className="qsel-warehouse-form">
+            <label><span>回填数据集</span><select value={planForm.dataset} onChange={(event) => setPlanForm((current) => ({ ...current, dataset: event.target.value }))}><option value="valuation_daily">全市场每日估值</option><option value="financial_indicator">公告日财务质量</option></select></label>
+            <label><span>开始日期</span><input type="date" value={planForm.start_date} onChange={(event) => setPlanForm((current) => ({ ...current, start_date: event.target.value }))} /></label>
+            <label><span>结束日期</span><input type="date" value={planForm.end_date} onChange={(event) => setPlanForm((current) => ({ ...current, end_date: event.target.value }))} /></label>
+            {planForm.dataset === 'financial_indicator' && <label className="wide"><span>股票代码（逗号分隔，最多 40 只）</span><input value={planForm.symbols} onChange={(event) => setPlanForm((current) => ({ ...current, symbols: event.target.value }))} /></label>}
+          </div>
+          <div className="qsel-warehouse-actions">
+            <button type="button" disabled={busy || !warehouse.provider?.configured} onClick={onCreatePlan}>{busy ? <Activity size={14} /> : <History size={14} />}{busy ? '正在提交' : '创建额度安全回填计划'}</button>
+            <button type="button" className="ghost" disabled={busy || !warehouse.provider?.configured} onClick={onSchedule}><RefreshCw size={14} />执行下一个目标</button>
+            <span>每次只调用 1 个目标 · 调度间隔 {Math.round((warehouse.scheduler?.interval_seconds || 3900) / 60)} 分钟</span>
+          </div>
+        </div>
+      )}
+
+      <div className="qsel-warehouse-body">
+        <div>
+          <h4>回填计划</h4>
+          <div className="qsel-warehouse-plans">
+            {(warehouse.plans || []).map((plan) => (
+              <article key={plan.id}>
+                <header><b>{plan.dataset === 'valuation_daily' ? '每日估值' : '公告日财务'} · {plan.start_date} → {plan.end_date}</b><span className={`qsel-mini-state ${plan.status === 'active' ? 'passed' : plan.status === 'paused' ? 'warning' : 'failed'}`}>{plan.status === 'active' ? '执行中' : plan.status === 'paused' ? '已暂停' : plan.status === 'completed' ? '已完成' : '已取消'}</span></header>
+                <div><span style={{ width: `${Math.max(0, Math.min(100, Number(plan.progress?.progress_pct || 0)))}%` }} /></div>
+                <p>{plan.progress?.completed_target_count || 0}/{plan.progress?.target_count || 0} 目标 · 下一项 {plan.progress?.next_target || '无'} · {pct(plan.progress?.progress_pct)}</p>
+                {controls.can_manage && ['active', 'paused'].includes(plan.status) && <footer>{plan.status === 'active' ? <button type="button" className="ghost" onClick={() => onPlanAction(plan.id, 'pause')}>暂停</button> : <button type="button" className="ghost" onClick={() => onPlanAction(plan.id, 'resume')}>继续</button>}<button type="button" className="ghost danger" onClick={() => onPlanAction(plan.id, 'cancel')}>取消并留痕</button></footer>}
+              </article>
+            ))}
+            {!warehouse.plans?.length && <em>尚未建立历史回填计划；每日增量仍可独立运行。</em>}
+          </div>
+        </div>
+        <div>
+          <h4>最近采集批次</h4>
+          <div className="qsel-warehouse-runs">
+            {(warehouse.runs || []).slice(0, 8).map((item) => (
+              <article key={item.id}>
+                <span className={`qsel-mini-state ${item.status === 'succeeded' ? 'passed' : item.status === 'failed' ? 'failed' : item.status === 'partial' ? 'warning' : 'running'}`}>{item.status}</span>
+                <b>{item.dataset === 'valuation_daily' ? item.target_date : item.target_symbol}</b>
+                <small>{item.stats ? `${item.stats.inserted_rows || 0} 行 · ${item.stats.no_data ? '非交易日/无数据' : '已入库'}` : item.error_message || '等待 Worker'}</small>
+              </article>
+            ))}
+            {!warehouse.runs?.length && <em>还没有采集批次。</em>}
+          </div>
+        </div>
+      </div>
+      <p className="qsel-warehouse-contract"><Fingerprint size={14} />同股票、同可见日期出现不同内容哈希时整组排除；回填计划和失败批次不删除，研究结果可绑定仓库快照 SHA-256。</p>
+    </section>
+  )
+}
+
 function ResultView({
   run,
   mandate,
@@ -704,6 +822,7 @@ export default function QuantSelectionLab() {
   const [overview, setOverview] = useState(null)
   const [forwardOverview, setForwardOverview] = useState(null)
   const [programOverview, setProgramOverview] = useState(null)
+  const [factorWarehouse, setFactorWarehouse] = useState(null)
   const [form, setForm] = useState(DEFAULT_FORM)
   const [symbols, setSymbols] = useState(SAMPLE_SYMBOLS.A股)
   const [selectedRunId, setSelectedRunId] = useState(null)
@@ -714,6 +833,7 @@ export default function QuantSelectionLab() {
   const [forwardBusy, setForwardBusy] = useState(false)
   const [observeBusy, setObserveBusy] = useState(false)
   const [programBusy, setProgramBusy] = useState(false)
+  const [factorBusy, setFactorBusy] = useState(false)
   const [acknowledged, setAcknowledged] = useState(false)
   const [programAcknowledged, setProgramAcknowledged] = useState(false)
   const [programSchedule, setProgramSchedule] = useState({
@@ -722,19 +842,29 @@ export default function QuantSelectionLab() {
     run_time_local: '20:30',
     planned_cycles: 6,
   })
+  const [factorPlanForm, setFactorPlanForm] = useState({
+    dataset: 'valuation_daily',
+    start_date: dateInputMonthsAgo(36),
+    end_date: todayInput(),
+    symbols: DEFAULT_FORM.market === 'A股'
+      ? SAMPLE_SYMBOLS.A股.split(/\r?\n/).map((line) => line.split(/[,，]/)[0]).join(',')
+      : '',
+  })
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [showAdvanced, setShowAdvanced] = useState(false)
 
   const refreshOverview = useCallback(async () => {
-    const [result, forward, programs] = await Promise.all([
+    const [result, forward, programs, factors] = await Promise.all([
       fetchQuantSelectionOverview(),
       fetchQuantSelectionForwardValidations(),
       fetchQuantResearchPrograms(),
+      fetchQuantFactorWarehouse(),
     ])
     setOverview(result)
     setForwardOverview(forward)
     setProgramOverview(programs)
+    setFactorWarehouse(factors)
     setSelectedRunId((current) => current || result.runs?.[0]?.id || null)
     return result
   }, [])
@@ -783,6 +913,20 @@ export default function QuantSelectionLab() {
     }, 2500)
     return () => { active = false; globalThis.clearInterval(timer) }
   }, [run, refreshOverview])
+
+  useEffect(() => {
+    if (!factorWarehouse?.summary?.active_run_count) return undefined
+    let active = true
+    const timer = globalThis.setInterval(async () => {
+      try {
+        const next = await fetchQuantFactorWarehouse()
+        if (active) setFactorWarehouse(next)
+      } catch (requestError) {
+        if (active) setError(requestError.message)
+      }
+    }, 4000)
+    return () => { active = false; globalThis.clearInterval(timer) }
+  }, [factorWarehouse?.summary?.active_run_count])
 
   const mandates = overview?.shadow_mandates || []
   const mandate = mandates.find((item) => item.run_id === run?.id) || null
@@ -949,6 +1093,54 @@ export default function QuantSelectionLab() {
     }
   }
 
+  async function createFactorPlan() {
+    setFactorBusy(true); setError(''); setMessage('')
+    try {
+      const payload = {
+        dataset: factorPlanForm.dataset,
+        start_date: factorPlanForm.start_date,
+        end_date: factorPlanForm.end_date,
+        symbols: factorPlanForm.dataset === 'financial_indicator'
+          ? String(factorPlanForm.symbols || '').split(/[\s,，;；]+/).map((item) => item.trim()).filter(Boolean)
+          : [],
+      }
+      const response = await createQuantFactorBackfillPlan(payload)
+      setMessage(`因子回填计划已建立：${response.item?.progress?.target_count || 0} 个目标将按额度逐批采集。`)
+      await refreshOverview()
+    } catch (requestError) {
+      setError(requestError.message)
+    } finally {
+      setFactorBusy(false)
+    }
+  }
+
+  async function scheduleFactorTarget() {
+    setFactorBusy(true); setError(''); setMessage('')
+    try {
+      const response = await runNextQuantFactorSync()
+      setMessage(response.status === 'dispatched' ? '下一个因子采集目标已进入 market-data 队列。' : response.detail || `调度状态：${response.status}`)
+      await refreshOverview()
+    } catch (requestError) {
+      setError(requestError.message)
+    } finally {
+      setFactorBusy(false)
+    }
+  }
+
+  async function updateFactorPlan(planId, action) {
+    if (action === 'cancel' && !globalThis.confirm('取消后计划和已完成批次仍会永久留痕，确认取消？')) return
+    setFactorBusy(true); setError(''); setMessage('')
+    try {
+      const item = await updateQuantFactorBackfillPlan(planId, action)
+      setMessage(`回填计划已${action === 'pause' ? '暂停' : action === 'resume' ? '继续' : '取消并留痕'}：当前完成 ${item.progress?.progress_pct || 0}%。`)
+      await refreshOverview()
+    } catch (requestError) {
+      setError(requestError.message)
+    } finally {
+      setFactorBusy(false)
+    }
+  }
+
   if (loading) return <div className="page-loading"><span className="spinner" />正在读取组合选股实验室</div>
 
   return (
@@ -965,6 +1157,16 @@ export default function QuantSelectionLab() {
 
       {error && <div className="error"><AlertTriangle size={16} />{error}</div>}
       {message && <div className="qsel-message"><CheckCircle2 size={16} />{message}</div>}
+
+      <FactorWarehousePanel
+        warehouse={factorWarehouse}
+        busy={factorBusy}
+        planForm={factorPlanForm}
+        setPlanForm={setFactorPlanForm}
+        onCreatePlan={createFactorPlan}
+        onSchedule={scheduleFactorTarget}
+        onPlanAction={updateFactorPlan}
+      />
 
       <ResearchProgramPanel
         programs={programOverview?.programs || []}
@@ -1028,6 +1230,17 @@ export default function QuantSelectionLab() {
               <label key={key}><span>{label}</span><input type="number" min="0" max="100" disabled={form.market !== 'A股' && ['fundamental_quality', 'value'].includes(key)} value={form.factor_weights[key]} onChange={(event) => updateFactor(key, Number(event.target.value))} /><em>%</em></label>
             ))}
           </fieldset>
+
+          {form.market === 'A股' && (
+            <label className="qsel-field">
+              <span>财务 / 估值因子数据模式</span>
+              <select value={form.factor_data_mode} onChange={(event) => update('factor_data_mode', event.target.value)}>
+                <option value="warehouse_only">只读时点因子仓库（推荐）</option>
+                <option value="provider_direct">研究时直接请求供应商（高额度）</option>
+              </select>
+              <small>{form.factor_data_mode === 'warehouse_only' ? '运行研究不会调用供应商；覆盖不足会明确失败，由上方回填计划补齐。' : '会按股票直接请求历史财务数据，低额度账号可能触发限流。'}</small>
+            </label>
+          )}
 
           <div className="qsel-form-grid three">
             <label className="qsel-field"><span>最多持仓</span><input type="number" min="2" max="12" value={form.max_positions} onChange={(event) => update('max_positions', Number(event.target.value))} /></label>

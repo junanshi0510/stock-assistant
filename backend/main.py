@@ -38,6 +38,7 @@ from routers import (
     market,
     opportunities,
     portfolio,
+    quant_factors,
     quant_selection,
 )
 from task_queue import uses_celery_queue
@@ -188,6 +189,7 @@ app.include_router(funds.router)
 app.include_router(portfolio.router)
 app.include_router(agent.router)
 app.include_router(opportunities.router)
+app.include_router(quant_factors.router)
 app.include_router(quant_selection.router)
 
 

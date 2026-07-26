@@ -27,7 +27,9 @@ from task_queue import (
     TASK_OPPORTUNITY_OBSERVATIONS,
     TASK_PORTFOLIO_QUANT_RUN,
     TASK_QUANT_SELECTION_RUN,
+    TASK_QUANT_FACTOR_SYNC,
     TASK_QUANT_RESEARCH_PROGRAMS,
+    TASK_QUANT_FACTOR_SCHEDULER,
     TASK_MARKET_TOOL,
     TASK_OBJECT_CLEANUP,
     TASK_OCR,
@@ -494,6 +496,46 @@ def execute_quant_selection_run_job(self, job_id: str):
     return {"job_id": str(job_id), "status": updated["status"]}
 
 
+@celery_app.task(
+    bind=True,
+    name=TASK_QUANT_FACTOR_SYNC,
+    ignore_result=True,
+)
+def execute_quant_factor_sync(self, run_id: str):
+    """Collect one quota-bounded factor target using only its durable ID."""
+    from quant_factor_warehouse_service import execute_sync_run
+
+    worker_id = _worker_id(self)
+    try:
+        run = execute_sync_run(
+            str(run_id),
+            actor_id=worker_id,
+        )
+        return {
+            "run_id": str(run_id),
+            "status": run.get("status"),
+            "inserted_rows": int(
+                (run.get("stats") or {}).get("inserted_rows") or 0
+            ),
+        }
+    except SoftTimeLimitExceeded:
+        from quant_factor_repository import (
+            QuantFactorConflictError,
+            repository as factor_repository,
+        )
+
+        try:
+            factor_repository.fail_sync_run(
+                str(run_id),
+                actor_id=worker_id,
+                error_code="QUANT_FACTOR_SYNC_TIMEOUT",
+                error_message="量化因子同步达到执行时限",
+            )
+        except QuantFactorConflictError:
+            pass
+        return {"run_id": str(run_id), "status": "failed"}
+
+
 @celery_app.task(bind=True, name=TASK_LLM_TOOL, ignore_result=True)
 def execute_llm_tool_job(self, job_id: str):
     return _execute_tool_job(self, job_id, QUEUE_LLM)
@@ -723,6 +765,13 @@ def process_quant_research_programs():
     from quant_research_program_service import reconcile_due_programs
 
     return reconcile_due_programs(limit=100)
+
+
+@celery_app.task(name=TASK_QUANT_FACTOR_SCHEDULER, ignore_result=True)
+def process_quant_factor_warehouse():
+    from quant_factor_warehouse_service import schedule_due_sync
+
+    return schedule_due_sync()
 
 
 @celery_app.task(name=TASK_WATCHLIST_SCAN, ignore_result=True)

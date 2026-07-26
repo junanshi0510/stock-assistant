@@ -158,6 +158,20 @@ def _database_readiness() -> dict[str, Any]:
                 if database_dialect(connection) == "postgresql"
                 else True
             )
+            quant_factor_warehouse_schema = (
+                all(
+                    table_exists(connection, table)
+                    for table in (
+                        "quant_factor_backfill_plans",
+                        "quant_factor_sync_runs",
+                        "quant_factor_sync_events",
+                        "quant_factor_daily_observations",
+                        "quant_factor_financial_observations",
+                    )
+                )
+                if database_dialect(connection) == "postgresql"
+                else True
+            )
             availability_schema = (
                 all(
                     table_exists(connection, table)
@@ -183,6 +197,7 @@ def _database_readiness() -> dict[str, Any]:
                 and portfolio_quant_schema
                 and quant_selection_schema
                 and quant_research_program_schema
+                and quant_factor_warehouse_schema
                 and availability_schema
             ),
             "dialect": database_dialect(target),
@@ -206,6 +221,9 @@ def _database_readiness() -> dict[str, Any]:
             "quant_selection_schema": bool(quant_selection_schema),
             "quant_research_program_schema": bool(
                 quant_research_program_schema
+            ),
+            "quant_factor_warehouse_schema": bool(
+                quant_factor_warehouse_schema
             ),
             "availability_schema": bool(availability_schema),
         }

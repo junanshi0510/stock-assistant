@@ -9,6 +9,7 @@
 - 我的组合：用户确认的持仓、自选、OCR 导入、跨市场人民币可信估值、提醒，以及基于真实暴露区间的组合数字孪生；不拥有交易权限。
 - 量化组合实验室：只对运行开始时冻结的当前直接股票持仓做风险再分配研究，用严格滚动样本外窗口比较当前权重、等权、逆波动、风险平价和最小方差，并扣除显式换手成本。它不是全市场选股回测，不用历史收益预测未来收益，也不拥有股数、订单、券商连接或交易权限。
 - 量化选股实验室：使用历史时点可投资股票池、信号日可见的横截面因子、后续交易日开盘撮合、成交容量、非重叠样本外窗口和 Rank IC 研究选股组合。没有专业历史成员序列、专业复权/未复权双价格、成本压力与稳定性证据时只能 `research_only`；不拥有股数、订单、券商连接或交易权限。
+- A 股时点因子仓库：把供应商采集与研究运行解耦，按交易日沉淀全市场估值、按公告日沉淀财务质量，并通过不可变观察、冲突排除、哈希链、额度调度和仓库快照让历史研究可重复。仓库是共享市场事实，不含用户投资数据，也不拥有预测、资金或交易权限。
 - 投资指挥台：读取当前组合事实、已有仓位行动和冻结后的前瞻收益证据，生成组合级下一步行动、受限人工研究金额、现金保留与计划前后压力对照。已有仓位风险优先于新候选，不读取回测点收益直接放行，也不拥有现金、股数、订单或券商执行能力。
 - 资本计划兑现与决策学习：只把冻结计划绑定到用户账本中已经发生的真实股票买入，确认人民币实际结算、对账执行偏差并观察精确 5/20/60 交易日结果。它可以收紧下一份计划和扣减月度预算，但不能创建订单、修改交易事实或承诺收益。
 - 投资 Agent：持久化单基金 Run 与多基金 Batch、版本化只读工具、受控并发、确定性风险门禁、证据约束的模型合成和审计；不拥有交易权限。
@@ -22,7 +23,7 @@
 
 `backend/main.py` 只创建 FastAPI 应用、配置 CORS 和统一认证边界、装配路由、健康检查与指标。生产模式不在 API 进程启动数据抓取、Agent 或定时监控线程。HTTP 路由位于
 `backend/routers/auth.py`、`backend/routers/market.py`、`backend/routers/funds.py`、
-`backend/routers/portfolio.py`、`backend/routers/opportunities.py`、`backend/routers/quant_selection.py`、`backend/routers/availability.py` 和 `backend/routers/agent.py`。
+`backend/routers/portfolio.py`、`backend/routers/opportunities.py`、`backend/routers/quant_selection.py`、`backend/routers/quant_factors.py`、`backend/routers/availability.py` 和 `backend/routers/agent.py`。
 数据抓取和分析仍位于同名领域服务模块；生产路由通过 `market_data_gateway.py` 创建 PostgreSQL 持久任务并等待 `market-data` Worker 结果，路由层只负责请求校验、错误映射和服务编排。Redis 或 Worker 不可用时明确失败，不允许回到 API 进程执行外部抓取。
 
 `backend/auth.py` 是身份边界：密码哈希、受限流的普通用户自助注册、服务端 Session、CSRF、RBAC 和认证审计均在此实现。公开注册不能接受角色字段，管理员授权只存在于受保护的管理接口。
@@ -60,6 +61,8 @@ Claim 与追加式 Audit，`worker.py` 执行已领取 Run。生产由 Redis/Cel
 
 `backend/quant_selection_engine.py` 只在信号日及以前的数据上计算中期动量、趋势质量、低波动和流动性横截面百分位，因子权重在运行前冻结。目标组合最早于后续交易日开盘进入逐日事件账本，按先卖后买、现金、成交量参与率、二次容量冲击、佣金、滑点、卖出税、部分成交和订单超时撮合。结果必须同时保留成本后策略/基准曲线、最新篮子、非重叠样本外窗口、Rank IC、成本翻倍压力和完整成交摘要。纸面门禁要求历史股票池、宽度、专业双价格、样本外一致性、全期/压力后超额、回撤、容量和 Rank IC 全部通过；任何失败均为 `research_only`。`quant_selection_repository.py` 保存租户/用户隔离的不可变输入、完成结果、前序哈希事件和内容寻址 shadow mandate，`execution_authorized` 恒为 false。
 
+`backend/quant_factor_warehouse_service.py` 是 A 股历史财务/估值的采集与回放边界。`daily_basic` 每个目标交易日只发起一次全市场调用，`fina_indicator` 每个目标股票只发起一次报告期调用；调度器优先最近日期，再推进持久回填计划，每次调度最多一个目标。`quant_factor_repository.py` 保存不可变原始观察、带租约的同步运行和前序哈希事件；同供应商、同股票、同可见日期出现不同内容哈希时，研究读取必须整组排除。量化研究默认使用 `warehouse_only`，只按 `trade_date <= signal_date` 与 `announcement_date <= signal_date` 回放本地快照，运行期供应商调用数必须为零。
+
 `backend/hot_stocks.py` 是热门榜与专业行情路由边界。每个市场维护有序专业路线：A 股/港股为富途 OpenD → Tushare Pro，美股为富途 OpenD → Massive 全市场日终 → Alpha Vantage 官方三榜。东方财富/Yahoo 只能作为带 `public_fallback` 和 `degraded=true` 的 best-effort 降级源，新浪不在任何读取路由中。一次市场级 bundle 同时返回所需榜单、来源等级、截止时间、时效、质量摘要、方法和逐供应商尝试，机会工厂与市场日报不得再按榜单种类重复请求。供应商缓存和熔断按 provider ID 隔离；一个源失败后可以接力下一专业源。`backend/provider_transport.py` 统一约束 Massive/Alpha Vantage 请求速率；生产 POSIX 主机通过文件锁让 API/Worker 进程共享请求槽位，`429` 遵循 `Retry-After` 重试，Massive Key 只放 Bearer Header 而不进入异常 URL。Massive 日榜用相邻两份 grouped daily 全市场快照本地计算，7/30 日榜用 SPY 真实交易日序列定位基准，不能用自然日冒充交易日；美东 18:00 前不把当日快照当成完整 EOD，未配置 Key 时保持零网络请求。`GET /api/market/providers` 是零额度状态读取；`POST /api/market/providers/probe` 是用户显式触发、30 秒防重复且禁止公开降级的真实验证。所有异常在写入状态、日志或响应前必须脱敏。
 
 机会综合分只在同一市场、本次候选池内计算趋势动量、估值、盈利质量、成长和风险韧性分位。缺失因子固定按中性 50 分参与综合分，并由加权覆盖率单独否决，不能把缺失权重静默分配给其他因子。历史长度、数据新鲜度、技术分、三月收益、年化波动、最大回撤、基本面可用性和综合分均为显式硬门槛；任一失败不得被其他高分抵消。组合只使用入围候选并依次应用持仓数、单股上限、现金、候选池防守状态和相关性约束；权重和历史协方差风险均由确定性代码计算，不调用大模型。
@@ -86,7 +89,7 @@ Claim 与追加式 Audit，`worker.py` 执行已领取 Run。生产由 Redis/Cel
 - Nginx 将动态请求分配到 `api-8001/api-8002` 两个 systemd 模板实例，使用最少连接和被动失败摘除。两个副本必须无状态并共享 PostgreSQL/Redis/OSS；响应携带脱敏 replica/release 身份。Nginx 不启用 `non_idempotent` 上游重放，写请求仍由事务、CSRF、唯一约束和业务幂等键保证。
 - 公网负载均衡健康契约只有拓扑脱敏的 `/health/edge`；包含数据库目标、对象存储、Worker 和队列明细的 `/health/ready`、`/health/full` 只能经 loopback 访问，Prometheus 指标仍由 `/internal/metrics` 的回环 ACL 保护。
 - API 使用 root 持有、应用用户只读的内容寻址 release 目录。固定槽位符号链接和前端 current 链接原子切换；滚动发布通过独立 upstream include 先主动排空目标副本，再逐副本验证目标身份与 readiness，失败时按反向顺序恢复 upstream、旧槽位和静态 release。数据库迁移必须 expand/contract 并同时兼容回退 release。
-- PostgreSQL 是生产唯一事实源，保存用户、持仓、交易、不可变市场观察与组合估值、量化组合运行/事件/纸面指令、历史时点量化选股运行/事件/shadow mandate、Agent、机会策略/运行/纸面观察、收益政策与记分卡、组合资金计划、组合数字孪生运行、Evidence、任务载荷、租约、结果哈希和审计事件。应用启动不得自动运行 SQLite DDL；缺少迁移表时拒绝启动。
+- PostgreSQL 是生产唯一事实源，保存用户、持仓、交易、不可变市场观察与组合估值、A 股时点因子观察/回填计划/同步事件、量化组合运行/事件/纸面指令、历史时点量化选股运行/事件/shadow mandate、Agent、机会策略/运行/纸面观察、收益政策与记分卡、组合资金计划、组合数字孪生运行、Evidence、任务载荷、租约、结果哈希和审计事件。应用启动不得自动运行 SQLite DDL；缺少迁移表时拒绝启动。
 - `database.py` 提供 PostgreSQL 连接池和现有 Repository 的兼容接口。SQLite 只用于开发、测试和首次迁移输入，生产连接失败不得回退。
 - Redis 只承担 Celery 传输；消息只含 Run ID 或 Job ID。Redis 设置 AOF 和 `noeviction`，丢失后由 PostgreSQL 中的 queued/running 租约恢复。
 - `background_jobs.py` 是数据、LLM、OCR 的统一持久任务信封，输入/结果都有 SHA-256，状态变化进入不可变事件链；旧 Worker 在租约失效后不能提交结果。

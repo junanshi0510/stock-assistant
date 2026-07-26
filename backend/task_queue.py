@@ -30,6 +30,9 @@ TASK_PORTFOLIO_QUANT_RUN = (
 TASK_QUANT_SELECTION_RUN = (
     "stock_assistant.market.execute_quant_selection_run"
 )
+TASK_QUANT_FACTOR_SYNC = (
+    "stock_assistant.market.execute_quant_factor_sync"
+)
 TASK_LLM_TOOL = "stock_assistant.llm.execute_tool_job"
 TASK_OCR = "stock_assistant.ocr.process_job"
 TASK_OBJECT_CLEANUP = "stock_assistant.ocr.cleanup_expired_objects"
@@ -45,6 +48,9 @@ TASK_CAPITAL_OUTCOMES = (
 )
 TASK_QUANT_RESEARCH_PROGRAMS = (
     "stock_assistant.scheduler.quant_research_programs"
+)
+TASK_QUANT_FACTOR_SCHEDULER = (
+    "stock_assistant.scheduler.quant_factor_warehouse"
 )
 TASK_WATCHLIST_SCAN = "stock_assistant.scheduler.watchlist_scan"
 TASK_AVAILABILITY_PROBE = "stock_assistant.scheduler.availability_probe"
@@ -139,6 +145,7 @@ celery_app.conf.update(
         TASK_OPPORTUNITY_SCAN: {"queue": QUEUE_MARKET},
         TASK_PORTFOLIO_QUANT_RUN: {"queue": QUEUE_MARKET},
         TASK_QUANT_SELECTION_RUN: {"queue": QUEUE_MARKET},
+        TASK_QUANT_FACTOR_SYNC: {"queue": QUEUE_MARKET},
         TASK_LLM_TOOL: {"queue": QUEUE_LLM},
         TASK_OCR: {"queue": QUEUE_OCR},
         TASK_OBJECT_CLEANUP: {"queue": QUEUE_OCR},
@@ -149,6 +156,7 @@ celery_app.conf.update(
         TASK_OPPORTUNITY_OBSERVATIONS: {"queue": QUEUE_SCHEDULER},
         TASK_CAPITAL_OUTCOMES: {"queue": QUEUE_SCHEDULER},
         TASK_QUANT_RESEARCH_PROGRAMS: {"queue": QUEUE_SCHEDULER},
+        TASK_QUANT_FACTOR_SCHEDULER: {"queue": QUEUE_SCHEDULER},
         TASK_WATCHLIST_SCAN: {"queue": QUEUE_MARKET},
         TASK_AVAILABILITY_PROBE: {"queue": QUEUE_SCHEDULER},
     },
@@ -164,6 +172,10 @@ celery_app.conf.update(
         TASK_QUANT_SELECTION_RUN: {
             "soft_time_limit": 1800,
             "time_limit": 1860,
+        },
+        TASK_QUANT_FACTOR_SYNC: {
+            "soft_time_limit": 300,
+            "time_limit": 330,
         },
         TASK_LLM_TOOL: {"soft_time_limit": 150, "time_limit": 180},
         TASK_OCR: {"soft_time_limit": 120, "time_limit": 150},
@@ -222,6 +234,19 @@ celery_app.conf.update(
                 ),
             ),
             "options": {"expires": 240},
+        },
+        "sync-quant-factor-warehouse": {
+            "task": TASK_QUANT_FACTOR_SCHEDULER,
+            "schedule": max(
+                3900.0,
+                float(
+                    os.getenv(
+                        "QUANT_FACTOR_SYNC_INTERVAL_SECONDS",
+                        "3900",
+                    )
+                ),
+            ),
+            "options": {"expires": 300},
         },
         "scan-watchlist": {
             "task": TASK_WATCHLIST_SCAN,
@@ -303,6 +328,20 @@ def enqueue_agent_run(run_id: str, repository=None) -> str:
     return str(result.id)
 
 
+def enqueue_quant_factor_sync(run_id: str) -> str:
+    if not uses_celery_queue():
+        raise TaskQueueConfigurationError("当前不是 Celery 任务模式")
+    _assert_queue_ready()
+    normalized = str(run_id)
+    result = celery_app.send_task(
+        TASK_QUANT_FACTOR_SYNC,
+        args=[normalized],
+        queue=QUEUE_MARKET,
+        task_id=f"quant-factor-{normalized}",
+    )
+    return str(result.id)
+
+
 def enqueue_background_job(job: dict[str, Any], repository) -> str:
     if not uses_celery_queue():
         raise TaskQueueConfigurationError("后台作业只允许在 Celery 模式派发")
@@ -340,6 +379,7 @@ def enqueue_scheduler_task(task_name: str) -> str:
         TASK_OPPORTUNITY_OBSERVATIONS,
         TASK_CAPITAL_OUTCOMES,
         TASK_QUANT_RESEARCH_PROGRAMS,
+        TASK_QUANT_FACTOR_SCHEDULER,
         TASK_WATCHLIST_SCAN,
         TASK_OBJECT_CLEANUP,
         TASK_AVAILABILITY_PROBE,

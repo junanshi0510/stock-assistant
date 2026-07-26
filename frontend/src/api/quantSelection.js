@@ -73,3 +73,34 @@ export function retireQuantResearchProgram(programId, reason) {
     body: JSON.stringify({ reason }),
   })
 }
+
+export function fetchQuantFactorWarehouse() {
+  return getJson('/api/v1/quant-factors/overview')
+}
+
+export function createQuantFactorBackfillPlan(payload) {
+  return getJson('/api/v1/quant-factors/backfill-plans', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...payload, acknowledged: true }),
+  })
+}
+
+export function runNextQuantFactorSync(payload = {}) {
+  const hasTarget = payload && Object.keys(payload).length > 0
+  return getJson(hasTarget ? '/api/v1/quant-factors/sync-runs' : '/api/v1/quant-factors/schedule', {
+    method: 'POST',
+    ...(hasTarget ? {
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    } : {}),
+  })
+}
+
+export function updateQuantFactorBackfillPlan(planId, action) {
+  return getJson(`/api/v1/quant-factors/backfill-plans/${encodeURIComponent(planId)}/actions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action }),
+  })
+}

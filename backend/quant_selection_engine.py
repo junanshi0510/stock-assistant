@@ -1760,6 +1760,19 @@ def run_selection_research(
         "ambiguous_revision_count": int(
             evidence.get("ambiguous_revision_count") or 0
         ),
+        "warehouse_version": evidence.get("warehouse_version"),
+        "warehouse_snapshot_sha256": evidence.get("snapshot_sha256"),
+        "warehouse_row_count": int(
+            evidence.get("warehouse_row_count") or 0
+        ),
+        "research_provider_call_count": int(
+            evidence.get("research_provider_call_count") or 0
+        ),
+        "capture_modes": evidence.get("capture_modes") or [],
+        "live_capture_coverage_pct": float(
+            evidence.get("live_capture_coverage_pct") or 0
+        ),
+        "assets": evidence.get("assets") or [],
         "signal_observation_count": fundamental_observation_count,
         "eligible_observation_count": fundamental_eligible_count,
         "coverage_pct": round(
