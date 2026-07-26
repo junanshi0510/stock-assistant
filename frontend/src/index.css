@@ -10949,6 +10949,8 @@ button.research-source-card:hover { border-color: #9abbb7; background: #f3f9f8; 
 .qsel-presets button:hover { border-color: #91c4b6; background: #f2f9f6; }
 .qsel-presets b { color: #3c5952; font-size: 9px; }
 .qsel-presets small { color: #7e908b; font-size: 7.5px; line-height: 1.45; }
+.qsel-presets .qsel-preset-meta { color: #55746d; }
+.qsel-presets .qsel-preset-limit { color: #9a6c3d; }
 .qsel-presets em { color: #2b7b67; font-size: 6.8px; font-style: normal; font-weight: 850; }
 .qsel-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
 .qsel-form-grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }

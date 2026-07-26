@@ -19,6 +19,8 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from migrations import quant_research_program_v1  # noqa: E402
+import data_fetch  # noqa: E402
+import opportunity_service  # noqa: E402
 from quant_fundamentals import (  # noqa: E402
     _clean_financials,
     load_tushare_point_in_time_fundamentals,
@@ -28,6 +30,7 @@ from quant_research_program_repository import (  # noqa: E402
     QuantResearchProgramRepository,
 )
 import quant_research_program_service as program_service  # noqa: E402
+import quant_selection_service as selection_service  # noqa: E402
 from quant_selection_engine import (  # noqa: E402
     _point_in_time_fundamental_values,
     run_selection_research,
@@ -347,6 +350,119 @@ class PointInTimeFundamentalTests(unittest.TestCase):
             evidence["required_factors"], ["fundamental_quality"]
         )
         self.assertTrue(inputs["600519"]["valuations"].empty)
+
+
+class QuantProductionDataPathTests(unittest.TestCase):
+    def tearDown(self):
+        with data_fetch._cache_lock:
+            data_fetch._cache.clear()
+
+    @staticmethod
+    def index_frame() -> pd.DataFrame:
+        frame = pd.DataFrame(
+            {
+                "date": pd.bdate_range("2026-01-02", periods=8),
+                "open": np.linspace(3900, 3970, 8),
+                "high": np.linspace(3910, 3980, 8),
+                "low": np.linspace(3890, 3960, 8),
+                "close": np.linspace(3905, 3975, 8),
+                "volume": np.full(8, 100_000_000),
+            }
+        )
+        return frame
+
+    def test_a_share_index_uses_dedicated_history_sources(self):
+        calls = []
+
+        def fake_index_source(symbol, start, end):
+            calls.append((symbol, start, end))
+            return self.index_frame()
+
+        with data_fetch._cache_lock:
+            data_fetch._cache.clear()
+        with patch.object(
+            data_fetch,
+            "_A_INDEX_SOURCES",
+            [("fixture-index", fake_index_source)],
+        ):
+            frame = data_fetch.get_history(
+                "A股",
+                "000300.sh",
+                "20260101",
+                "20260131",
+            )
+        self.assertEqual(
+            calls,
+            [("000300.SH", "20260101", "20260131")],
+        )
+        self.assertEqual(frame.attrs["source"], "fixture-index")
+        self.assertEqual(len(frame), 8)
+
+    def test_index_benchmark_does_not_request_stock_raw_prices(self):
+        adjusted = self.index_frame()
+        adjusted.attrs["source"] = "Tushare index_daily"
+        adjusted.attrs["retrieved_at"] = "2026-07-26T00:00:00+00:00"
+        with (
+            patch.object(
+                data_fetch,
+                "get_history_months",
+                return_value=adjusted,
+            ),
+            patch.object(
+                data_fetch,
+                "get_price_level_history_months",
+            ) as raw_loader,
+        ):
+            frame, evidence = selection_service._load_asset(
+                "A股",
+                "000300.SH",
+                36,
+                require_raw=True,
+            )
+        raw_loader.assert_not_called()
+        self.assertEqual(
+            evidence["raw_source"],
+            "benchmark_index_level_not_applicable",
+        )
+        self.assertFalse(evidence["raw_requested"])
+        self.assertTrue(
+            np.allclose(frame["execution_open"], frame["open"])
+        )
+
+    def test_default_preset_runs_on_value_endpoint_only(self):
+        presets = selection_service.presets()
+        value_preset = presets[0]
+        self.assertEqual(
+            value_preset["id"],
+            "a_frozen_pit_value_research",
+        )
+        self.assertFalse(value_preset["promotion_capable"])
+        self.assertEqual(
+            value_preset["policy"]["benchmark_symbol"],
+            "000300.SH",
+        )
+        self.assertEqual(
+            value_preset["policy"]["universe_mode"],
+            "frozen_symbols",
+        )
+        self.assertEqual(
+            value_preset["policy"]["factor_weights"][
+                "fundamental_quality"
+            ],
+            0,
+        )
+        self.assertGreater(
+            value_preset["policy"]["factor_weights"]["value"],
+            0,
+        )
+        self.assertIn(
+            "Tushare daily_basic 历史估值",
+            value_preset["data_requirements"],
+        )
+        self.assertEqual(
+            opportunity_service.PAPER_BENCHMARKS["A股"]["symbol"],
+            "000300.SH",
+        )
 
 
 class QuantResearchProgramTests(unittest.TestCase):

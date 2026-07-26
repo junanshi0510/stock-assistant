@@ -79,7 +79,7 @@ DEFAULT_PORTFOLIO = {
 PAPER_VALIDATION_HORIZONS = (5, 20, 60)
 PAPER_COST_SCENARIO_BPS = 30.0
 PAPER_BENCHMARKS = {
-    "A股": {"symbol": "510300", "name": "沪深300ETF"},
+    "A股": {"symbol": "000300.SH", "name": "沪深300指数"},
     "港股": {"symbol": "02800", "name": "盈富基金"},
     "美股": {"symbol": "SPY", "name": "标普500ETF"},
 }

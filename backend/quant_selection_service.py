@@ -42,19 +42,19 @@ MAX_INDEX_UNION_SYMBOLS = 80
 INDEX_OPTIONS = {
     "000300.SH": {
         "name": "沪深300",
-        "benchmark_symbol": "510300",
+        "benchmark_symbol": "000300.SH",
     },
     "000905.SH": {
         "name": "中证500",
-        "benchmark_symbol": "510500",
+        "benchmark_symbol": "000905.SH",
     },
     "000852.SH": {
         "name": "中证1000",
-        "benchmark_symbol": "512100",
+        "benchmark_symbol": "000852.SH",
     },
 }
 DEFAULT_BENCHMARKS = {
-    "A股": "510300",
+    "A股": "000300.SH",
     "港股": "02800",
     "美股": "SPY",
 }
@@ -104,6 +104,16 @@ def _normalize_symbol(market: str, value: Any) -> str:
     else:
         raise ValueError(f"不支持的市场:{market}")
     return symbol
+
+
+def _normalize_benchmark_symbol(market: str, value: Any) -> str:
+    symbol = re.sub(r"\s+", "", str(value or ""))
+    if (
+        market == "A股"
+        and symbol.upper() in data_fetch.A_SHARE_INDEX_CODES
+    ):
+        return symbol.upper()
+    return _normalize_symbol(market, symbol)
 
 
 def normalize_policy(payload: dict[str, Any] | None) -> dict[str, Any]:
@@ -220,7 +230,7 @@ def normalize_policy(payload: dict[str, Any] | None) -> dict[str, Any]:
         "score_inverse_volatility",
     }:
         raise ValueError("不支持的组合加权方法")
-    benchmark = _normalize_symbol(
+    benchmark = _normalize_benchmark_symbol(
         market,
         source.get("benchmark_symbol")
         or (
@@ -383,6 +393,60 @@ def normalize_policy(payload: dict[str, Any] | None) -> dict[str, Any]:
 def presets() -> list[dict[str, Any]]:
     return [
         {
+            "id": "a_frozen_pit_value_research",
+            "label": "A股时点估值研究池（基础权限）",
+            "description": (
+                "最低权限可运行版本：冻结 12 只高流动性样本，估值只读取"
+                "信号日当时已经存在的 PE/PB；不调用 fina_indicator 或 "
+                "index_weight。"
+            ),
+            "promotion_capable": False,
+            "data_requirements": [
+                "A股复权日线（Tushare 或 BaoStock 降级）",
+                "Tushare daily_basic 历史估值",
+            ],
+            "known_limitations": [
+                "冻结当前名单存在幸存者偏差，只能用于研究，不能自动晋级纸面策略",
+                "降级行情不满足专业复权/未复权双源覆盖门槛",
+            ],
+            "policy": normalize_policy(
+                {
+                    "name": "A股时点估值与价格多因子研究池",
+                    "market": "A股",
+                    "universe_mode": "frozen_symbols",
+                    "symbols": [
+                        {"symbol": symbol, "name": name}
+                        for symbol, name in (
+                            ("600519", "贵州茅台"),
+                            ("300750", "宁德时代"),
+                            ("601318", "中国平安"),
+                            ("600036", "招商银行"),
+                            ("000858", "五粮液"),
+                            ("000333", "美的集团"),
+                            ("002594", "比亚迪"),
+                            ("600900", "长江电力"),
+                            ("601899", "紫金矿业"),
+                            ("600276", "恒瑞医药"),
+                            ("000651", "格力电器"),
+                            ("601088", "中国神华"),
+                        )
+                    ],
+                    "benchmark_symbol": "000300.SH",
+                    "history_months": 36,
+                    "minimum_average_turnover": 50_000_000,
+                    "sell_tax_bps": 10,
+                    "factor_weights": {
+                        "momentum": 30,
+                        "trend_quality": 20,
+                        "low_volatility": 20,
+                        "liquidity": 10,
+                        "fundamental_quality": 0,
+                        "value": 20,
+                    },
+                }
+            ),
+        },
+        {
             "id": "a_csi300_pit_quality_value",
             "label": "沪深300 披露日质量价值",
             "description": (
@@ -390,6 +454,16 @@ def presets() -> list[dict[str, Any]]:
                 "估值只读取当时交易日的 PE/PB，并与价格、容量和成本共同验证。"
             ),
             "promotion_capable": True,
+            "data_requirements": [
+                "Tushare index_weight 历史指数成分",
+                "Tushare fina_indicator 公告日财务指标",
+                "Tushare daily_basic 历史估值",
+                "专业复权与独立未复权日线",
+            ],
+            "known_limitations": [
+                "账号未开通 fina_indicator 时质量因子会拒绝运行",
+                "账号未开通 index_weight 时历史股票池会拒绝运行",
+            ],
             "policy": normalize_policy(
                 {
                     "name": "沪深300 披露日质量价值多因子",
@@ -419,6 +493,13 @@ def presets() -> list[dict[str, Any]]:
                 "成分股，适合验证 A股多因子轮动。"
             ),
             "promotion_capable": True,
+            "data_requirements": [
+                "Tushare index_weight 历史指数成分",
+                "专业复权与独立未复权日线",
+            ],
+            "known_limitations": [
+                "账号未开通 index_weight 时历史股票池会拒绝运行",
+            ],
             "policy": normalize_policy(
                 {
                     "name": "沪深300历史成分多因子",
@@ -440,6 +521,12 @@ def presets() -> list[dict[str, Any]]:
                 "因此不能通过幸存者偏差门槛。"
             ),
             "promotion_capable": False,
+            "data_requirements": [
+                "Massive/Polygon、Alpha Vantage 或可追溯备用日线",
+            ],
+            "known_limitations": [
+                "冻结当前名单存在幸存者偏差，只能用于研究",
+            ],
             "policy": normalize_policy(
                 {
                     "name": "美股高流动性冻结池",
@@ -476,6 +563,12 @@ def presets() -> list[dict[str, Any]]:
                 "成分序列时只保留研究资格。"
             ),
             "promotion_capable": False,
+            "data_requirements": [
+                "Tushare 港股日线或可追溯备用日线",
+            ],
+            "known_limitations": [
+                "冻结当前名单存在幸存者偏差，只能用于研究",
+            ],
             "policy": normalize_policy(
                 {
                     "name": "港股高流动性冻结池",
@@ -819,6 +912,23 @@ def _load_asset(
     adjusted_source = str(
         adjusted.attrs.get("source") or "source_not_exposed"
     )
+    is_a_share_index = (
+        market == "A股"
+        and str(symbol or "").strip().upper()
+        in data_fetch.A_SHARE_INDEX_CODES
+    )
+    if is_a_share_index:
+        return _combine_price_modes(adjusted, None), {
+            "adjusted_source": adjusted_source,
+            "raw_source": "benchmark_index_level_not_applicable",
+            "raw_error": None,
+            "raw_note": (
+                "指数基准只用于计算相对收益，不作为可交易候选、成交执行价"
+                "或容量证据，因此不请求未复权股票日线"
+            ),
+            "raw_requested": False,
+            "retrieved_at": adjusted.attrs.get("retrieved_at"),
+        }
     raw = None
     raw_source = None
     raw_error = None

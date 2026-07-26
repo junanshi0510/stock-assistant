@@ -37,25 +37,25 @@ import {
 } from '../../api/quantSelection'
 
 const DEFAULT_FORM = {
-  name: '沪深300历史成分多因子',
+  name: 'A股时点估值与价格多因子研究池',
   market: 'A股',
-  universe_mode: 'tushare_index',
+  universe_mode: 'frozen_symbols',
   universe_attestation: 'current_snapshot',
   index_code: '000300.SH',
   index_member_limit: 12,
-  benchmark_symbol: '510300',
-  history_months: 60,
+  benchmark_symbol: '000300.SH',
+  history_months: 36,
   lookback_days: 252,
   minimum_history_days: 252,
   rebalance_days: 21,
   oos_segment_days: 126,
   factor_weights: {
-    momentum: 35,
-    trend_quality: 25,
-    low_volatility: 25,
-    liquidity: 15,
+    momentum: 30,
+    trend_quality: 20,
+    low_volatility: 20,
+    liquidity: 10,
     fundamental_quality: 0,
-    value: 0,
+    value: 20,
   },
   minimum_composite_score: 55,
   minimum_price: 1,
@@ -79,7 +79,7 @@ const DEFAULT_FORM = {
 }
 
 const SAMPLE_SYMBOLS = {
-  A股: '600519,贵州茅台\n300750,宁德时代\n601318,中国平安\n600036,招商银行\n000858,五粮液\n601166,兴业银行\n000333,美的集团\n600900,长江电力',
+  A股: '600519,贵州茅台\n300750,宁德时代\n601318,中国平安\n600036,招商银行\n000858,五粮液\n000333,美的集团\n002594,比亚迪\n600900,长江电力\n601899,紫金矿业\n600276,恒瑞医药\n000651,格力电器\n601088,中国神华',
   港股: '00700,腾讯控股\n09988,阿里巴巴-W\n03690,美团-W\n00941,中国移动\n01299,友邦保险\n02318,中国平安\n00005,汇丰控股\n00883,中国海洋石油\n01810,小米集团-W\n09618,京东集团-SW',
   美股: 'AAPL,Apple\nMSFT,Microsoft\nNVDA,NVIDIA\nAMZN,Amazon\nGOOGL,Alphabet\nMETA,Meta\nBRK.B,Berkshire Hathaway\nJPM,JPMorgan\nLLY,Eli Lilly\nAVGO,Broadcom\nXOM,Exxon Mobil\nUNH,UnitedHealth',
 }
@@ -813,7 +813,7 @@ export default function QuantSelectionLab() {
       ...current,
       market,
       universe_mode: isA ? current.universe_mode : 'frozen_symbols',
-      benchmark_symbol: { A股: '510300', 港股: '02800', 美股: 'SPY' }[market],
+      benchmark_symbol: { A股: '000300.SH', 港股: '02800', 美股: 'SPY' }[market],
       minimum_average_turnover: { A股: 50000000, 港股: 5000000, 美股: 10000000 }[market],
       sell_tax_bps: market === 'A股' ? 10 : 0,
       factor_weights: isA
@@ -989,6 +989,8 @@ export default function QuantSelectionLab() {
               <button type="button" key={preset.id} onClick={() => applyPreset(preset)}>
                 <b>{preset.label}</b>
                 <small>{preset.description}</small>
+                {!!preset.data_requirements?.length && <small className="qsel-preset-meta">数据要求：{preset.data_requirements.join('；')}</small>}
+                {!!preset.known_limitations?.length && <small className="qsel-preset-limit">已知边界：{preset.known_limitations.join('；')}</small>}
                 <em>{preset.promotion_capable ? '可验证历史股票池' : '仅研究股票池'}</em>
               </button>
             ))}
@@ -1005,7 +1007,7 @@ export default function QuantSelectionLab() {
               <label className="qsel-field"><span>历史母指数</span><select value={form.index_code} onChange={(event) => {
                 const code = event.target.value
                 update('index_code', code)
-                update('benchmark_symbol', { '000300.SH': '510300', '000905.SH': '510500', '000852.SH': '512100' }[code])
+                update('benchmark_symbol', code)
               }}><option value="000300.SH">沪深300</option><option value="000905.SH">中证500</option><option value="000852.SH">中证1000</option></select></label>
               <label className="qsel-field"><span>每期按指数权重保留</span><input type="number" min="8" max="24" value={form.index_member_limit} onChange={(event) => update('index_member_limit', Number(event.target.value))} /></label>
               <p><Database size={15} />逐月读取历史 `index_weight`，而不是使用今天的成分名单。</p>

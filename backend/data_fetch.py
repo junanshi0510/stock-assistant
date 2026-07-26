@@ -312,6 +312,60 @@ def _src_a_tushare(symbol, start, end):
         raise RuntimeError("Tushare 返回空")
     return df.rename(columns={"trade_date": "date", "vol": "volume"})
 
+
+A_SHARE_INDEX_CODES = {
+    "000300.SH": "sh.000300",
+    "000905.SH": "sh.000905",
+    "000852.SH": "sh.000852",
+}
+
+
+def _src_a_index_tushare(symbol, start, end):
+    """Tushare A 股指数日线；指数基准不经过股票复权接口。"""
+    _ts, pro = _tushare()
+    code = str(symbol or "").strip().upper()
+    if code not in A_SHARE_INDEX_CODES:
+        raise ValueError(f"不支持的 A 股指数代码:{code or '(空)'}")
+    today = datetime.date.today().strftime("%Y%m%d")
+    df = pro.index_daily(
+        ts_code=code,
+        start_date=start,
+        end_date=min(end, today),
+        fields="ts_code,trade_date,open,high,low,close,vol,amount",
+    )
+    if df is None or df.empty:
+        raise RuntimeError("Tushare 指数日线返回空")
+    return df.rename(columns={"trade_date": "date", "vol": "volume"})
+
+
+def _src_a_index_baostock(symbol, start, end):
+    """BaoStock A 股指数日线，作为 Tushare 指数接口的独立降级源。"""
+    code = str(symbol or "").strip().upper()
+    provider_code = A_SHARE_INDEX_CODES.get(code)
+    if not provider_code:
+        raise ValueError(f"不支持的 A 股指数代码:{code or '(空)'}")
+    today = datetime.date.today().strftime("%Y-%m-%d")
+    with _bs_lock:
+        bs = _bs()
+        rs = bs.query_history_k_data_plus(
+            provider_code,
+            "date,open,high,low,close,volume",
+            start_date=_ymd_dash(start),
+            end_date=min(_ymd_dash(end), today),
+            frequency="d",
+            adjustflag="3",
+        )
+        rows = []
+        while rs.error_code == "0" and rs.next():
+            rows.append(rs.get_row_data())
+    if rs.error_code != "0":
+        raise RuntimeError(f"BaoStock 指数查询失败: {rs.error_msg}")
+    return pd.DataFrame(
+        rows,
+        columns=["date", "open", "high", "low", "close", "volume"],
+    )
+
+
 def _src_hk_tushare(symbol, start, end):
     _ts, pro = _tushare()
     df = pro.hk_daily(ts_code=symbol.zfill(5) + ".HK",
@@ -575,6 +629,11 @@ _SOURCES = {
             ("Yahoo Finance", _src_us_yahoo), ("东方财富", _src_us_em)],
 }
 
+_A_INDEX_SOURCES = [
+    ("Tushare index_daily", _src_a_index_tushare),
+    ("BaoStock 指数日线", _src_a_index_baostock),
+]
+
 _PRICE_LEVEL_SOURCES = {
     "A股": [
         ("Tushare 未复权日线", _src_a_tushare_raw),
@@ -612,7 +671,8 @@ def get_history(market: str, symbol: str, start: str = "20230101",
     参数:
         market: "A股" / "港股" / "美股"
         symbol: 股票代码
-                - A股:  6 位代码,如 600519、000001
+                - A股:  6 位股票代码,如 600519、000001；量化基准还支持
+                        000300.SH、000905.SH、000852.SH
                 - 港股:  5 位代码,如 00700
                 - 美股:  ticker,如 AAPL、TSLA
         start / end: 日期字符串,格式 YYYYMMDD
@@ -622,6 +682,8 @@ def get_history(market: str, symbol: str, start: str = "20230101",
     symbol = symbol.strip()
     if market not in _SOURCES:
         raise ValueError(f"不支持的市场: {market}(可选: {MARKETS})")
+    if market == "A股" and symbol.upper() in A_SHARE_INDEX_CODES:
+        symbol = symbol.upper()
 
     cache_key = (market, symbol, start, end)
     cached = _cache_get(cache_key)
@@ -629,7 +691,12 @@ def get_history(market: str, symbol: str, start: str = "20230101",
         return cached.copy()
 
     errors = []
-    for name, src in _SOURCES[market]:
+    sources = (
+        _A_INDEX_SOURCES
+        if market == "A股" and symbol in A_SHARE_INDEX_CODES
+        else _SOURCES[market]
+    )
+    for name, src in sources:
         try:
             raw = _retry(src, symbol, start, end, attempts=2)
             df = _filter_dates(_normalize(raw), start, end)
