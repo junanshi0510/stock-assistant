@@ -161,7 +161,15 @@ provider_direct  显式高额度模式；研究运行直接请求供应商
 
 ## 9. 生产发布记录
 
-最终 Git SHA、双副本 release、真实首批全市场行数、PostgreSQL 表/迁移数量、Worker/Beat 状态、权限验收和 OSS 恢复证据将在本次云端发布完成后写入本节。
+- 功能提交 `9e76af7e9b2bb34eac242b7a0f02499acd0d2e51` 与日配额修复提交 `29257f1eb8447bce90321a5b5c3b084300cf3d25` 已推送 GitHub `main`，并原子滚动发布到 `http://8.148.67.79/`。`8001/8002` 两个 API 副本的 `release_id` 均为 `29257f1eb8447bce90321a5b5c3b084300cf3d25`，`/health/full` 均为 `200`、`ready=true`、`full_service_ready=true`、`quant_factor_warehouse_schema=true`；OpenAPI 均为 `188 paths / 218 operations`。
+- 生产迁移 `quant-factor-warehouse.v1` 已执行。PostgreSQL 现有 `86` 张 public 表、`16` 个迁移标记；因子仓库的 `5` 张表、`7` 个不可变/状态保护触发器、`4` 个外键和 `17` 个索引均存在。迁移前先完成私有 OSS AES256 备份，SHA-256 为 `4518212c414ed362099b97e69e0273d04733d207e6ce6ba32dd6082fe4f8daae`，并在隔离库恢复为 `81` 表/`15` 迁移。
+- 真实首批 `daily_basic` 请求使用目标日 `2026-07-24`，批次 `qf_sync_d00da8c8421c4c07acd2971e9700aeeb`。供应商明确返回当前账号 `5 次/天` 且当日额度已耗尽，因此本批次真实写入行为 `0` 行；系统没有把失败伪装成空交易日或成功。修复后手动调度返回同一批次的 `retry_cooldown`，`retry_not_before=2026-07-27T00:15:00+08:00`，验证没有发出第二次供应商请求。
+- 已创建不立即派发的三年估值回填计划 `qf_plan_d103d2c969094e5db4838de270e2a9b7`，覆盖 `2023-07-26` 至 `2026-07-26` 共 `783` 个工作日目标，当前 `active`、完成 `0`、待处理 `783`，下一目标为 `2026-07-24`。调度器会先恢复最近截面，再按额度逐步推进历史；当前没有创建无权限的 `fina_indicator` 财务回填计划。
+- 生产 RBAC 真实验收通过：临时普通用户读取脱敏概览为 `200` 且 `can_manage=false`，调用调度接口为 `403`；提升为管理员并重新登录后概览为 `200`、`can_manage=true`，调度为 `202/retry_cooldown`。验收结束后账户已禁用，未撤销会话为 `0`，原会话再次访问为 `401`。
+- 六个 Worker/Beat 均为 `active`，失败 systemd 单元为 `0`；两个 API 副本及六个异步进程在最终发布窗口内 `ERROR/CRITICAL` 日志计数均为 `0`。公网真实浏览器成功渲染登录/注册页，主静态资源 `index-CH-o47_G.js` 为 `200`，页面 `readyState=complete`，应用控制台告警/错误为 `0`，匿名读取因子仓库正确返回 `401`。
+- 发布后最终私有 OSS AES256 备份对象为 `backups/postgresql/2026/07/stock-assistant-iZn4ai1fm0tr284w21h4kmZ-20260726T065547Z.dump`，大小 `2,474,459` 字节，SHA-256 为 `b6c8bce8b1e62238f70d497d10bfa768acb38827d1baea5cc450266ac3d6eebc`；校验和验证通过，并在隔离数据库恢复核对 `86` 表/`16` 迁移。
+
+生产验收确认了仓库、调度、权限、发布和恢复链路可用，但首批真实因子行仍需等待供应商日额度重置。上线状态因此是“基础设施与控制面可用、数据回填待额度推进”，不是已经拥有三年完整因子数据。
 
 ## 10. 风险边界
 
