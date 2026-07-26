@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node --test src/utils/importWithRetry.test.js"
   },
   "dependencies": {
     "lightweight-charts": "^4.2.0",

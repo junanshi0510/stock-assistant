@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Activity, Bot, BriefcaseBusiness, Info, LayoutDashboard, Search, Shield, Telescope, TrendingUp } from 'lucide-react'
 import { fetchAuthSession, logoutAccount } from './api/auth'
 import { fetchPlatformAvailability } from './api/availability'
@@ -8,13 +8,14 @@ import AccountMenu from './components/AccountMenu'
 import ChangePasswordScreen from './components/ChangePasswordScreen'
 import LoginScreen from './components/LoginScreen'
 import RegisterScreen from './components/RegisterScreen'
+import ResilientSuspense, { resilientLazy } from './components/ResilientLazy'
 
-const AdminTab = lazy(() => import('./tabs/AdminTab'))
-const AgentTab = lazy(() => import('./tabs/AgentTab'))
-const DashboardTab = lazy(() => import('./tabs/DashboardTab'))
-const PortfolioTab = lazy(() => import('./tabs/PortfolioTab'))
-const ResearchTab = lazy(() => import('./tabs/ResearchTab'))
-const OpportunityTab = lazy(() => import('./tabs/OpportunityTab'))
+const AdminTab = resilientLazy(() => import('./tabs/AdminTab'))
+const AgentTab = resilientLazy(() => import('./tabs/AgentTab'))
+const DashboardTab = resilientLazy(() => import('./tabs/DashboardTab'))
+const PortfolioTab = resilientLazy(() => import('./tabs/PortfolioTab'))
+const ResearchTab = resilientLazy(() => import('./tabs/ResearchTab'))
+const OpportunityTab = resilientLazy(() => import('./tabs/OpportunityTab'))
 
 const BASE_TABS = [
   { id: 'overview', label: '今日决策', icon: LayoutDashboard },
@@ -255,7 +256,7 @@ export default function App() {
           </div>
         )}
 
-        <Suspense fallback={<div className="page-loading"><span className="spinner" />正在加载工作区</div>}>
+        <ResilientSuspense fallbackText="正在加载工作区" resetKey={tab}>
           {tab === 'overview' && <DashboardTab goPortfolio={goPortfolio} goFunds={goFunds} goMarket={goMarket} goAgent={goAgent} goOpportunities={goOpportunities} onTaskSummaryChange={setTaskSummary} />}
           {tab === 'agent' && <AgentTab />}
           {tab === 'admin' && user.role === 'admin' && <AdminTab currentUser={user} />}
@@ -267,7 +268,7 @@ export default function App() {
             months={months} setMonths={setMonths} runKey={runKey} requestRun={requestRun} goAnalyze={goAnalyze}
           />}
           {tab === 'opportunities' && <OpportunityTab goAnalyze={goAnalyze} activeView={opportunityView} onViewChange={setOpportunityView} />}
-        </Suspense>
+        </ResilientSuspense>
       </main>
     </>
   )

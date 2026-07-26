@@ -210,7 +210,8 @@ API 先把完整请求写入 PostgreSQL，再向 `market-data` 队列发送唯�
 - Alpha 专项与任务协议：`28 passed`、`6 subtests passed`；
 - Alpha、任务与路由关键回归：`35 passed`、`6 subtests passed`；
 - 后端全量：`637 passed`、`13 subtests passed`；
-- 前端 Vite 生产构建：`1859 modules transformed`；
+- 前端动态模块重试专项：`4 tests passed`；
+- 前端 Vite 生产构建：`1861 modules transformed`；
 - `npm audit --omit=dev --audit-level=high`：`0 vulnerabilities`；
 - OpenAPI：`196 paths / 226 operations`；
 - `git diff --check`：通过；
@@ -223,7 +224,30 @@ API 先把完整请求写入 PostgreSQL，再向 `market-data` 队列发送唯�
 
 ## 12. 生产发布记录
 
-本节在生产备份、迁移、双副本滚动发布、RBAC、真实页面和隔离恢复演练完成后写入最终证据。
+### 12.1 首轮功能发布
+
+- 功能提交 `cb61477c56b111a0387202945888c0300029e9cf` 已推送 GitHub `main`，并原子滚动发布到 `http://8.148.67.79/`；
+- 发布前 PostgreSQL 备份已上传私有 OSS，启用服务端 `AES256` 加密，对象为 `backups/postgresql/2026/07/stock-assistant-iZn4ai1fm0tr284w21h4kmZ-20260726T083731Z.dump`，大小 `2,490,457` 字节，SHA-256 为 `19cbf82274336c096f35a6e1b6792f5a29e4e204076c54a6215cc5b6a3acf152`；
+- 发布前备份已经在隔离 PostgreSQL 中恢复并核对 `86` 张表、`16` 个迁移标记；
+- `alpha-forecast-lab.v1` 迁移成功，生产数据库现有 `92` 张公开表、`17` 个迁移标记、6 张 Alpha 表、8 个非内部不可变触发器、8 个外键和 20 个 Alpha 索引；
+- `8001/8002` 两个 API 副本均报告 `ready=true`、`full_service_ready=true`、`alpha_forecast_schema=true` 且 release 一致；Nginx、PostgreSQL、Redis、私有 OSS、5 个 Worker 和 Celery Beat 均 active；
+- 两副本 OpenAPI 均为 `196 paths / 226 operations`；5 个 Celery 节点均在线，market-data Worker 已注册运行、维护和结算三项 Alpha 任务；
+- 匿名读取概率总览返回 `401`；普通用户在两个副本均可读取自己的空总览，缺失或跨用户计划返回 `404`，管理员维护操作对普通用户返回 `403`；管理员在另一副本执行维护返回 `200`；
+- 首轮 RBAC 临时普通账户与管理员账户均已停用，活跃会话为 `0`；生产没有写入合成 Alpha 计划、运行、预测或 outcome。
+
+### 12.2 公网验收发现的可恢复性加固
+
+真实公网页面登录成功后，验收链曾捕获一次 `Failed to fetch dynamically imported module`。同一静态资源从公网和服务器本机均返回 `200`，说明是瞬时传输失败；原前端只有 `Suspense`，最终失败会导致工作区空白。
+
+本次因此统一增加：
+
+- 顶级工作区与研究工具的动态模块最多三次受限重试；
+- 顶级 tab 与研究 domain 各自独立错误边界，单个工作区失败不会永久阻断其他工作区；
+- 重试仍失败时显示可操作恢复页，不再渲染空白页面；
+- “重新加载页面”只刷新前端，不删除服务端已经保存的持仓、研究和审计事实；
+- 纯 Node 专项覆盖瞬时失败后成功、非网络初始化错误不重试、重试预算耗尽保留最终错误，共 `4 tests passed`。
+
+最终公网页面、发布后错误日志与发布后隔离恢复证据在可恢复性版本滚动发布后追加。
 
 ## 13. 已知边界
 

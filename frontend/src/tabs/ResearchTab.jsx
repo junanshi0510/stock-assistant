@@ -1,12 +1,12 @@
-import { lazy, Suspense } from 'react'
 import { Boxes, BrainCircuit, ChartNoAxesCombined, FlaskConical, Landmark } from 'lucide-react'
+import ResilientSuspense, { resilientLazy } from '../components/ResilientLazy'
 import WorkspaceHeader from '../components/WorkspaceHeader'
 
-const FundTab = lazy(() => import('./FundTab'))
-const MarketTab = lazy(() => import('./MarketTab'))
-const BacktestTab = lazy(() => import('./BacktestTab'))
-const QuantSelectionLab = lazy(() => import('../features/research/QuantSelectionLab'))
-const AlphaForecastLab = lazy(() => import('../features/research/AlphaForecastLab'))
+const FundTab = resilientLazy(() => import('./FundTab'))
+const MarketTab = resilientLazy(() => import('./MarketTab'))
+const BacktestTab = resilientLazy(() => import('./BacktestTab'))
+const QuantSelectionLab = resilientLazy(() => import('../features/research/QuantSelectionLab'))
+const AlphaForecastLab = resilientLazy(() => import('../features/research/AlphaForecastLab'))
 
 const DOMAINS = [
   { id: 'funds', label: '基金研究', description: '筛选、研究、比较与替代', icon: Landmark },
@@ -52,7 +52,7 @@ export default function ResearchTab({
         </div>
       </nav>
 
-      <Suspense fallback={<div className="page-loading"><span className="spinner" />正在加载研究工具</div>}>
+      <ResilientSuspense fallbackText="正在加载研究工具" resetKey={domain}>
         {domain === 'funds' && <FundTab />}
         {domain === 'market' && (
           <MarketTab
@@ -73,7 +73,7 @@ export default function ResearchTab({
         {domain === 'selection' && <QuantSelectionLab />}
         {domain === 'alpha' && <AlphaForecastLab />}
         {domain === 'tools' && <><WorkspaceHeader eyebrow="研究中心" title="策略验证" description="使用真实历史数据检验既有信号，不把回测结果当作未来承诺。" /><BacktestTab markets={markets} /></>}
-      </Suspense>
+      </ResilientSuspense>
     </div>
   )
 }
