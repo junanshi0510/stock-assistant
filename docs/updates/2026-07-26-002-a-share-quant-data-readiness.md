@@ -186,7 +186,62 @@ Tushare index_weight
 
 ## 7. 生产发布记录
 
-生产发布将在完成 GitHub 推送、双副本原子滚动、Worker/Beat 对齐、真实 `index_daily`/降级探针、认证/API/readiness 验收及发布后私有 OSS 备份恢复后补录最终 release 与校验摘要。
+### 7.1 Release
+
+- 提交：`1f98549`（指数与预设）、`435567c`（配额安全价格链）、`3e59e1f`（立即可运行默认因子）；
+- 最终功能 SHA：`3e59e1f9d6f3b2fc867f69b99a5707eecd18a653`；
+- GitHub：`main` 已包含全部提交；
+- 云端：`8001/8002` 双副本与前端均原子切换到最终 release；
+- 六个 Worker/Beat 全部 active，scheduler 任务按 `900` 秒注册；
+- 两副本均 `full_service_ready=true`；
+- OpenAPI：`182 paths`、`212 operations`；
+- 失败 systemd 单元：`0`；
+- 最终发布窗口 error 日志：`0`。
+
+### 7.2 真实数据整链
+
+最终验收没有写入生产业务表，直接使用发布包和云端真实数据运行首个预设：
+
+```json
+{
+  "preset_id": "a_frozen_price_research",
+  "benchmark": "000300.SH",
+  "benchmark_source": "BaoStock 指数日线",
+  "candidate_requested": 12,
+  "candidate_loaded": 12,
+  "candidate_failures": [],
+  "candidate_price_sources": {
+    "BaoStock": 12
+  },
+  "equity_day_count": 488,
+  "signal_count": 24,
+  "fundamental_factor_requested": false,
+  "promotion_status": "research_only",
+  "paper_shadow_eligible": false
+}
+```
+
+这证明默认链可以在当前权限下完成真实指数、真实股票日线、横截面因子、逐日撮合、成本压力、样本外信号和研究门禁。它没有因为“终于能跑”就绕过幸存者偏差或专业双源门槛。
+
+生产探针同时验证：
+
+- 旧默认估值方案会被当前 `daily_basic` 每分钟/每小时 1 次限额阻断；
+- 调整后默认方案不请求财务因子；
+- 可选估值预设仍存在，并在认证 API 中明确显示额度/缓存要求；
+- 普通用户总览返回 `200`，匿名返回 `401`；
+- 临时账户已停用，活跃会话 `0`，临时量化 Run `0`；
+- 认证审计链 `138` 个事件完整。
+
+### 7.3 PostgreSQL 与备份
+
+- `81` 张表、`15` 个迁移标记；
+- 量化研究计划：4 张表、5 个不可变触发器、6 个外键；
+- 云端发布包专项：`15 tests` 通过；
+- 最终私有 OSS AES256 备份对象：
+  `backups/postgresql/2026/07/stock-assistant-iZn4ai1fm0tr284w21h4kmZ-20260726T040236Z.dump`；
+- 大小：`2,423,218` 字节；
+- SHA-256：`1b7f3554df0586271bae5e098db5c1c0065e620c3234efb405d296424a1d408c`；
+- 隔离恢复：`81 tables / 15 migrations`。
 
 ## 8. 风险边界
 

@@ -17,6 +17,8 @@
 - 每个预设卡片现在直接展示数据要求与已知边界。质量价值历史成分策略仍保留为专业升级路径，但会明确要求 `index_weight + fina_indicator + daily_basic + 专业双价格日线`，权限不足时拒绝运行，不静默换成当前名单或虚构财务值。
 - 通用 A 股前向收益基准同步改为沪深 300 指数，量化 mandate 仍兼容历史 ETF 基准记录。后端全量回归 `602 tests` 通过，量化研究计划专项 `15 tests`、量化/前向/资本学习相关 `45 tests` 通过；前端生产构建完成 `1857 modules transformed`，`npm audit` 为 `0 vulnerabilities`。
 - 当前云端权限实测边界：`index_daily` 可用；`daily_basic` 仅适合低速预热，不能支撑即时多股历史研究；`fina_indicator` 与历史 `index_weight` 尚未开通；BaoStock 真实价格可研究但不能冒充专业双源覆盖。完整设计和验收记录见 [`docs/updates/2026-07-26-002-a-share-quant-data-readiness.md`](docs/updates/2026-07-26-002-a-share-quant-data-readiness.md)。
+- 功能与三轮生产探针修复提交 `1f98549`、`435567c`、`3e59e1f` 已推送 GitHub `main` 并原子滚动发布到 `http://8.148.67.79/` 的 `8001/8002` 双副本。最终真实整链取得 12/12 候选、0 失败、488 个组合交易日和 24 个调仓信号，正确保持 `research_only`；OpenAPI 为 `182` 条路径/`212` 个操作，六个 Worker/Beat active，0 个失败单元、发布窗口 0 条 error 日志。
+- 生产 PostgreSQL 保持 `81` 张表、`15` 个迁移标记，量化研究计划的 4 表、5 个不可变触发器和 6 个外键全部存在；临时普通用户验收后已停用、会话为 0、量化 Run 为 0，认证审计链 `138` 个事件完整。最终私有 OSS AES256 备份 SHA-256 为 `1b7f3554df0586271bae5e098db5c1c0065e620c3234efb405d296424a1d408c`，`2,423,218` 字节，并已隔离恢复核对 `81` 表/`15` 迁移。
 
 ### 2026-07-26：固定日历预登记量化研究与 Point-in-time 质量价值因子
 

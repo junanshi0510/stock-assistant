@@ -323,4 +323,64 @@ stock_assistant.scheduler.quant_research_programs
 
 ## 14. 生产发布记录
 
-生产发布将在完成“发布前私有 OSS 备份与隔离恢复 → 新迁移隔离验证 → PostgreSQL 迁移 → 双副本原子滚动 → Worker/Beat 重启 → 认证/API/UI 验收 → 发布后备份恢复”后补录最终 release、备份摘要、表数、迁移数和运行状态。
+### 14.1 发布与迁移
+
+- 主功能提交：`3192886`；
+- A 股生产可用性修复：`1f98549`、`435567c`、`3e59e1f`；
+- 所有提交均已推送 GitHub `main`；
+- 最终功能 release：`3e59e1f9d6f3b2fc867f69b99a5707eecd18a653`；
+- 云端仓库：`/opt/stock-assistant`；
+- 内容寻址 release：`/opt/stock-assistant-releases/3e59e1f9d6f3b2fc867f69b99a5707eecd18a653`；
+- `8001/8002` 双 API 副本和原子前端符号链接均指向同一 release；
+- PostgreSQL 最终为 `81` 张表、`15` 个迁移标记；
+- `quant-research-program.v1` 已登记，4 张新表、5 个不可变触发器、6 个外键均核对通过。
+
+迁移先在发布前备份的隔离 PostgreSQL 克隆中连续执行两次，确认幂等；隔离库完成 6 槽位创建、跨用户隐藏、更新/删除拒绝和终止后槽位保留后销毁。生产没有写入合成研究计划。
+
+### 14.2 服务与接口
+
+- 两个副本均为 `ready=true`、`traffic_ready=true`、`full_service_ready=true`；
+- `quant_research_program_schema=true`；
+- OpenAPI：`182 paths`、`212 operations`；
+- Agent、market-data、LLM、OCR、scheduler 五个 Worker 与 Celery Beat 全部 active；
+- `stock_assistant.scheduler.quant_research_programs` 已在 scheduler Worker 注册，队列为 `scheduler`，周期 `900` 秒；
+- `systemctl --failed` 为空；
+- 最终发布窗口 API/Worker/Beat error 日志为 0。
+
+普通用户认证验收确认：量化预设总览返回 `200`，匿名返回 `401`，默认预设为 `a_frozen_price_research`，时点估值预设同时保留并披露额度要求。临时用户随后停用，活跃会话 `0`、临时量化 Run `0`，认证审计链 `138` 个事件校验通过。
+
+最终云端发布包专项 `15 tests` 通过。默认 A 股研究预设使用真实数据完成：
+
+```text
+候选请求       12
+候选成功       12
+候选失败       0
+股票来源       BaoStock 12/12
+基准           000300.SH
+组合交易日     488
+调仓信号       24
+晋级状态       research_only
+自动交易授权   false
+```
+
+### 14.3 备份与恢复
+
+发布前私有 OSS AES256 备份：
+
+```text
+object  backups/postgresql/2026/07/stock-assistant-iZn4ai1fm0tr284w21h4kmZ-20260726T030219Z.dump
+bytes   2,394,941
+sha256  b04241573806e44b4ed0ac28aa9aec6a61ed505264a38fa0ad5519b92245dca6
+restore 77 tables / 14 migrations
+```
+
+最终发布后私有 OSS AES256 备份：
+
+```text
+object  backups/postgresql/2026/07/stock-assistant-iZn4ai1fm0tr284w21h4kmZ-20260726T040236Z.dump
+bytes   2,423,218
+sha256  1b7f3554df0586271bae5e098db5c1c0065e620c3234efb405d296424a1d408c
+restore 81 tables / 15 migrations
+```
+
+两次均校验本地 SHA-256；最终备份已从 OSS 下载并恢复到隔离数据库，表数和迁移数一致。
