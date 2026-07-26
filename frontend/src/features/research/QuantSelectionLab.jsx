@@ -37,7 +37,7 @@ import {
 } from '../../api/quantSelection'
 
 const DEFAULT_FORM = {
-  name: 'A股时点估值与价格多因子研究池',
+  name: 'A股价格多因子研究池',
   market: 'A股',
   universe_mode: 'frozen_symbols',
   universe_attestation: 'current_snapshot',
@@ -50,12 +50,12 @@ const DEFAULT_FORM = {
   rebalance_days: 21,
   oos_segment_days: 126,
   factor_weights: {
-    momentum: 30,
-    trend_quality: 20,
-    low_volatility: 20,
-    liquidity: 10,
+    momentum: 35,
+    trend_quality: 25,
+    low_volatility: 25,
+    liquidity: 15,
     fundamental_quality: 0,
-    value: 20,
+    value: 0,
   },
   minimum_composite_score: 55,
   minimum_price: 1,

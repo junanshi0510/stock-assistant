@@ -391,19 +391,34 @@ def normalize_policy(payload: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def presets() -> list[dict[str, Any]]:
+    a_research_symbols = [
+        {"symbol": symbol, "name": name}
+        for symbol, name in (
+            ("600519", "贵州茅台"),
+            ("300750", "宁德时代"),
+            ("601318", "中国平安"),
+            ("600036", "招商银行"),
+            ("000858", "五粮液"),
+            ("000333", "美的集团"),
+            ("002594", "比亚迪"),
+            ("600900", "长江电力"),
+            ("601899", "紫金矿业"),
+            ("600276", "恒瑞医药"),
+            ("000651", "格力电器"),
+            ("601088", "中国神华"),
+        )
+    ]
     return [
         {
-            "id": "a_frozen_pit_value_research",
-            "label": "A股时点估值研究池（基础权限）",
+            "id": "a_frozen_price_research",
+            "label": "A股价格多因子研究池（可直接运行）",
             "description": (
-                "最低权限可运行版本：冻结 12 只高流动性样本，估值只读取"
-                "信号日当时已经存在的 PE/PB；不调用 fina_indicator 或 "
-                "index_weight。"
+                "冻结 12 只高流动性样本，只使用真实价格、趋势、波动和"
+                "流动性；不调用 Tushare 财务或历史成分接口。"
             ),
             "promotion_capable": False,
             "data_requirements": [
-                "A股复权日线（Tushare 或 BaoStock 降级）",
-                "Tushare daily_basic 历史估值",
+                "BaoStock、腾讯证券或东方财富真实 A 股日线",
             ],
             "known_limitations": [
                 "冻结当前名单存在幸存者偏差，只能用于研究，不能自动晋级纸面策略",
@@ -411,26 +426,47 @@ def presets() -> list[dict[str, Any]]:
             ],
             "policy": normalize_policy(
                 {
+                    "name": "A股价格多因子研究池",
+                    "market": "A股",
+                    "universe_mode": "frozen_symbols",
+                    "symbols": a_research_symbols,
+                    "benchmark_symbol": "000300.SH",
+                    "history_months": 36,
+                    "minimum_average_turnover": 50_000_000,
+                    "sell_tax_bps": 10,
+                    "factor_weights": {
+                        "momentum": 35,
+                        "trend_quality": 25,
+                        "low_volatility": 25,
+                        "liquidity": 15,
+                        "fundamental_quality": 0,
+                        "value": 0,
+                    },
+                }
+            ),
+        },
+        {
+            "id": "a_frozen_pit_value_research",
+            "label": "A股时点估值研究池（需批量额度）",
+            "description": (
+                "在同一冻结样本上加入历史 PE/PB；需要足够的 Tushare "
+                "daily_basic 调用频次或已经预热的历史因子缓存。"
+            ),
+            "promotion_capable": False,
+            "data_requirements": [
+                "A股配额安全价格日线",
+                "Tushare daily_basic 历史估值批量额度或本地历史缓存",
+            ],
+            "known_limitations": [
+                "每小时仅 1 次的账号不能即时加载 12 只股票历史估值",
+                "冻结当前名单存在幸存者偏差，只能用于研究",
+            ],
+            "policy": normalize_policy(
+                {
                     "name": "A股时点估值与价格多因子研究池",
                     "market": "A股",
                     "universe_mode": "frozen_symbols",
-                    "symbols": [
-                        {"symbol": symbol, "name": name}
-                        for symbol, name in (
-                            ("600519", "贵州茅台"),
-                            ("300750", "宁德时代"),
-                            ("601318", "中国平安"),
-                            ("600036", "招商银行"),
-                            ("000858", "五粮液"),
-                            ("000333", "美的集团"),
-                            ("002594", "比亚迪"),
-                            ("600900", "长江电力"),
-                            ("601899", "紫金矿业"),
-                            ("600276", "恒瑞医药"),
-                            ("000651", "格力电器"),
-                            ("601088", "中国神华"),
-                        )
-                    ],
+                    "symbols": a_research_symbols,
                     "benchmark_symbol": "000300.SH",
                     "history_months": 36,
                     "minimum_average_turnover": 50_000_000,

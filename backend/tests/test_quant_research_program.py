@@ -456,34 +456,43 @@ class QuantProductionDataPathTests(unittest.TestCase):
             np.allclose(frame["execution_open"], frame["open"])
         )
 
-    def test_default_preset_runs_on_value_endpoint_only(self):
+    def test_default_preset_requires_no_tushare_factor_endpoint(self):
         presets = selection_service.presets()
-        value_preset = presets[0]
+        default_preset = presets[0]
         self.assertEqual(
-            value_preset["id"],
-            "a_frozen_pit_value_research",
+            default_preset["id"],
+            "a_frozen_price_research",
         )
-        self.assertFalse(value_preset["promotion_capable"])
+        self.assertFalse(default_preset["promotion_capable"])
         self.assertEqual(
-            value_preset["policy"]["benchmark_symbol"],
+            default_preset["policy"]["benchmark_symbol"],
             "000300.SH",
         )
         self.assertEqual(
-            value_preset["policy"]["universe_mode"],
+            default_preset["policy"]["universe_mode"],
             "frozen_symbols",
         )
         self.assertEqual(
-            value_preset["policy"]["factor_weights"][
+            default_preset["policy"]["factor_weights"][
                 "fundamental_quality"
             ],
             0,
+        )
+        self.assertEqual(
+            default_preset["policy"]["factor_weights"]["value"],
+            0,
+        )
+        value_preset = next(
+            preset
+            for preset in presets
+            if preset["id"] == "a_frozen_pit_value_research"
         )
         self.assertGreater(
             value_preset["policy"]["factor_weights"]["value"],
             0,
         )
         self.assertIn(
-            "Tushare daily_basic 历史估值",
+            "Tushare daily_basic 历史估值批量额度或本地历史缓存",
             value_preset["data_requirements"],
         )
         self.assertEqual(
