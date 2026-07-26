@@ -202,6 +202,76 @@ class TaskQueueProtocolTests(unittest.TestCase):
             task_id="quant-factor-qf_sync_123",
         )
 
+    def test_alpha_forecast_tasks_are_market_routed_and_periodic(self):
+        self.assertEqual(
+            task_queue.celery_app.conf.task_routes[
+                task_queue.TASK_ALPHA_FORECAST_RUN
+            ],
+            {"queue": task_queue.QUEUE_MARKET},
+        )
+        self.assertEqual(
+            task_queue.celery_app.conf.task_routes[
+                task_queue.TASK_ALPHA_FORECAST_MAINTENANCE
+            ],
+            {"queue": task_queue.QUEUE_MARKET},
+        )
+        self.assertEqual(
+            task_queue.celery_app.conf.task_routes[
+                task_queue.TASK_ALPHA_FORECAST_SETTLEMENT
+            ],
+            {"queue": task_queue.QUEUE_MARKET},
+        )
+        schedule = task_queue.celery_app.conf.beat_schedule[
+            "maintain-alpha-forecast-lab"
+        ]
+        self.assertEqual(
+            schedule["task"],
+            task_queue.TASK_ALPHA_FORECAST_MAINTENANCE,
+        )
+        self.assertGreaterEqual(float(schedule["schedule"]), 1800.0)
+        self.assertEqual(schedule["options"]["expires"], 1800)
+
+    def test_alpha_forecast_message_contains_only_run_id(self):
+        with (
+            patch.object(task_queue, "uses_celery_queue", return_value=True),
+            patch.object(task_queue, "_assert_queue_ready"),
+            patch.object(
+                task_queue.celery_app,
+                "send_task",
+                return_value=SimpleNamespace(id="alpha-task-1"),
+            ) as send_task,
+        ):
+            task_id = task_queue.enqueue_alpha_forecast_run(
+                "alpha_run_123"
+            )
+        self.assertEqual(task_id, "alpha-task-1")
+        send_task.assert_called_once_with(
+            task_queue.TASK_ALPHA_FORECAST_RUN,
+            args=["alpha_run_123"],
+            queue=task_queue.QUEUE_MARKET,
+            task_id="alpha-forecast-alpha_run_123",
+        )
+
+    def test_alpha_settlement_message_contains_only_program_id(self):
+        with (
+            patch.object(task_queue, "uses_celery_queue", return_value=True),
+            patch.object(task_queue, "_assert_queue_ready"),
+            patch.object(
+                task_queue.celery_app,
+                "send_task",
+                return_value=SimpleNamespace(id="alpha-settle-task-1"),
+            ) as send_task,
+        ):
+            task_id = task_queue.enqueue_alpha_forecast_settlement(
+                "alpha_program_123"
+            )
+        self.assertEqual(task_id, "alpha-settle-task-1")
+        send_task.assert_called_once_with(
+            task_queue.TASK_ALPHA_FORECAST_SETTLEMENT,
+            args=["alpha_program_123"],
+            queue=task_queue.QUEUE_MARKET,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

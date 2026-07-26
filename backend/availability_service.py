@@ -305,6 +305,9 @@ def collect_components(
             "quant_factor_warehouse_schema": database.get(
                 "quant_factor_warehouse_schema"
             ),
+            "alpha_forecast_schema": database.get(
+                "alpha_forecast_schema"
+            ),
             "availability_schema": database.get("availability_schema"),
             "error_type": database.get("error"),
         },

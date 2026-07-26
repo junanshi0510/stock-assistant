@@ -8,6 +8,16 @@
 
 ## 最近更新
 
+### 2026-07-26：多周期 Alpha 概率实验室与模型放行治理
+
+- “研究中心”新增独立“概率实验室”，支持 A 股、港股、美股的 5/20/60 交易日基准超额概率，以及基金的 20/60/120 个确认净值观察正收益概率。计划创建时冻结资产池、目标、基准、成本、运行频率、模型家族和数据规则，不允许运行后挑周期或自动搜索参数。
+- 引擎使用按日期分组的滚动样本外预测，训练标签结束日必须严格早于测试起点；较早样本外结果只用于 sigmoid 概率校准，较晚未参与校准的样本外结果才用于最终评价。系统同时计算 Brier Skill、Log Loss 改善、ROC AUC、ECE 可靠性、高低概率组成本后收益差和跨折稳定率。
+- 每个周期必须同时通过 10 项固定统计门槛、冻结资产池 100% 覆盖和来源发布边界才展示 shadow 校准概率，否则明确显示“证据不足 · 弃权”。公共网页降级或未知源不能发布概率；A 股 BaoStock 明确标为研究级。股票进入 `decision_eligible` 还要求资产与基准均为专业源，并只用同样满足决策来源边界的至少 30 个真实成熟 outcome、6 个独立运行日、4 个资产，通过前向 Brier Skill、校准、经济收益差和逐批稳定性。
+- 股票目标扣除同市场基准和往返成本，基金只读取确认单位净值并扣除成本；盘中估值、模拟净值和合成行情不能进入训练或结算。多周期矩阵会显示方向支持、周期冲突、中性和弃权，不生成股数、订单或自动交易。
+- 新增 8 个受认证操作、6 张租户/用户隔离生产表、计划/Run 前序哈希事件链、不可变预测/outcome、`alpha-forecast-lab.v1` 迁移、`alpha_forecast_schema` readiness 和每 6 小时持久维护任务；Celery 只传持久 Run ID 或 Program ID，股票池、概率和用户资料不进入消息。
+- 本地 Alpha/任务专项 `28 passed`、全量后端 `637 passed`、`13 subtests passed`；OpenAPI 为 `196 paths / 226 operations`，前端构建转换 `1859` 个模块，生产依赖审计为 `0 vulnerabilities`。真实浏览器已验证空状态、完整结果、基金/股票表单、桌面和 `390×844` 移动端，页面无横向溢出且控制台告警/错误为 `0`。
+- 这项功能解决“概率是否经过独立校准、历史通过能否经受真实未来检验、证据不足是否会主动弃权”，不预测必涨/必跌、不连接券商，也不保证盈利。完整方法、门槛、数据模型和验收记录见 [`docs/updates/2026-07-26-004-calibrated-multi-horizon-alpha-lab.md`](docs/updates/2026-07-26-004-calibrated-multi-horizon-alpha-lab.md)。
+
 ### 2026-07-26：A 股时点因子数据仓库、配额调度与零调用研究回放
 
 - “量化选股”新增独立的 A 股 Point-in-time 因子仓库。每日估值按 `trade_date` 保存全市场 PE-TTM、PB、股息率、市值与自由流通换手率；财务质量按真实 `announcement_date` 保存 ROE、毛利率、经营现金流/营收和资产负债率，报告期不再冒充数据可见日。
@@ -574,7 +584,7 @@
 |---|---|
 | 今日决策 | 按“持仓事实 → 可信估值 → 投资政策 → 持有纪律 → 前瞻策略 → 市场状态/策略适配 → 投资委员会 → 全组合风险”执行决策前门禁，再独立展示验证和复盘；统一接收市场、Agent、机会工厂、收益实验室和组合情景结果，并提供持久任务、定时检查和待处理提醒 |
 | 我的资产 | 管理真实持仓与逐项纪律、跨市场人民币可信估值、版本化投资政策、交易账本、FIFO/XIRR 复盘、组合数字孪生、反向压力测试和观察清单 |
-| 研究中心 | 在一个入口内组织基金候选初筛与比较、股票与板块研究、多股分析和历史策略验证；量化选股支持历史时点股票池、事件驱动撮合、Point-in-time 财务质量/估值因子、固定日历预登记批次和自动前向纸面验证；跨标的候选构建统一进入机会工厂 |
+| 研究中心 | 在一个入口内组织基金候选初筛与比较、股票与板块研究、多股分析和历史策略验证；概率实验室支持股票/基金多周期滚动样本外校准、历史弃权门槛与真实前向放行；量化选股支持历史时点股票池、事件驱动撮合、Point-in-time 财务质量/估值因子、固定日历预登记批次和自动前向纸面验证；跨标的候选构建统一进入机会工厂 |
 | 机会工厂 | 定义不可变跨市场机会策略，运行持久扫描，查看候选漏斗、同市场五因子评分、硬门槛淘汰和约束后纸面组合；收益实验室验证精确 5/20/60 日前瞻证据；市场状态中枢按同环境前瞻样本验证策略适配并收缩风险预算；投资委员会淘汰失效/重复策略并形成候选共识模型组合 |
 | 投资 Agent | 创建可恢复的单基金 Run 或 2-6 只基金 Batch，识别内地/港股/美股/全球基金，编排真实市场/持仓/新闻工具、跨基金披露持仓重合、确定性风险门禁和可选 LLM 证据合成，保存 Step、Evidence、Claim、模型调用摘要、用户决策版本和追加式审计链 |
 | 系统管理 | 管理员创建和启停账户、分配角色、重置临时密码、验证不可变认证审计链，并在高可用控制中心查看组件、事故、SLO/错误预算和执行主动探测；普通用户不可见也不可调用 |
@@ -776,6 +786,7 @@ npm run dev
 | `REDIS_URL` | Celery Broker；Redis 只传任务 ID，不保存权威业务状态 |
 | `TASK_QUEUE_MODE` | 生产必须为 `celery`；本地 SQLite 开发可使用 `embedded` |
 | `OPPORTUNITY_OBSERVATION_INTERVAL_SECONDS` | 收益实验室调度检查周期，默认/下限 `3600`/`900` 秒；同一纸面组合仍至少间隔 18 小时且按行情截面去重 |
+| `ALPHA_FORECAST_MAINTENANCE_INTERVAL_SECONDS` | 概率实验室到期运行与真实 outcome 结算检查周期，默认/下限 `21600`/`1800` 秒；维护按时间桶幂等 |
 | `DB_POOL_MIN_SIZE` / `DB_POOL_MAX_SIZE` | 每个 API/Worker 进程的 PostgreSQL 连接池范围 |
 | `STOCK_ASSISTANT_DB_PATH` | 仅用于本地开发、测试和迁移输入的 SQLite 文件 |
 | `AGENT_DB_PATH` | 兼容旧本地开发配置；生产由 `DATABASE_URL` 覆盖 |
@@ -890,6 +901,9 @@ backend/
   portfolio_quant_repository.py 不可变量化实验、哈希事件链与纸面调仓指令
   quant_selection_forward_service.py 历史选股指令到真实前向证据/资金门禁的因果桥
   quant_selection_forward_repository.py 跨量化与机会域的原子不可变映射
+  alpha_forecast_engine.py 多周期滚动样本外、概率校准、固定门槛与共识引擎
+  alpha_forecast_service.py 股票/基金数据、计划、运行、结算与前向放行编排
+  alpha_forecast_repository.py 租户隔离计划、Run、预测、Outcome 与哈希事件持久化
   availability_service.py    组件探针、能力门禁、内部 SLO 与安全降级
   availability_repository.py 不可变探针、事故状态机与哈希事件链
   runtime_identity.py         API 副本与内容寻址 release 身份
@@ -921,6 +935,7 @@ frontend/
   src/features/decision/   决策中心组件
   src/features/portfolio/CapitalLearningHub.jsx 资金兑现、偏差复核与决策学习中枢
   src/features/portfolio/QuantPortfolioLab.jsx  滚动样本外量化组合工作台
+  src/features/research/AlphaForecastLab.jsx 股票/基金多周期概率与放行治理工作台
   src/api/                 按领域拆分的 API 客户端
   src/api/availability.js  用户与管理员可用性控制面客户端
 deploy/                    双 API systemd 模板、Nginx 上游、原子滚动发布与灾备脚本
@@ -973,6 +988,8 @@ npm run build
 - [当前架构约定](ARCHITECTURE.md)
 - [云服务器部署说明](DEPLOY.md)
 - [工业级 Agent PRD](docs/industrial-agent-prd.md)
+- [多周期 Alpha 概率实验室与模型放行治理更新记录](docs/updates/2026-07-26-004-calibrated-multi-horizon-alpha-lab.md)
+- [A 股时点因子数据仓库、配额调度与零调用研究回放更新记录](docs/updates/2026-07-26-003-point-in-time-factor-warehouse.md)
 - [A 股可运行量化基准与最低权限研究层更新记录](docs/updates/2026-07-26-002-a-share-quant-data-readiness.md)
 - [固定日历预登记量化研究与 Point-in-time 质量价值因子更新记录](docs/updates/2026-07-26-001-preregistered-quant-research-program.md)
 - [量化策略无前视前向验证与资金委员会桥更新记录](docs/updates/2026-07-25-002-quant-selection-forward-validation.md)

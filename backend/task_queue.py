@@ -33,6 +33,15 @@ TASK_QUANT_SELECTION_RUN = (
 TASK_QUANT_FACTOR_SYNC = (
     "stock_assistant.market.execute_quant_factor_sync"
 )
+TASK_ALPHA_FORECAST_RUN = (
+    "stock_assistant.market.execute_alpha_forecast_run"
+)
+TASK_ALPHA_FORECAST_SETTLEMENT = (
+    "stock_assistant.market.settle_alpha_forecasts"
+)
+TASK_ALPHA_FORECAST_MAINTENANCE = (
+    "stock_assistant.market.maintain_alpha_forecasts"
+)
 TASK_LLM_TOOL = "stock_assistant.llm.execute_tool_job"
 TASK_OCR = "stock_assistant.ocr.process_job"
 TASK_OBJECT_CLEANUP = "stock_assistant.ocr.cleanup_expired_objects"
@@ -146,6 +155,9 @@ celery_app.conf.update(
         TASK_PORTFOLIO_QUANT_RUN: {"queue": QUEUE_MARKET},
         TASK_QUANT_SELECTION_RUN: {"queue": QUEUE_MARKET},
         TASK_QUANT_FACTOR_SYNC: {"queue": QUEUE_MARKET},
+        TASK_ALPHA_FORECAST_RUN: {"queue": QUEUE_MARKET},
+        TASK_ALPHA_FORECAST_SETTLEMENT: {"queue": QUEUE_MARKET},
+        TASK_ALPHA_FORECAST_MAINTENANCE: {"queue": QUEUE_MARKET},
         TASK_LLM_TOOL: {"queue": QUEUE_LLM},
         TASK_OCR: {"queue": QUEUE_OCR},
         TASK_OBJECT_CLEANUP: {"queue": QUEUE_OCR},
@@ -176,6 +188,18 @@ celery_app.conf.update(
         TASK_QUANT_FACTOR_SYNC: {
             "soft_time_limit": 300,
             "time_limit": 330,
+        },
+        TASK_ALPHA_FORECAST_RUN: {
+            "soft_time_limit": 1800,
+            "time_limit": 1860,
+        },
+        TASK_ALPHA_FORECAST_SETTLEMENT: {
+            "soft_time_limit": 900,
+            "time_limit": 960,
+        },
+        TASK_ALPHA_FORECAST_MAINTENANCE: {
+            "soft_time_limit": 900,
+            "time_limit": 960,
         },
         TASK_LLM_TOOL: {"soft_time_limit": 150, "time_limit": 180},
         TASK_OCR: {"soft_time_limit": 120, "time_limit": 150},
@@ -247,6 +271,19 @@ celery_app.conf.update(
                 ),
             ),
             "options": {"expires": 300},
+        },
+        "maintain-alpha-forecast-lab": {
+            "task": TASK_ALPHA_FORECAST_MAINTENANCE,
+            "schedule": max(
+                1800.0,
+                float(
+                    os.getenv(
+                        "ALPHA_FORECAST_MAINTENANCE_INTERVAL_SECONDS",
+                        "21600",
+                    )
+                ),
+            ),
+            "options": {"expires": 1800},
         },
         "scan-watchlist": {
             "task": TASK_WATCHLIST_SCAN,
@@ -342,6 +379,33 @@ def enqueue_quant_factor_sync(run_id: str) -> str:
     return str(result.id)
 
 
+def enqueue_alpha_forecast_run(run_id: str) -> str:
+    if not uses_celery_queue():
+        raise TaskQueueConfigurationError("当前不是 Celery 任务模式")
+    _assert_queue_ready()
+    normalized = str(run_id)
+    result = celery_app.send_task(
+        TASK_ALPHA_FORECAST_RUN,
+        args=[normalized],
+        queue=QUEUE_MARKET,
+        task_id=f"alpha-forecast-{normalized}",
+    )
+    return str(result.id)
+
+
+def enqueue_alpha_forecast_settlement(program_id: str) -> str:
+    if not uses_celery_queue():
+        raise TaskQueueConfigurationError("当前不是 Celery 任务模式")
+    _assert_queue_ready()
+    normalized = str(program_id)
+    result = celery_app.send_task(
+        TASK_ALPHA_FORECAST_SETTLEMENT,
+        args=[normalized],
+        queue=QUEUE_MARKET,
+    )
+    return str(result.id)
+
+
 def enqueue_background_job(job: dict[str, Any], repository) -> str:
     if not uses_celery_queue():
         raise TaskQueueConfigurationError("后台作业只允许在 Celery 模式派发")
@@ -380,6 +444,7 @@ def enqueue_scheduler_task(task_name: str) -> str:
         TASK_CAPITAL_OUTCOMES,
         TASK_QUANT_RESEARCH_PROGRAMS,
         TASK_QUANT_FACTOR_SCHEDULER,
+        TASK_ALPHA_FORECAST_MAINTENANCE,
         TASK_WATCHLIST_SCAN,
         TASK_OBJECT_CLEANUP,
         TASK_AVAILABILITY_PROBE,
@@ -387,7 +452,10 @@ def enqueue_scheduler_task(task_name: str) -> str:
     if task_name not in allowed:
         raise TaskQueueConfigurationError("不允许的调度任务")
     _assert_queue_ready()
-    if task_name == TASK_WATCHLIST_SCAN:
+    if task_name in {
+        TASK_WATCHLIST_SCAN,
+        TASK_ALPHA_FORECAST_MAINTENANCE,
+    }:
         queue = QUEUE_MARKET
     elif task_name == TASK_OBJECT_CLEANUP:
         queue = QUEUE_OCR

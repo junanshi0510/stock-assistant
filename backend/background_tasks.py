@@ -17,6 +17,9 @@ from task_queue import (
     QUEUE_LLM,
     QUEUE_MARKET,
     TASK_AGENT_RUN,
+    TASK_ALPHA_FORECAST_MAINTENANCE,
+    TASK_ALPHA_FORECAST_RUN,
+    TASK_ALPHA_FORECAST_SETTLEMENT,
     TASK_AVAILABILITY_PROBE,
     TASK_CAPITAL_OUTCOMES,
     TASK_DECISION_CHECKS,
@@ -536,6 +539,58 @@ def execute_quant_factor_sync(self, run_id: str):
         return {"run_id": str(run_id), "status": "failed"}
 
 
+@celery_app.task(
+    bind=True,
+    name=TASK_ALPHA_FORECAST_RUN,
+    ignore_result=True,
+)
+def execute_alpha_forecast_run(self, run_id: str):
+    """Run one durable calibrated Alpha experiment using only its run ID."""
+    from alpha_forecast_service import execute_run
+
+    worker_id = _worker_id(self)
+    try:
+        run = execute_run(str(run_id), actor_id=worker_id)
+        return {
+            "run_id": str(run_id),
+            "status": run.get("status"),
+        }
+    except SoftTimeLimitExceeded:
+        from alpha_forecast_repository import (
+            AlphaForecastConflict,
+            repository as alpha_repository,
+        )
+
+        run = alpha_repository.get_run_unscoped(str(run_id))
+        if run is not None:
+            try:
+                alpha_repository.fail_run(
+                    str(run_id),
+                    tenant_id=str(run["tenant_id"]),
+                    user_id=str(run["user_id"]),
+                    actor_id=worker_id,
+                    error_code="ALPHA_FORECAST_TIMEOUT",
+                    error_message="多周期概率研究达到执行时限",
+                )
+            except AlphaForecastConflict:
+                pass
+        return {"run_id": str(run_id), "status": "failed"}
+
+
+@celery_app.task(
+    name=TASK_ALPHA_FORECAST_SETTLEMENT,
+    ignore_result=True,
+)
+def settle_alpha_forecast_program(program_id: str):
+    """Settle one user's program on a market-data worker."""
+    from alpha_forecast_service import settle_program_outcomes
+
+    return settle_program_outcomes(
+        str(program_id),
+        actor_id="alpha-outcome-worker",
+    )
+
+
 @celery_app.task(bind=True, name=TASK_LLM_TOOL, ignore_result=True)
 def execute_llm_tool_job(self, job_id: str):
     return _execute_tool_job(self, job_id, QUEUE_LLM)
@@ -772,6 +827,16 @@ def process_quant_factor_warehouse():
     from quant_factor_warehouse_service import schedule_due_sync
 
     return schedule_due_sync()
+
+
+@celery_app.task(
+    name=TASK_ALPHA_FORECAST_MAINTENANCE,
+    ignore_result=True,
+)
+def process_alpha_forecast_maintenance():
+    from alpha_forecast_service import maintain_programs
+
+    return maintain_programs(limit=5)
 
 
 @celery_app.task(name=TASK_WATCHLIST_SCAN, ignore_result=True)

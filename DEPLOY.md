@@ -104,6 +104,8 @@ REDIS_URL=redis://:URL编码密码@127.0.0.1:6379/0
 TASK_QUEUE_MODE=celery
 # 收益实验室调度器每小时检查纸面组合；同组合至少间隔 18 小时且相同行情截面幂等。
 OPPORTUNITY_OBSERVATION_INTERVAL_SECONDS=3600
+# 概率实验室默认每 6 小时结算成熟 outcome 并派发到期计划；按时间桶幂等。
+ALPHA_FORECAST_MAINTENANCE_INTERVAL_SECONDS=21600
 
 # 固定探针、连续确认、积压阈值与内部 SLO（不是对外 SLA）。
 AVAILABILITY_PROBE_INTERVAL_SECONDS=300
@@ -465,6 +467,7 @@ sudo bash -lc '
   /opt/stock-assistant/venv/bin/python -m migrations.portfolio_quant_lab_v1
   /opt/stock-assistant/venv/bin/python -m migrations.quant_selection_lab_v1
   /opt/stock-assistant/venv/bin/python -m migrations.quant_factor_warehouse_v1
+  /opt/stock-assistant/venv/bin/python -m migrations.alpha_forecast_lab_v1
   /opt/stock-assistant/venv/bin/python -m migrations.portfolio_decision_twin_v1
   /opt/stock-assistant/venv/bin/python -m migrations.portfolio_valuation_v1
   /opt/stock-assistant/venv/bin/python -m migrations.availability_control_v1
@@ -490,7 +493,7 @@ curl -fsS http://127.0.0.1:8002/health/full
 curl -fsS http://127.0.0.1/health/ready
 ```
 
-`opportunity-factory.v1` 会在单个 PostgreSQL 事务和 advisory lock 内建立 6 张机会工厂表、不可变触发器和迁移标记；`opportunity-profit-engine.v1` 会给纸面观察增加部分唯一幂等索引，并建立用户隔离、拒绝 UPDATE/DELETE 的收益政策版本表和收益记分卡表；`opportunity-investment-committee.v1` 会建立用户隔离、按 Evidence 内容寻址并拒绝 UPDATE/DELETE 的委员会指令表；`opportunity-regime-allocation.v1` 会建立用户隔离、按 Evidence 内容寻址、拒绝 UPDATE/DELETE 的市场状态与策略适配快照表；`portfolio-capital-decision.v1` 会建立租户/用户隔离、按证据幂等并拒绝 UPDATE/DELETE 的组合资金计划表；`portfolio-capital-learning.v1` 会建立追加式执行事件、跨计划唯一交易绑定和精确交易日结果快照三张表，并对执行与结果历史安装 UPDATE/DELETE 拒绝触发器；`portfolio-quant-lab.v1` 会建立租户/用户隔离的量化运行、前序哈希事件和纸面调仓指令三张表，完成结果与事件/指令拒绝 UPDATE/DELETE，运行冻结输入与完成结果也不能被改写；`quant-selection-lab.v1` 会建立历史时点量化选股运行、前序哈希事件和 shadow mandate 三张用户隔离表，冻结输入与完成结果不可重写，事件和 mandate 拒绝 UPDATE/DELETE；`quant-factor-warehouse.v1` 会建立共享市场数据的回填计划、同步运行、哈希链事件、每日估值观察和公告日财务观察五张表，原始观察与事件拒绝 UPDATE/DELETE，计划和运行只允许受控生命周期变化；`portfolio-decision-twin.v1` 会建立用户隔离的 `portfolio_twin_runs` 表；`portfolio-valuation.v1` 会建立共享公开行情观察与用户隔离估值快照两张表；`availability-control.v1` 会建立不可变探针与事故事件两张表及哈希链所需索引。失败会整体回滚，首次成功后无需在无数据库变更的日常发布中重复执行。数据库结构升级必须先备份并执行对应迁移，不能依赖应用启动时自动建表；readiness 必须同时返回 `opportunity_schema=true`、`opportunity_profit_schema=true`、`opportunity_committee_schema=true`、`opportunity_regime_schema=true`、`portfolio_capital_schema=true`、`portfolio_capital_learning_schema=true`、`portfolio_quant_schema=true`、`quant_selection_schema=true`、`quant_research_program_schema=true`、`quant_factor_warehouse_schema=true`、`portfolio_twin_schema=true`、`portfolio_valuation_schema=true` 和 `availability_schema=true` 才能接流量。量化运行分别由 API 创建持久 `portfolio_quant_run`、`quant_selection_run` 或 `quant_factor_sync_run` 作业，完整输入留在 PostgreSQL，队列消息只携带作业 ID，真实行情和计算只路由到 `market-data` Worker；量化选股任务软/硬时限为 1800/1860 秒，租约为 2100 秒；单个因子采集任务软/硬时限为 300/330 秒，默认租约为 600 秒，Beat 至少间隔 3900 秒且每次只调用一个供应商目标。
+`opportunity-factory.v1` 会在单个 PostgreSQL 事务和 advisory lock 内建立 6 张机会工厂表、不可变触发器和迁移标记；`opportunity-profit-engine.v1` 会给纸面观察增加部分唯一幂等索引，并建立用户隔离、拒绝 UPDATE/DELETE 的收益政策版本表和收益记分卡表；`opportunity-investment-committee.v1` 会建立用户隔离、按 Evidence 内容寻址并拒绝 UPDATE/DELETE 的委员会指令表；`opportunity-regime-allocation.v1` 会建立用户隔离、按 Evidence 内容寻址、拒绝 UPDATE/DELETE 的市场状态与策略适配快照表；`portfolio-capital-decision.v1` 会建立租户/用户隔离、按证据幂等并拒绝 UPDATE/DELETE 的组合资金计划表；`portfolio-capital-learning.v1` 会建立追加式执行事件、跨计划唯一交易绑定和精确交易日结果快照三张表，并对执行与结果历史安装 UPDATE/DELETE 拒绝触发器；`portfolio-quant-lab.v1` 会建立租户/用户隔离的量化运行、前序哈希事件和纸面调仓指令三张表，完成结果与事件/指令拒绝 UPDATE/DELETE，运行冻结输入与完成结果也不能被改写；`quant-selection-lab.v1` 会建立历史时点量化选股运行、前序哈希事件和 shadow mandate 三张用户隔离表，冻结输入与完成结果不可重写，事件和 mandate 拒绝 UPDATE/DELETE；`quant-factor-warehouse.v1` 会建立共享市场数据的回填计划、同步运行、哈希链事件、每日估值观察和公告日财务观察五张表，原始观察与事件拒绝 UPDATE/DELETE，计划和运行只允许受控生命周期变化；`alpha-forecast-lab.v1` 会建立用户隔离的概率计划、计划事件、Run、Run 事件、不可变预测和不可变 outcome 六张表，冻结政策、完成结果与前向证据不能被追溯改写；`portfolio-decision-twin.v1` 会建立用户隔离的 `portfolio_twin_runs` 表；`portfolio-valuation.v1` 会建立共享公开行情观察与用户隔离估值快照两张表；`availability-control.v1` 会建立不可变探针与事故事件两张表及哈希链所需索引。失败会整体回滚，首次成功后无需在无数据库变更的日常发布中重复执行。数据库结构升级必须先备份并执行对应迁移，不能依赖应用启动时自动建表；readiness 必须同时返回 `opportunity_schema=true`、`opportunity_profit_schema=true`、`opportunity_committee_schema=true`、`opportunity_regime_schema=true`、`portfolio_capital_schema=true`、`portfolio_capital_learning_schema=true`、`portfolio_quant_schema=true`、`quant_selection_schema=true`、`quant_research_program_schema=true`、`quant_factor_warehouse_schema=true`、`alpha_forecast_schema=true`、`portfolio_twin_schema=true`、`portfolio_valuation_schema=true` 和 `availability_schema=true` 才能接流量。量化运行分别由 API 创建持久 `portfolio_quant_run`、`quant_selection_run`、`quant_factor_sync_run` 或 `alpha_forecast_run` 作业，完整输入留在 PostgreSQL，队列消息只携带作业 ID，真实行情和计算只路由到 `market-data` Worker；量化选股任务软/硬时限为 1800/1860 秒，租约为 2100 秒；单个因子采集任务软/硬时限为 300/330 秒，默认租约为 600 秒，Beat 至少间隔 3900 秒且每次只调用一个供应商目标；概率实验室维护默认每 21600 秒执行一次，并按时间桶幂等。
 
 ## 14. 回滚
 
