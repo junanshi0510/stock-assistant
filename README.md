@@ -13,8 +13,9 @@
 - 量化选股与纸面组合观察的 A 股基准由 ETF 代理代码改为 `000300.SH` 沪深 300 指数；沪深 300、中证 500、中证 1000 分别走独立的 `index_daily` 指数链路，不再把指数代码误送进股票复权接口。
 - 指数日线优先使用 Tushare `index_daily`，失败后自动降级到 BaoStock 指数日线。本地真实探针已取得 `246` 行沪深 300 数据；指数只用于相对收益，不伪装成候选股票、成交执行价或容量证据。
 - 新增默认“A 股时点估值研究池（基础权限）”：冻结 12 只高流动性样本，只启用价格、流动性和 `daily_basic` 历史 PE/PB，不调用当前账号尚未开通的 `fina_indicator` 与 `index_weight`。它可以完成真实研究，但因当前名单存在幸存者偏差，固定为 `research_only`，不能自动晋级。
+- 真实云端整链探针进一步发现，先并发尝试低额度 `pro_bar/adj_factor` 会耗尽同窗口的 Tushare 行情额度并挤压后续时点估值。A 股冻结研究池现使用独立 `a_share_research` 配额安全路径，价格直接按 BaoStock → 腾讯证券 → 东方财富降级链读取，把 Tushare 额度保留给不可替代的 `daily_basic`；来源配置会写入逐资产证据。
 - 每个预设卡片现在直接展示数据要求与已知边界。质量价值历史成分策略仍保留为专业升级路径，但会明确要求 `index_weight + fina_indicator + daily_basic + 专业双价格日线`，权限不足时拒绝运行，不静默换成当前名单或虚构财务值。
-- 通用 A 股前向收益基准同步改为沪深 300 指数，量化 mandate 仍兼容历史 ETF 基准记录。后端全量回归 `600 tests` 通过，量化/前向/资本学习相关 `43 tests` 通过；前端生产构建完成 `1857 modules transformed`，`npm audit` 为 `0 vulnerabilities`。
+- 通用 A 股前向收益基准同步改为沪深 300 指数，量化 mandate 仍兼容历史 ETF 基准记录。后端全量回归 `602 tests` 通过，量化研究计划专项 `15 tests`、量化/前向/资本学习相关 `45 tests` 通过；前端生产构建完成 `1857 modules transformed`，`npm audit` 为 `0 vulnerabilities`。
 - 当前云端权限实测边界：`daily_basic`、`index_daily` 可用；`fina_indicator` 与历史 `index_weight` 尚未开通；Tushare 复权因子额度较低时股票价格会降级到 BaoStock，因此可研究但不能冒充专业双源覆盖。完整设计和验收记录见 [`docs/updates/2026-07-26-002-a-share-quant-data-readiness.md`](docs/updates/2026-07-26-002-a-share-quant-data-readiness.md)。
 
 ### 2026-07-26：固定日历预登记量化研究与 Point-in-time 质量价值因子

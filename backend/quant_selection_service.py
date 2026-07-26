@@ -903,19 +903,25 @@ def _load_asset(
     *,
     require_raw: bool = True,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
+    is_a_share_index = (
+        market == "A股"
+        and str(symbol or "").strip().upper()
+        in data_fetch.A_SHARE_INDEX_CODES
+    )
+    source_profile = (
+        "a_share_research"
+        if market == "A股" and not require_raw and not is_a_share_index
+        else "default"
+    )
     adjusted = data_fetch.get_history_months(
         market,
         symbol,
         history_months,
         fetch_months=history_months,
+        source_profile=source_profile,
     )
     adjusted_source = str(
         adjusted.attrs.get("source") or "source_not_exposed"
-    )
-    is_a_share_index = (
-        market == "A股"
-        and str(symbol or "").strip().upper()
-        in data_fetch.A_SHARE_INDEX_CODES
     )
     if is_a_share_index:
         return _combine_price_modes(adjusted, None), {
@@ -927,6 +933,7 @@ def _load_asset(
                 "或容量证据，因此不请求未复权股票日线"
             ),
             "raw_requested": False,
+            "source_profile": source_profile,
             "retrieved_at": adjusted.attrs.get("retrieved_at"),
         }
     raw = None
@@ -955,6 +962,7 @@ def _load_asset(
         "raw_error": raw_error,
         "raw_note": raw_note,
         "raw_requested": bool(require_raw),
+        "source_profile": source_profile,
         "retrieved_at": adjusted.attrs.get("retrieved_at"),
     }
 

@@ -398,6 +398,33 @@ class QuantProductionDataPathTests(unittest.TestCase):
         self.assertEqual(frame.attrs["source"], "fixture-index")
         self.assertEqual(len(frame), 8)
 
+    def test_a_share_research_profile_skips_tushare_price_path(self):
+        calls = []
+
+        def fake_research_source(symbol, start, end):
+            calls.append((symbol, start, end))
+            return self.index_frame()
+
+        with data_fetch._cache_lock:
+            data_fetch._cache.clear()
+        with patch.object(
+            data_fetch,
+            "_A_RESEARCH_SOURCES",
+            [("fixture-research", fake_research_source)],
+        ):
+            frame = data_fetch.get_history(
+                "A股",
+                "600519",
+                "20260101",
+                "20260131",
+                source_profile="a_share_research",
+            )
+        self.assertEqual(
+            calls,
+            [("600519", "20260101", "20260131")],
+        )
+        self.assertEqual(frame.attrs["source"], "fixture-research")
+
     def test_index_benchmark_does_not_request_stock_raw_prices(self):
         adjusted = self.index_frame()
         adjusted.attrs["source"] = "Tushare index_daily"
@@ -462,6 +489,29 @@ class QuantProductionDataPathTests(unittest.TestCase):
         self.assertEqual(
             opportunity_service.PAPER_BENCHMARKS["A股"]["symbol"],
             "000300.SH",
+        )
+
+    def test_a_share_frozen_asset_uses_quota_safe_price_profile(self):
+        adjusted = self.index_frame()
+        adjusted.attrs["source"] = "BaoStock"
+        with patch.object(
+            data_fetch,
+            "get_history_months",
+            return_value=adjusted,
+        ) as history_loader:
+            _frame, evidence = selection_service._load_asset(
+                "A股",
+                "600519",
+                36,
+                require_raw=False,
+            )
+        self.assertEqual(
+            history_loader.call_args.kwargs["source_profile"],
+            "a_share_research",
+        )
+        self.assertEqual(
+            evidence["source_profile"],
+            "a_share_research",
         )
 
 

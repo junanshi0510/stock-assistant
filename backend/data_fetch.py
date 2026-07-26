@@ -634,6 +634,12 @@ _A_INDEX_SOURCES = [
     ("BaoStock 指数日线", _src_a_index_baostock),
 ]
 
+_A_RESEARCH_SOURCES = [
+    ("BaoStock", _src_a_baostock),
+    ("腾讯证券", _src_a_tencent),
+    ("东方财富", _src_a_em),
+]
+
 _PRICE_LEVEL_SOURCES = {
     "A股": [
         ("Tushare 未复权日线", _src_a_tushare_raw),
@@ -660,8 +666,14 @@ def _filter_dates(df: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
     return df[(df["date"] >= s) & (df["date"] <= e)].reset_index(drop=True)
 
 
-def get_history(market: str, symbol: str, start: str = "20230101",
-                end: str = "20500101") -> pd.DataFrame:
+def get_history(
+    market: str,
+    symbol: str,
+    start: str = "20230101",
+    end: str = "20500101",
+    *,
+    source_profile: str = "default",
+) -> pd.DataFrame:
     """
     抓取某只股票的历史日线行情(前复权)。
 
@@ -676,26 +688,34 @@ def get_history(market: str, symbol: str, start: str = "20230101",
                 - 港股:  5 位代码,如 00700
                 - 美股:  ticker,如 AAPL、TSLA
         start / end: 日期字符串,格式 YYYYMMDD
+        source_profile:
+                - default: 专业源优先
+                - a_share_research: A 股研究池跳过低额复权接口，
+                  把 Tushare 额度留给不可替代的时点因子
 
     返回: 标准列名的 DataFrame。
     """
     symbol = symbol.strip()
     if market not in _SOURCES:
         raise ValueError(f"不支持的市场: {market}(可选: {MARKETS})")
+    profile = str(source_profile or "default")
+    if profile not in {"default", "a_share_research"}:
+        raise ValueError(f"不支持的行情源配置:{profile}")
     if market == "A股" and symbol.upper() in A_SHARE_INDEX_CODES:
         symbol = symbol.upper()
 
-    cache_key = (market, symbol, start, end)
+    cache_key = (profile, market, symbol, start, end)
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached.copy()
 
     errors = []
-    sources = (
-        _A_INDEX_SOURCES
-        if market == "A股" and symbol in A_SHARE_INDEX_CODES
-        else _SOURCES[market]
-    )
+    if market == "A股" and symbol in A_SHARE_INDEX_CODES:
+        sources = _A_INDEX_SOURCES
+    elif market == "A股" and profile == "a_share_research":
+        sources = _A_RESEARCH_SOURCES
+    else:
+        sources = _SOURCES[market]
     for name, src in sources:
         try:
             raw = _retry(src, symbol, start, end, attempts=2)
@@ -717,8 +737,14 @@ def get_history(market: str, symbol: str, start: str = "20230101",
     raise ValueError("未取到数据(可用数据源均无此代码的数据,请检查代码)。")
 
 
-def get_history_months(market: str, symbol: str, months: int,
-                       fetch_months: int = 60) -> pd.DataFrame:
+def get_history_months(
+    market: str,
+    symbol: str,
+    months: int,
+    fetch_months: int = 60,
+    *,
+    source_profile: str = "default",
+) -> pd.DataFrame:
     """
     按"月数"取行情,但内部【始终抓取较宽的固定窗口并缓存】,再切片返回。
     这样 analyze(短)、ml/backtest(长)对同一只股票只触发【一次】网络抓取,
@@ -726,8 +752,13 @@ def get_history_months(market: str, symbol: str, months: int,
     """
     end = datetime.date.today()
     fetch_start = end - datetime.timedelta(days=fetch_months * 31)
-    full = get_history(market, symbol,
-                       fetch_start.strftime("%Y%m%d"), end.strftime("%Y%m%d"))
+    full = get_history(
+        market,
+        symbol,
+        fetch_start.strftime("%Y%m%d"),
+        end.strftime("%Y%m%d"),
+        source_profile=source_profile,
+    )
     if months >= fetch_months:
         return full
     cutoff = pd.to_datetime(end - datetime.timedelta(days=months * 31))
