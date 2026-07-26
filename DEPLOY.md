@@ -122,13 +122,16 @@ AVAILABILITY_SLO_API_REDUNDANCY=99.0
 
 # 生产热门榜支持多专业源接力。Key 只写入本文件；不要写入 Git、前端或 systemd unit。
 TUSHARE_TOKEN=服务端Token
-# A 股时点因子仓库一次只执行一个供应商目标。以下三个时间值分别有
-# 3900/3900/60 秒代码硬下限；租约默认长于 330 秒任务硬时限。
+# A 股时点因子仓库一次只执行一个供应商目标。调度、失败冷却和
+# queued 重派阈值分别有 3900/3900/60 秒代码硬下限；租约默认长于
+# 330 秒任务硬时限。
 QUANT_FACTOR_SYNC_INTERVAL_SECONDS=3900
 QUANT_FACTOR_RETRY_COOLDOWN_SECONDS=3900
 QUANT_FACTOR_QUEUE_REDISPATCH_SECONDS=600
 QUANT_FACTOR_SYNC_LEASE_SECONDS=600
 QUANT_FACTOR_MAX_BACKFILL_DAYS=1830
+QUANT_FACTOR_DAILY_RESET_GRACE_MINUTES=15
+QUANT_FACTOR_RATE_LIMIT_MAX_ATTEMPTS=30
 MASSIVE_API_KEY=服务端Key
 MASSIVE_API_BASE_URL=https://api.massive.com
 # Basic/低配套餐默认避免超过约 5 次/分钟；付费套餐按合同额度调整。
@@ -177,7 +180,7 @@ DEEPSEEK_API_KEY=服务端Key
 
 纯 IP HTTP 阶段使用 `AUTH_COOKIE_SECURE=false`。配置域名和 HTTPS 后改为 `true` 并重启 API。任何 Key 都不能写入 Git、前端变量或命令输出。
 
-`TUSHARE_TOKEN` 必须实际拥有所用 A 股日线权限；历史时点量化选股还要求 `index_weight` 权限，并应对 `000300.SH`、`000905.SH` 或 `000852.SH` 的历史月份做一次真实权限探测。因子仓库用 `daily_basic(trade_date=...)` 每次保存一个全市场截面；低额度账号不得把 `QUANT_FACTOR_SYNC_INTERVAL_SECONDS` 调低到合同额度之外，代码也会强制至少 3900 秒。未被 Worker 领取的 queued 运行超过 `QUANT_FACTOR_QUEUE_REDISPATCH_SECONDS` 后会复用原 `run_id` 重派，不能通过手工删库或重复建计划恢复。港股日线/基础资料可能需要单独开通。Massive 免费档提供最近完整日终全市场聚合，不能标记为盘中实时；默认价格/成交量门槛用于避免极低流动性标的污染榜首。默认 Massive 请求间隔会让冷启动大股票池排队，这是防止 `429` 的预期行为，不能为了提速盲目调成 0；只有确认付费套餐合同额度后才可调低。请求槽位在同一 POSIX 主机的进程间共享，Massive Key 使用 Bearer Header，不进入 Query URL。Alpha Vantage 留空 entitlement 时按日终榜使用，不能把免费或日终权限标记为实时。富途路线只有在 FutuOpenD 常驻、登录有效、行情权限与 `FUTU_OPEND_MARKETS` 一致时才算配置完成；OpenD 端口只允许本机或受控内网访问，不能直接暴露公网。公开降级默认开启只用于迁移期；专业源验收稳定后可设 `HOT_STOCK_PUBLIC_FALLBACK_ENABLED=false`。修改这些变量后至少重启 `stock-assistant-market-worker`、`stock-assistant-scheduler-worker` 和 `stock-assistant-celery-beat`。
+`TUSHARE_TOKEN` 必须实际拥有所用 A 股日线权限；历史时点量化选股还要求 `index_weight` 权限，并应对 `000300.SH`、`000905.SH` 或 `000852.SH` 的历史月份做一次真实权限探测。因子仓库用 `daily_basic(trade_date=...)` 每次保存一个全市场截面；低额度账号不得把 `QUANT_FACTOR_SYNC_INTERVAL_SECONDS` 调低到合同额度之外，代码也会强制至少 3900 秒。供应商明确返回“每天 N 次”时，失败批次会冷却到下一个 Asia/Shanghai 自然日并增加 15 分钟重置缓冲，不会在同一天循环浪费调用；这类配额失败最多跨日保留 30 次自动恢复机会，其他失败仍最多 3 次。未被 Worker 领取的 queued 运行超过 `QUANT_FACTOR_QUEUE_REDISPATCH_SECONDS` 后会复用原 `run_id` 重派，不能通过手工删库或重复建计划恢复。港股日线/基础资料可能需要单独开通。Massive 免费档提供最近完整日终全市场聚合，不能标记为盘中实时；默认价格/成交量门槛用于避免极低流动性标的污染榜首。默认 Massive 请求间隔会让冷启动大股票池排队，这是防止 `429` 的预期行为，不能为了提速盲目调成 0；只有确认付费套餐合同额度后才可调低。请求槽位在同一 POSIX 主机的进程间共享，Massive Key 使用 Bearer Header，不进入 Query URL。Alpha Vantage 留空 entitlement 时按日终榜使用，不能把免费或日终权限标记为实时。富途路线只有在 FutuOpenD 常驻、登录有效、行情权限与 `FUTU_OPEND_MARKETS` 一致时才算配置完成；OpenD 端口只允许本机或受控内网访问，不能直接暴露公网。公开降级默认开启只用于迁移期；专业源验收稳定后可设 `HOT_STOCK_PUBLIC_FALLBACK_ENABLED=false`。修改这些变量后至少重启 `stock-assistant-market-worker`、`stock-assistant-scheduler-worker` 和 `stock-assistant-celery-beat`。
 
 ## 5. 初始化 PostgreSQL 与 Redis
 

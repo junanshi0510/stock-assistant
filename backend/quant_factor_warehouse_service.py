@@ -405,12 +405,17 @@ def request_sync(
 ) -> dict[str, Any]:
     request = _normalize_sync_request(payload)
     run, created = repo.create_sync_run(request, actor_id=actor_id)
-    if run["status"] == "failed" and int(run["attempt_count"] or 0) < 3:
-        run = repo.requeue_failed_sync(
-            str(run["id"]),
-            actor_id=actor_id,
-            max_attempts=3,
-        )
+    if run["status"] == "failed":
+        max_attempts = _run_max_attempts(run)
+        if (
+            int(run["attempt_count"] or 0) < max_attempts
+            and _failed_retry_due(run)
+        ):
+            run = repo.requeue_failed_sync(
+                str(run["id"]),
+                actor_id=actor_id,
+                max_attempts=max_attempts,
+            )
     dispatch = None
     if run["status"] == "queued":
         dispatch = _dispatch_sync_run(run, repo=repo)
@@ -672,11 +677,16 @@ def execute_sync_run(
         raise
     except Exception as error:
         safe_message = sanitize_worker_error(error)
+        error_code = (
+            "QUANT_FACTOR_PROVIDER_RATE_LIMITED"
+            if _rate_limit_window(safe_message) is not None
+            else "QUANT_FACTOR_PROVIDER_FAILED"
+        )
         try:
             repo.fail_sync_run(
                 run_id,
                 actor_id=actor_id,
-                error_code="QUANT_FACTOR_PROVIDER_FAILED",
+                error_code=error_code,
                 error_message=safe_message,
             )
         except QuantFactorConflictError:
@@ -684,11 +694,44 @@ def execute_sync_run(
         raise RuntimeError(safe_message) from None
 
 
-def _failed_retry_due(run: dict[str, Any]) -> bool:
+def _rate_limit_window(message: Any) -> str | None:
+    text = str(message or "").strip().lower()
+    if not (
+        "频率超限" in text
+        or "rate limit" in text
+        or "too many requests" in text
+        or "请求过于频繁" in text
+    ):
+        return None
+    if re.search(r"次\s*/\s*天|每天|per[\s_-]*day|daily", text):
+        return "daily"
+    if re.search(r"次\s*/\s*小时|每小时|per[\s_-]*hour|hourly", text):
+        return "hourly"
+    return "generic"
+
+
+def _run_max_attempts(run: dict[str, Any]) -> int:
+    rate_limited = (
+        str(run.get("error_code") or "")
+        == "QUANT_FACTOR_PROVIDER_RATE_LIMITED"
+        or _rate_limit_window(run.get("error_message")) is not None
+    )
+    if rate_limited:
+        return max(
+            3,
+            int(
+                os.getenv(
+                    "QUANT_FACTOR_RATE_LIMIT_MAX_ATTEMPTS",
+                    "30",
+                )
+            ),
+        )
+    return 3
+
+
+def _retry_not_before(run: dict[str, Any]) -> dt.datetime | None:
     if run.get("status") != "failed":
-        return False
-    if int(run.get("attempt_count") or 0) >= 3:
-        return False
+        return None
     value = run.get("completed_at")
     try:
         completed = dt.datetime.fromisoformat(
@@ -697,14 +740,52 @@ def _failed_retry_due(run: dict[str, Any]) -> bool:
         if completed.tzinfo is None:
             completed = completed.replace(tzinfo=dt.timezone.utc)
     except (TypeError, ValueError):
-        return True
+        return None
+    window = _rate_limit_window(run.get("error_message"))
+    if window == "daily":
+        completed_china = completed.astimezone(CHINA_TIMEZONE)
+        grace_minutes = max(
+            5,
+            int(
+                os.getenv(
+                    "QUANT_FACTOR_DAILY_RESET_GRACE_MINUTES",
+                    "15",
+                )
+            ),
+        )
+        next_date = completed_china.date() + dt.timedelta(days=1)
+        return dt.datetime.combine(
+            next_date,
+            dt.time(hour=0, minute=0),
+            tzinfo=CHINA_TIMEZONE,
+        ) + dt.timedelta(minutes=grace_minutes)
     cooldown = max(
         60,
         int(os.getenv("QUANT_FACTOR_RETRY_COOLDOWN_SECONDS", "3900")),
     )
-    return (
-        dt.datetime.now(dt.timezone.utc) - completed
-    ).total_seconds() >= cooldown
+    return completed.astimezone(dt.timezone.utc) + dt.timedelta(
+        seconds=cooldown
+    )
+
+
+def _failed_retry_due(
+    run: dict[str, Any],
+    *,
+    now: dt.datetime | None = None,
+) -> bool:
+    if run.get("status") != "failed":
+        return False
+    if int(run.get("attempt_count") or 0) >= _run_max_attempts(run):
+        return False
+    threshold = _retry_not_before(run)
+    if threshold is None:
+        return True
+    current = now or dt.datetime.now(dt.timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=dt.timezone.utc)
+    return current.astimezone(dt.timezone.utc) >= threshold.astimezone(
+        dt.timezone.utc
+    )
 
 
 def _queued_redispatch_due(
@@ -743,25 +824,33 @@ def _schedule_request(
     *,
     actor_id: str,
     repo: QuantFactorRepository,
+    now: dt.datetime | None = None,
 ) -> dict[str, Any]:
     run, created = repo.create_sync_run(request, actor_id=actor_id)
     if run["status"] == "failed":
-        if int(run.get("attempt_count") or 0) >= 3:
+        max_attempts = _run_max_attempts(run)
+        if int(run.get("attempt_count") or 0) >= max_attempts:
             return {
                 "status": "retry_exhausted",
                 "run_id": run["id"],
                 "created": False,
             }
-        if not _failed_retry_due(run):
+        if not _failed_retry_due(run, now=now):
+            retry_at = _retry_not_before(run)
             return {
                 "status": "retry_cooldown",
                 "run_id": run["id"],
                 "created": False,
+                "retry_not_before": (
+                    retry_at.isoformat(timespec="seconds")
+                    if retry_at is not None
+                    else None
+                ),
             }
         run = repo.requeue_failed_sync(
             str(run["id"]),
             actor_id=actor_id,
-            max_attempts=3,
+            max_attempts=max_attempts,
         )
     if run["status"] == "queued":
         dispatch = _dispatch_sync_run(run, repo=repo)
@@ -830,6 +919,7 @@ def schedule_due_sync(
             ),
             actor_id=actor_id,
             repo=repo,
+            now=now,
         )
         if scheduled.get("status") == "retry_exhausted":
             continue
@@ -865,6 +955,7 @@ def schedule_due_sync(
             request,
             actor_id=actor_id,
             repo=repo,
+            now=now,
         )
     return {
         "status": "idle",
@@ -909,6 +1000,14 @@ def overview(
         run = dict(run)
         run.pop("actor_id", None)
         run.pop("request_key", None)
+        if run.get("status") == "failed":
+            retry_at = _retry_not_before(run)
+            run["retry_not_before"] = (
+                retry_at.isoformat(timespec="seconds")
+                if retry_at is not None
+                else None
+            )
+            run["max_attempts"] = _run_max_attempts(run)
         runs.append(run)
     coverage = repo.symbol_coverage(list(DEFAULT_RESEARCH_SYMBOLS))
     active_runs = [

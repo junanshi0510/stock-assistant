@@ -696,7 +696,7 @@ function FactorWarehousePanel({
               <article key={item.id}>
                 <span className={`qsel-mini-state ${item.status === 'succeeded' ? 'passed' : item.status === 'failed' ? 'failed' : item.status === 'partial' ? 'warning' : 'running'}`}>{item.status}</span>
                 <b>{item.dataset === 'valuation_daily' ? item.target_date : item.target_symbol}</b>
-                <small>{item.stats ? `${item.stats.inserted_rows || 0} 行 · ${item.stats.no_data ? '非交易日/无数据' : '已入库'}` : item.error_message || '等待 Worker'}</small>
+                <small>{item.stats ? `${item.stats.inserted_rows || 0} 行 · ${item.stats.no_data ? '非交易日/无数据' : '已入库'}` : `${item.error_message || '等待 Worker'}${item.retry_not_before ? ` · 最早重试 ${dateTime(item.retry_not_before)}` : ''}`}</small>
               </article>
             ))}
             {!warehouse.runs?.length && <em>还没有采集批次。</em>}

@@ -352,6 +352,63 @@ class QuantFactorWarehouseTests(unittest.TestCase):
         self.assertNotIn("another-secret", item["error_message"])
         self.assertNotIn("top-secret", str(raised.exception))
 
+    def test_daily_rate_limit_waits_for_next_china_day(self):
+        class DailyLimitedTushare:
+            def daily_basic(self, **_kwargs):
+                raise RuntimeError(
+                    "访问接口(daily_basic)频率超限(5次/天)"
+                )
+
+        run = self._daily_run()
+        with self.assertRaises(RuntimeError):
+            service.execute_sync_run(
+                run["id"],
+                actor_id="worker-1",
+                repo=self.repository,
+                pro=DailyLimitedTushare(),
+            )
+        failed = self.repository.get_sync_run(run["id"])
+        self.assertEqual(
+            failed["error_code"],
+            "QUANT_FACTOR_PROVIDER_RATE_LIMITED",
+        )
+        self.assertEqual(service._run_max_attempts(failed), 30)
+        completed = dt.datetime.fromisoformat(failed["completed_at"])
+        self.assertFalse(
+            service._failed_retry_due(
+                failed,
+                now=completed + dt.timedelta(hours=2),
+            )
+        )
+        retry_at = service._retry_not_before(failed)
+        self.assertEqual(
+            retry_at.astimezone(service.CHINA_TIMEZONE).hour,
+            0,
+        )
+        self.assertEqual(
+            retry_at.astimezone(service.CHINA_TIMEZONE).minute,
+            15,
+        )
+        self.assertTrue(
+            service._failed_retry_due(
+                failed,
+                now=retry_at + dt.timedelta(seconds=1),
+            )
+        )
+        with patch.object(service, "_dispatch_sync_run") as dispatch:
+            scheduled = service._schedule_request(
+                failed["request"],
+                actor_id="scheduler",
+                repo=self.repository,
+                now=completed + dt.timedelta(hours=2),
+            )
+        self.assertEqual(scheduled["status"], "retry_cooldown")
+        self.assertEqual(
+            scheduled["retry_not_before"],
+            retry_at.isoformat(timespec="seconds"),
+        )
+        dispatch.assert_not_called()
+
     def test_expired_worker_lease_is_recovered_and_hash_chained(self):
         run = self._daily_run()
         with patch.dict(

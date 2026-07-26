@@ -82,6 +82,8 @@ QUANT_FACTOR_RETRY_COOLDOWN_SECONDS=3900
 QUANT_FACTOR_QUEUE_REDISPATCH_SECONDS=600
 QUANT_FACTOR_SYNC_LEASE_SECONDS=600
 QUANT_FACTOR_MAX_BACKFILL_DAYS=1830
+QUANT_FACTOR_DAILY_RESET_GRACE_MINUTES=15
+QUANT_FACTOR_RATE_LIMIT_MAX_ATTEMPTS=30
 ```
 
 调度规则：
@@ -91,7 +93,7 @@ QUANT_FACTOR_MAX_BACKFILL_DAYS=1830
 3. 优先补最近 10 个工作日的全市场每日估值；
 4. 最近截面完整后，再选择最早创建的活动回填计划；
 5. 每次调度最多调用一个日期或一只股票；
-6. 失败至少冷却 65 分钟，最多尝试 3 次；
+6. 普通失败至少冷却 65 分钟、最多尝试 3 次；供应商明确返回日配额限制时，冷却到下一个上海自然日 00:15，最多保留 30 个跨日恢复机会；
 7. 失败、空数据和计划取消都永久留痕，不提供删除接口。
 
 任务软/硬时限为 `300/330` 秒，租约默认 `600` 秒。仓库写入还会在同一事务中核验运行状态、尝试序号与租约到期时间；调度器已经回收的旧 Worker 即使迟到返回，也不能把响应写进仓库。
@@ -146,9 +148,9 @@ provider_direct  显式高额度模式；研究运行直接请求供应商
 
 ## 8. 本地验收
 
-- 新仓库专项：`12 tests` 通过；
-- 新模块与路由/任务协议关键回归：`42 tests` 通过；
-- 后端全量：`616 tests` 通过；
+- 新仓库专项：`13 tests` 通过；
+- 新模块与路由/任务协议关键回归：`43 tests` 通过；
+- 后端全量：`617 tests` 通过；
 - 前端 Vite 生产构建：`1857 modules transformed`；
 - `npm audit --omit=dev`：`0 vulnerabilities`；
 - OpenAPI：`188 paths / 218 operations`；
