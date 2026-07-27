@@ -438,6 +438,58 @@ def build_kwargs(*, existing_action: str = "hold_review"):
     }
 
 
+def frozen_alpha_context(
+    *,
+    candidates=None,
+    vetoes=None,
+    status="paper_ready",
+):
+    route = {
+        "schema_version": "alpha_capital_route.v1",
+        "engine_version": "multi_horizon_alpha_capital_router@1.0.0",
+        "status": status,
+        "summary": {
+            "model_invested_pct": sum(
+                item.get("model_target_weight_pct", 0)
+                for item in candidates or []
+            ),
+            "model_cash_pct": 80,
+        },
+        "sleeves": {
+            "core_target_pct": 70,
+            "satellite_target_pct": 30,
+        },
+        "drift": {
+            "state": "baseline",
+            "rebalance_review_required": False,
+        },
+        "candidates": candidates or [],
+        "vetoes": vetoes or [],
+    }
+    return {
+        "schema_version": "alpha_capital_current_mandate.v1",
+        "current": True,
+        "capital_eligible": True,
+        "reason": None,
+        "latest_mandate": {
+            "id": "alpha_capital_1",
+            "status": status,
+        },
+        "mandate": {
+            "id": "alpha_capital_1",
+            "schema_version": "alpha_capital_mandate.v1",
+            "engine_version": route["engine_version"],
+            "status": "paper_ready",
+            "profile_version_id": "ips_1",
+            "evidence_cutoff_at": "2026-07-23T08:30:00+00:00",
+            "evidence_sha256": "7" * 64,
+            "result_sha256": "8" * 64,
+            "created_at": "2026-07-23T08:31:00+00:00",
+            "result": route,
+        },
+    }
+
+
 class PortfolioCapitalDecisionEngineTests(unittest.TestCase):
     def test_forward_qualified_candidates_receive_bounded_manual_amounts(self):
         result = service.build_capital_decision(**build_kwargs())
@@ -698,6 +750,249 @@ class PortfolioCapitalDecisionEngineTests(unittest.TestCase):
         self.assertIn(
             "portfolio_action_report_not_current",
             result["blocking_reasons"],
+        )
+
+    def test_frozen_alpha_route_can_supply_alpha_only_candidate(self):
+        kwargs = build_kwargs()
+        profit_lab = kwargs["profit_lab_loader"]()
+        profit_lab["items"] = []
+        kwargs["profit_lab_loader"] = lambda: profit_lab
+        context = frozen_alpha_context(
+            candidates=[
+                {
+                    "key": "stock:A股:300750",
+                    "asset_type": "stock",
+                    "market": "A股",
+                    "symbol": "300750",
+                    "name": "宁德时代",
+                    "program_id": "alpha_program_1",
+                    "run_id": "alpha_run_1",
+                    "sleeve": "core",
+                    "model_target_weight_pct": 20,
+                    "weighted_raw_edge": 0.12,
+                    "weighted_effective_edge": 0.08,
+                    "weighted_reliability": 0.67,
+                    "eligible_horizon_count": 3,
+                    "horizons": [],
+                    "capital_bridge_state": "stock_candidate",
+                }
+            ]
+        )
+        kwargs["alpha_mandate_loader"] = (
+            lambda _profile, _holdings, _now: context
+        )
+
+        result = service.build_capital_decision(**kwargs)
+
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual(result["capital"]["alpha_pilot_cap_cny"], 2_000)
+        self.assertEqual(result["capital"]["global_pilot_cap_cny"], 2_000)
+        candidate = result["candidate_actions"][0]
+        self.assertEqual(candidate["symbol"], "300750")
+        self.assertEqual(candidate["planned_amount_cny"], 400)
+        self.assertTrue(candidate["calibrated_probability"])
+        self.assertEqual(
+            candidate["alpha_support"]["mandate_id"],
+            "alpha_capital_1",
+        )
+        self.assertEqual(
+            result["data_quality"]["alpha_candidate_count"], 1
+        )
+
+    def test_alpha_and_opportunity_support_use_max_not_sum(self):
+        baseline = service.build_capital_decision(**build_kwargs())
+        kwargs = build_kwargs()
+        context = frozen_alpha_context(
+            candidates=[
+                {
+                    "key": "stock:A股:600519",
+                    "asset_type": "stock",
+                    "market": "A股",
+                    "symbol": "600519",
+                    "name": "贵州茅台",
+                    "program_id": "alpha_program_1",
+                    "run_id": "alpha_run_1",
+                    "sleeve": "core",
+                    "model_target_weight_pct": 20,
+                    "weighted_raw_edge": 0.12,
+                    "weighted_effective_edge": 0.08,
+                    "weighted_reliability": 0.67,
+                    "eligible_horizon_count": 3,
+                    "horizons": [],
+                    "capital_bridge_state": "stock_candidate",
+                }
+            ]
+        )
+        kwargs["alpha_mandate_loader"] = (
+            lambda _profile, _holdings, _now: context
+        )
+
+        result = service.build_capital_decision(**kwargs)
+        baseline_candidate = next(
+            item
+            for item in baseline["candidate_actions"]
+            if item["symbol"] == "600519"
+        )
+        merged = next(
+            item
+            for item in result["candidate_actions"]
+            if item["symbol"] == "600519"
+        )
+
+        self.assertEqual(
+            merged["planned_amount_cny"],
+            baseline_candidate["planned_amount_cny"],
+        )
+        self.assertEqual(merged["alpha_desired_amount_cny"], 400)
+        self.assertIsNotNone(merged["alpha_support"])
+
+    def test_frozen_negative_alpha_veto_preempts_opportunity_add(self):
+        kwargs = build_kwargs()
+        context = frozen_alpha_context(
+            status="abstained",
+            vetoes=[
+                {
+                    "asset_type": "stock",
+                    "market": "A股",
+                    "symbol": "600519",
+                    "name": "贵州茅台",
+                    "program_id": "alpha_program_1",
+                    "run_id": "alpha_run_1",
+                    "state": "defensive",
+                    "label": "多周期负向共识",
+                    "weighted_raw_edge": -0.10,
+                    "weighted_effective_edge": -0.07,
+                }
+            ]
+        )
+        kwargs["alpha_mandate_loader"] = (
+            lambda _profile, _holdings, _now: context
+        )
+
+        result = service.build_capital_decision(**kwargs)
+        vetoed = next(
+            item
+            for item in result["candidate_actions"]
+            if item["symbol"] == "600519"
+        )
+
+        self.assertEqual(vetoed["planned_amount_cny"], 0)
+        self.assertIn(
+            "alpha_probability_veto:defensive",
+            vetoed["blockers"],
+        )
+        self.assertEqual(
+            result["alpha_probability_vetoes"][0]["symbol"],
+            "600519",
+        )
+        self.assertFalse(
+            result["boundaries"]["automatic_order_creation"]
+        )
+
+    def test_only_held_fund_with_verified_exposure_can_top_up(self):
+        kwargs = build_kwargs()
+        context = frozen_alpha_context(
+            candidates=[
+                {
+                    "key": "fund:基金:510300",
+                    "asset_type": "fund",
+                    "market": "基金",
+                    "symbol": "510300",
+                    "name": "沪深300ETF",
+                    "program_id": "fund_program",
+                    "run_id": "fund_run",
+                    "sleeve": "core",
+                    "model_target_weight_pct": 20,
+                    "weighted_raw_edge": 0.10,
+                    "weighted_effective_edge": 0.07,
+                    "weighted_reliability": 0.70,
+                    "eligible_horizon_count": 3,
+                    "horizons": [],
+                    "capital_bridge_state": "held_fund_top_up_candidate",
+                },
+                {
+                    "key": "fund:基金:110011",
+                    "asset_type": "fund",
+                    "market": "基金",
+                    "symbol": "110011",
+                    "name": "易方达优质精选",
+                    "program_id": "fund_program",
+                    "run_id": "fund_run",
+                    "sleeve": "core",
+                    "model_target_weight_pct": 20,
+                    "weighted_raw_edge": 0.09,
+                    "weighted_effective_edge": 0.06,
+                    "weighted_reliability": 0.68,
+                    "eligible_horizon_count": 3,
+                    "horizons": [],
+                    "capital_bridge_state": "new_fund_due_diligence_only",
+                },
+            ]
+        )
+        kwargs["alpha_mandate_loader"] = (
+            lambda _profile, _holdings, _now: context
+        )
+
+        result = service.build_capital_decision(**kwargs)
+        rows = {
+            item["symbol"]: item
+            for item in result["candidate_actions"]
+        }
+
+        self.assertGreater(rows["510300"]["planned_amount_cny"], 0)
+        self.assertNotIn(
+            "new_fund_requires_due_diligence",
+            rows["510300"]["blockers"],
+        )
+        self.assertEqual(rows["110011"]["planned_amount_cny"], 0)
+        self.assertIn(
+            "new_fund_requires_due_diligence",
+            rows["110011"]["blockers"],
+        )
+
+    def test_stale_fund_exposure_blocks_alpha_top_up(self):
+        kwargs = build_kwargs()
+        exposure, _ = kwargs["exposure_loader"]([], {}, None)
+        exposure["valuation_binding"]["current"] = False
+        kwargs["exposure_loader"] = (
+            lambda _holdings, _profile, _valuation_id: (exposure, [])
+        )
+        context = frozen_alpha_context(
+            candidates=[
+                {
+                    "key": "fund:基金:510300",
+                    "asset_type": "fund",
+                    "market": "基金",
+                    "symbol": "510300",
+                    "name": "沪深300ETF",
+                    "program_id": "fund_program",
+                    "run_id": "fund_run",
+                    "sleeve": "core",
+                    "model_target_weight_pct": 20,
+                    "weighted_raw_edge": 0.10,
+                    "weighted_effective_edge": 0.07,
+                    "weighted_reliability": 0.70,
+                    "eligible_horizon_count": 3,
+                    "horizons": [],
+                    "capital_bridge_state": "held_fund_top_up_candidate",
+                }
+            ]
+        )
+        kwargs["alpha_mandate_loader"] = (
+            lambda _profile, _holdings, _now: context
+        )
+
+        result = service.build_capital_decision(**kwargs)
+        candidate = next(
+            item
+            for item in result["candidate_actions"]
+            if item["symbol"] == "510300"
+        )
+
+        self.assertEqual(candidate["planned_amount_cny"], 0)
+        self.assertIn(
+            "fund_exposure_not_verified",
+            candidate["blockers"],
         )
 
 

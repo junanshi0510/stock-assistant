@@ -13,6 +13,7 @@ import datetime as dt
 import math
 from typing import Any, Callable
 
+import alpha_capital_router
 import opportunity_committee_service
 import opportunity_profit_service
 import opportunity_regime_service
@@ -33,8 +34,9 @@ from portfolio_capital_repository import (
 
 
 SCHEMA_VERSION = "portfolio_capital_decision.v1"
-ENGINE_VERSION = "whole_portfolio_next_best_action.v4"
+ENGINE_VERSION = "whole_portfolio_next_best_action.v5"
 HARD_GLOBAL_PILOT_CAP_PCT = 5.0
+HARD_ALPHA_PILOT_CAP_PCT = alpha_capital_router.ALPHA_PILOT_CAP_PCT
 MAX_STRATEGIES = 3
 MAX_CANDIDATES = 12
 
@@ -42,6 +44,7 @@ MARKET_PERMISSION = {
     "A股": "mainland",
     "港股": "hong_kong",
     "美股": "united_states",
+    "基金": "mainland",
 }
 ACTION_LABELS = {
     "data_required": "补齐数据后再决策",
@@ -458,6 +461,207 @@ def _candidate_desires(
     return result[:MAX_CANDIDATES]
 
 
+def _merge_alpha_capital_route(
+    candidates: list[dict[str, Any]],
+    *,
+    alpha_context: dict[str, Any],
+    alpha_budget: float,
+    allowed_markets: set[str],
+    current_actions: dict[tuple[str, str], str],
+    holdings: list[dict[str, Any]],
+    exposure: dict[str, Any] | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Merge one verified Alpha mandate without double-counting support.
+
+    Opportunity and Alpha evidence are different views of the same candidate,
+    so their desired amounts use ``max`` rather than addition. Negative or
+    conflicting Alpha consensus can veto new money but never creates a short.
+    """
+
+    mandate = (
+        alpha_context.get("mandate")
+        if alpha_context.get("capital_eligible")
+        else None
+    )
+    route = (mandate or {}).get("result") or {}
+    if not mandate or route.get("status") not in {
+        "paper_ready",
+        "abstained",
+    }:
+        for item in candidates:
+            item.setdefault("asset_type", "stock")
+            item.setdefault("alpha_support", None)
+            item.setdefault("alpha_veto", None)
+        return candidates, []
+
+    by_key = {
+        (str(item.get("market") or ""), str(item.get("symbol") or "")): item
+        for item in candidates
+    }
+    held_assets = {
+        (
+            str(item.get("asset_type") or ""),
+            str(item.get("market") or ""),
+            str(item.get("code") or ""),
+        )
+        for item in holdings
+    }
+    exposure_verified = bool(
+        exposure
+        and (exposure.get("integrity") or {}).get("verified")
+        and (exposure.get("quality") or {}).get("decision_eligible")
+        and (exposure.get("valuation_binding") or {}).get("current")
+    )
+    verified_fund_exposure = (
+        {
+            str(item.get("code") or "")
+            for item in ((exposure or {}).get("funds") or [])
+            if item.get("status") == "loaded"
+        }
+        if exposure_verified
+        else set()
+    )
+    veto_rows: list[dict[str, Any]] = []
+    veto_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in route.get("vetoes") or []:
+        key = (
+            str(item.get("market") or ""),
+            str(item.get("symbol") or ""),
+        )
+        veto = {
+            "market": key[0],
+            "symbol": key[1],
+            "name": item.get("name") or key[1],
+            "asset_type": item.get("asset_type"),
+            "state": item.get("state"),
+            "label": item.get("label"),
+            "program_id": item.get("program_id"),
+            "run_id": item.get("run_id"),
+            "weighted_raw_edge": item.get("weighted_raw_edge"),
+            "weighted_effective_edge": item.get(
+                "weighted_effective_edge"
+            ),
+            "mandate_id": mandate.get("id"),
+            "reason": "frozen_alpha_negative_or_conflict_veto",
+            "execution_authorized": False,
+        }
+        veto_by_key[key] = veto
+        veto_rows.append(veto)
+
+    for item in candidates:
+        item.setdefault("asset_type", "stock")
+        item.setdefault("alpha_support", None)
+        item.setdefault("alpha_veto", None)
+        veto = veto_by_key.get(
+            (
+                str(item.get("market") or ""),
+                str(item.get("symbol") or ""),
+            )
+        )
+        if veto:
+            item["alpha_veto"] = veto
+            item["blockers"] = _unique(
+                [
+                    *(item.get("blockers") or []),
+                    f"alpha_probability_veto:{veto.get('state')}",
+                ]
+            )
+
+    for alpha_item in route.get("candidates") or []:
+        market = str(alpha_item.get("market") or "")
+        symbol = str(alpha_item.get("symbol") or "")
+        key = (market, symbol)
+        asset_type = str(alpha_item.get("asset_type") or "stock")
+        target_pct = max(
+            0.0,
+            _number(alpha_item.get("model_target_weight_pct"), 0.0)
+            or 0.0,
+        )
+        alpha_desired = alpha_budget * target_pct / 100.0
+        support = {
+            "mandate_id": mandate.get("id"),
+            "mandate_evidence_sha256": mandate.get("evidence_sha256"),
+            "mandate_result_sha256": mandate.get("result_sha256"),
+            "program_id": alpha_item.get("program_id"),
+            "run_id": alpha_item.get("run_id"),
+            "asset_type": asset_type,
+            "sleeve": alpha_item.get("sleeve"),
+            "model_target_weight_pct": target_pct,
+            "weighted_raw_edge": alpha_item.get("weighted_raw_edge"),
+            "weighted_effective_edge": alpha_item.get(
+                "weighted_effective_edge"
+            ),
+            "weighted_reliability": alpha_item.get(
+                "weighted_reliability"
+            ),
+            "eligible_horizon_count": alpha_item.get(
+                "eligible_horizon_count"
+            ),
+            "horizons": alpha_item.get("horizons") or [],
+            "capital_bridge_state": alpha_item.get(
+                "capital_bridge_state"
+            ),
+        }
+        row = by_key.get(key)
+        if row is None:
+            row = {
+                "asset_type": asset_type,
+                "market": market,
+                "symbol": symbol,
+                "name": alpha_item.get("name") or symbol,
+                "desired_amount_cny": 0.0,
+                "sources": [],
+                "blockers": [],
+                "committee_rank": None,
+                "committee_relative_view": None,
+                "committee_view_label": None,
+                "committee_agreement_pct": None,
+                "committee_support_count": None,
+                "committee_model_target_weight_pct": None,
+                "calibrated_probability": True,
+                "alpha_support": support,
+                "alpha_veto": None,
+            }
+            by_key[key] = row
+            candidates.append(row)
+        else:
+            row["asset_type"] = asset_type
+            row["alpha_support"] = support
+            row["calibrated_probability"] = True
+        row["alpha_desired_amount_cny"] = round(alpha_desired, 2)
+        row["desired_amount_cny"] = max(
+            float(row.get("desired_amount_cny") or 0.0),
+            alpha_desired,
+        )
+        if market not in allowed_markets:
+            row["blockers"].append("market_not_allowed_by_policy")
+        current_action = current_actions.get(key)
+        if current_action and current_action != "hold_review":
+            row["blockers"].append(
+                f"existing_holding_action:{current_action}"
+            )
+        if asset_type == "fund":
+            held = ("fund", market, symbol) in held_assets
+            if not held:
+                row["blockers"].append(
+                    "new_fund_requires_due_diligence"
+                )
+            elif symbol not in verified_fund_exposure:
+                row["blockers"].append(
+                    "fund_exposure_not_verified"
+                )
+        row["blockers"] = _unique(row["blockers"])
+
+    candidates.sort(
+        key=lambda item: (
+            -float(item.get("desired_amount_cny") or 0),
+            str(item.get("market") or ""),
+            str(item.get("symbol") or ""),
+        )
+    )
+    return candidates[:MAX_CANDIDATES], veto_rows
+
+
 def _append_planned_cash(
     holdings: list[dict[str, Any]], amount: float
 ) -> list[dict[str, Any]]:
@@ -483,9 +687,11 @@ def _proposed_holdings(
     *,
     monthly_budget: float,
     names: dict[tuple[str, str], str],
+    asset_types: dict[tuple[str, str], str] | None = None,
 ) -> list[dict[str, Any]]:
     result = [dict(item) for item in holdings]
     by_key = {_holding_key(item): item for item in result}
+    asset_types = asset_types or {}
     allocated = 0.0
     for index, (key, amount) in enumerate(
         sorted(allocations.items()), start=1
@@ -494,7 +700,10 @@ def _proposed_holdings(
             continue
         allocated += amount
         existing = by_key.get(key)
-        if existing and str(existing.get("asset_type")) == "stock":
+        if existing and str(existing.get("asset_type")) in {
+            "stock",
+            "fund",
+        }:
             existing["amount"] = round(
                 (_number(existing.get("amount")) or 0) + amount,
                 2,
@@ -504,12 +713,16 @@ def _proposed_holdings(
         result.append(
             {
                 "id": f"candidate_{index}_{market}_{symbol}",
-                "asset_type": "stock",
+                "asset_type": asset_types.get(key, "stock"),
                 "market": market,
                 "code": symbol,
                 "name": names.get(key) or symbol,
                 "amount": round(amount, 2),
-                "source": "frozen_forward_opportunity_basket",
+                "source": (
+                    "frozen_alpha_capital_mandate"
+                    if asset_types.get(key) == "fund"
+                    else "frozen_forward_research_evidence"
+                ),
             }
         )
     reserve = max(0.0, monthly_budget - allocated)
@@ -524,6 +737,7 @@ def _stress_matrix(
     monthly_budget: float,
     allocations: dict[tuple[str, str], float],
     names: dict[tuple[str, str], str],
+    asset_types: dict[tuple[str, str], str] | None = None,
 ) -> tuple[list[dict[str, Any]], set[str], set[str]]:
     baseline_holdings = _append_planned_cash(holdings, monthly_budget)
     proposed_holdings = _proposed_holdings(
@@ -531,6 +745,7 @@ def _stress_matrix(
         allocations,
         monthly_budget=monthly_budget,
         names=names,
+        asset_types=asset_types,
     )
     rows: list[dict[str, Any]] = []
     baseline_blocks: set[str] = set()
@@ -688,6 +903,15 @@ def _assemble(
         [list[dict[str, Any]]], dict[str, Any]
     ]
     | None = None,
+    alpha_mandate_loader: Callable[
+        [
+            dict[str, Any],
+            list[dict[str, Any]],
+            dt.datetime,
+        ],
+        dict[str, Any],
+    ]
+    | None = None,
     execution_summary_loader: Callable[
         [dt.date], dict[str, Any]
     ]
@@ -792,6 +1016,32 @@ def _assemble(
     existing_actions, critical_actions = _existing_actions(
         holdings, report
     )
+    try:
+        alpha_context = (
+            alpha_mandate_loader(profile, holdings, current)
+            if alpha_mandate_loader
+            else alpha_capital_router.current_verified_mandate(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                now=current,
+                profile=profile,
+                holdings=holdings,
+            )
+        )
+    except Exception as error:
+        alpha_context = {
+            "schema_version": "alpha_capital_current_mandate.v1",
+            "current": False,
+            "capital_eligible": False,
+            "mandate": None,
+            "latest_mandate": None,
+            "reason": (
+                "alpha_capital_router_unavailable:"
+                f"{type(error).__name__}"
+            ),
+        }
+    alpha_mandate = alpha_context.get("mandate") or {}
+    alpha_route = alpha_mandate.get("result") or {}
 
     total_value = (
         _number((valuation_payload.get("summary") or {}).get("total_value"))
@@ -1071,6 +1321,34 @@ def _assemble(
             )
         )
 
+    alpha_capital_current = bool(
+        alpha_context.get("capital_eligible")
+        and alpha_mandate
+        and alpha_route.get("status") in {"paper_ready", "abstained"}
+    )
+    alpha_capital_eligible = bool(
+        alpha_capital_current
+        and alpha_route.get("status") == "paper_ready"
+    )
+    gates.append(
+        _gate(
+            "calibrated_alpha_capital_route",
+            "校准概率资本路线",
+            "pass" if alpha_capital_current else "watch",
+            (
+                f"已绑定不可变指令 {alpha_mandate.get('id')}；"
+                f"{len(alpha_route.get('candidates') or [])} 个多周期候选，"
+                f"{len(alpha_route.get('vetoes') or [])} 个负向/冲突否决"
+                if alpha_capital_current
+                else (
+                    "尚无已冻结、完整性通过且与当前政策和 Alpha 证据一致的"
+                    "核心-卫星资金路线；不会读取 Shadow 或过期概率"
+                )
+            ),
+            source=alpha_capital_router.ENGINE_VERSION,
+        )
+    )
+
     global_pilot_pct = min(
         HARD_GLOBAL_PILOT_CAP_PCT,
         max(
@@ -1078,6 +1356,11 @@ def _assemble(
                 _number(item.get("maximum_manual_pilot_pct")) or 0
                 for item in eligible_strategies
             ]
+            + (
+                [HARD_ALPHA_PILOT_CAP_PCT]
+                if alpha_capital_eligible
+                else []
+            )
             + [0.0]
         ),
     )
@@ -1089,12 +1372,29 @@ def _assemble(
         (item["market"], item["code"]): item["action"]
         for item in existing_actions
     }
+    alpha_pilot_cap = (
+        min(
+            monthly_budget,
+            total_value * HARD_ALPHA_PILOT_CAP_PCT / 100,
+        )
+        if alpha_capital_eligible
+        else 0.0
+    )
     candidate_rows = _candidate_desires(
         eligible_strategies,
         global_budget=global_pilot_cap,
         allowed_markets=allowed_markets,
         current_actions=current_action_map,
         committee=committee,
+    )
+    candidate_rows, alpha_vetoes = _merge_alpha_capital_route(
+        candidate_rows,
+        alpha_context=alpha_context,
+        alpha_budget=alpha_pilot_cap,
+        allowed_markets=allowed_markets,
+        current_actions=current_action_map,
+        holdings=holdings,
+        exposure=exposure,
     )
 
     baseline_allocation: dict[str, Any] = {}
@@ -1200,7 +1500,9 @@ def _assemble(
         / 100
     )
     desired_total = sum(
-        float(item["desired_amount_cny"]) for item in candidate_rows
+        float(item["desired_amount_cny"])
+        for item in candidate_rows
+        if not item.get("blockers")
     )
     desired_scale = (
         min(1.0, conservative_risk_room / desired_total)
@@ -1226,6 +1528,12 @@ def _assemble(
 
     names = {
         (item["market"], item["symbol"]): item["name"]
+        for item in candidate_rows
+    }
+    asset_types = {
+        (item["market"], item["symbol"]): str(
+            item.get("asset_type") or "stock"
+        )
         for item in candidate_rows
     }
     stress_rows = baseline_matrix
@@ -1265,6 +1573,7 @@ def _assemble(
             monthly_budget=monthly_budget,
             allocations=allocations,
             names=names,
+            asset_types=asset_types,
         )
         if proposed_blocks:
             low = 0.0
@@ -1280,6 +1589,7 @@ def _assemble(
                     monthly_budget=monthly_budget,
                     allocations=trial,
                     names=names,
+                    asset_types=asset_types,
                 )
                 if trial_blocks:
                     high = middle
@@ -1310,6 +1620,7 @@ def _assemble(
             monthly_budget=monthly_budget,
             allocations={},
             names=names,
+            asset_types=asset_types,
         )
 
     if baseline_blocks:
@@ -1369,8 +1680,16 @@ def _assemble(
                 "manual_review_required": True,
                 "execution_authorized": False,
                 "evidence_interpretation": (
-                    "历史冻结后的前瞻成本后超额、策略独立贡献与"
-                    "候选共识；不是该股票未来收益概率。"
+                    (
+                        "已冻结且当前有效的多周期校准概率相对各自基准胜率的"
+                        "收缩后边际，并经过核心-卫星、重复模型去重和现金门禁；"
+                        "不是必涨概率或预期收益。"
+                    )
+                    if candidate.get("alpha_support")
+                    else (
+                        "历史冻结后的前瞻成本后超额、策略独立贡献与"
+                        "候选共识；不是该股票未来收益概率。"
+                    )
                 ),
             }
         )
@@ -1486,6 +1805,7 @@ def _assemble(
             str(item.get("evidence_cutoff_at") or "")
             for item in strategy_rows
         ),
+        str(alpha_mandate.get("evidence_cutoff_at") or ""),
     ]
     evidence_cutoff = max(cutoff_values) if any(cutoff_values) else None
     bindings = {
@@ -1521,6 +1841,21 @@ def _assemble(
             ).get("latest_snapshot")
             or {}
         ).get("id"),
+        "alpha_capital_mandate_id": (
+            alpha_mandate.get("id")
+            if alpha_capital_current
+            else None
+        ),
+        "alpha_capital_evidence_sha256": (
+            alpha_mandate.get("evidence_sha256")
+            if alpha_capital_current
+            else None
+        ),
+        "alpha_capital_result_sha256": (
+            alpha_mandate.get("result_sha256")
+            if alpha_capital_current
+            else None
+        ),
     }
     evidence = {
         "schema_version": "portfolio_capital_evidence.v1",
@@ -1603,10 +1938,43 @@ def _assemble(
         ),
         "opportunity_strategies": strategy_rows,
         "opportunity_committee": committee,
+        "alpha_capital": {
+            "context": {
+                "current": alpha_context.get("current"),
+                "capital_eligible": alpha_context.get(
+                    "capital_eligible"
+                ),
+                "reason": alpha_context.get("reason"),
+                "latest_mandate": alpha_context.get(
+                    "latest_mandate"
+                ),
+            },
+            "mandate": (
+                {
+                    key: alpha_mandate.get(key)
+                    for key in (
+                        "id",
+                        "schema_version",
+                        "engine_version",
+                        "status",
+                        "profile_version_id",
+                        "evidence_cutoff_at",
+                        "evidence_sha256",
+                        "result_sha256",
+                        "created_at",
+                    )
+                }
+                if alpha_capital_current
+                else None
+            ),
+            "route": alpha_route if alpha_capital_current else None,
+            "vetoes_applied": alpha_vetoes,
+        },
         "engine_policy": {
             "hard_global_pilot_cap_pct": HARD_GLOBAL_PILOT_CAP_PCT,
             "maximum_strategy_count": MAX_STRATEGIES,
             "maximum_candidate_count": MAX_CANDIDATES,
+            "hard_alpha_pilot_cap_pct": HARD_ALPHA_PILOT_CAP_PCT,
             "monthly_execution_summary": execution_summary,
             "candidate_industry_treatment": (
                 "候选股票行业未知时，全部新增金额按同一最坏行业桶占用容量"
@@ -1643,6 +2011,8 @@ def _assemble(
             "post_plan_total_cny": round(post_total, 2),
             "global_pilot_cap_pct": round(global_pilot_pct, 2),
             "global_pilot_cap_cny": round(global_pilot_cap, 2),
+            "alpha_pilot_cap_pct": HARD_ALPHA_PILOT_CAP_PCT,
+            "alpha_pilot_cap_cny": round(alpha_pilot_cap, 2),
             "equity_capacity_cny": round(equity_room, 2),
             "conservative_industry_capacity_cny": round(
                 industry_room, 2
@@ -1671,8 +2041,26 @@ def _assemble(
         "blocking_reasons": hard_blockers,
         "existing_position_actions": existing_actions,
         "candidate_actions": candidate_rows,
+        "alpha_probability_vetoes": alpha_vetoes,
         "strategy_evidence": strategy_rows,
         "investment_committee": committee,
+        "alpha_capital_route": (
+            {
+                "mandate_id": alpha_mandate.get("id"),
+                "engine_version": alpha_mandate.get(
+                    "engine_version"
+                ),
+                "evidence_sha256": alpha_mandate.get(
+                    "evidence_sha256"
+                ),
+                "result_sha256": alpha_mandate.get("result_sha256"),
+                "summary": alpha_route.get("summary"),
+                "sleeves": alpha_route.get("sleeves"),
+                "drift": alpha_route.get("drift"),
+            }
+            if alpha_capital_current
+            else None
+        ),
         "stress_matrix": stress_rows,
         "data_quality": {
             "profile_current": profile_ready,
@@ -1697,6 +2085,17 @@ def _assemble(
             "regime_evidence_sha256": bindings[
                 "regime_evidence_sha256"
             ],
+            "alpha_capital_mandate_current": bool(
+                alpha_context.get("current")
+            ),
+            "alpha_capital_route_current": alpha_capital_current,
+            "alpha_capital_eligible": alpha_capital_eligible,
+            "alpha_candidate_count": len(
+                alpha_route.get("candidates") or []
+            )
+            if alpha_capital_eligible
+            else 0,
+            "alpha_veto_count": len(alpha_vetoes),
             "critical_existing_action_count": len(critical_actions),
             "exposure_reasons": exposure_reasons,
             "month_execution": execution_summary,
@@ -1712,12 +2111,18 @@ def _assemble(
             "decision_order": (
                 "事实完整性 → 已有仓位风险/纪律 → 前瞻策略资格 → "
                 "市场状态/策略适配/风险预算 → "
-                "策略失效/冗余/共识委员会 → 月度预算 → "
+                "策略失效/冗余/共识委员会 → 校准概率核心-卫星路线/负向否决 → "
+                "月度预算 → "
                 "单品/权益/行业容量 → 全组合压力情景"
             ),
             "profit_evidence": (
                 "只使用冻结后独立前瞻批次的成本后相对基准结果；"
                 "要求置信区间、多重检验、回撤与命中率同时通过。"
+            ),
+            "calibrated_probability_evidence": (
+                "只读取与当前投资政策、持仓和最新 Alpha 证据摘要一致的不可变"
+                "核心-卫星指令；概率边际按真实前瞻可靠性收缩，同模型族不重复计票，"
+                "负向或周期冲突只否决新增而不做空。"
             ),
             "allocation": (
                 "多个合格策略以等权为锚，按可验证独立贡献窄幅倾斜；"

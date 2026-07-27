@@ -32,6 +32,7 @@ from auth import (
 from agent.worker import start_worker
 from routers import (
     agent,
+    alpha_capital,
     alpha_forecasts,
     auth,
     availability,
@@ -189,6 +190,7 @@ app.include_router(market.router)
 app.include_router(funds.router)
 app.include_router(portfolio.router)
 app.include_router(agent.router)
+app.include_router(alpha_capital.router)
 app.include_router(alpha_forecasts.router)
 app.include_router(opportunities.router)
 app.include_router(quant_factors.router)

@@ -36,6 +36,7 @@ import {
   settleAlphaForecastProgram,
   updateAlphaForecastProgram,
 } from '../../api/alphaForecasts'
+import AlphaCapitalRouter from './AlphaCapitalRouter'
 
 const STOCK_SAMPLES = {
   A股: '600519,贵州茅台\n300750,宁德时代\n601318,中国平安\n600036,招商银行\n000858,五粮液\n000333,美的集团',
@@ -509,6 +510,7 @@ export default function AlphaForecastLab() {
         </div>
       </section>
       <Workflow />
+      <AlphaCapitalRouter />
 
       <div className="alpha-summary">
         <span><Layers3 size={17} /><b>{overview?.summary?.program_count || 0}</b><small>研究项目</small></span>

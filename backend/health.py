@@ -187,6 +187,11 @@ def _database_readiness() -> dict[str, Any]:
                 if database_dialect(connection) == "postgresql"
                 else True
             )
+            alpha_capital_schema = (
+                table_exists(connection, "alpha_capital_mandates")
+                if database_dialect(connection) == "postgresql"
+                else True
+            )
             availability_schema = (
                 all(
                     table_exists(connection, table)
@@ -214,6 +219,7 @@ def _database_readiness() -> dict[str, Any]:
                 and quant_research_program_schema
                 and quant_factor_warehouse_schema
                 and alpha_forecast_schema
+                and alpha_capital_schema
                 and availability_schema
             ),
             "dialect": database_dialect(target),
@@ -242,6 +248,7 @@ def _database_readiness() -> dict[str, Any]:
                 quant_factor_warehouse_schema
             ),
             "alpha_forecast_schema": bool(alpha_forecast_schema),
+            "alpha_capital_schema": bool(alpha_capital_schema),
             "availability_schema": bool(availability_schema),
         }
     except Exception as error:

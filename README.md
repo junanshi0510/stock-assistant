@@ -8,6 +8,17 @@
 
 ## 最近更新
 
+### 2026-07-27：多周期 Alpha 资本路由与核心-卫星资金决策
+
+- 概率实验室不再止步于“哪些资产更可能跑赢”。新增独立 `multi_horizon_alpha_capital_router@1.0.0`，只读取历史门禁、真实前瞻门禁、来源等级、完整性和新鲜度均通过的股票 5/20/60 日或基金 20/60/120 确认净值概率；shadow、过期或证据变化的概率不能进入资金层。
+- 资金路线使用“校准概率 - 各预测自身冻结基准胜率”的边际，不与 50% 生硬比较；再按 outcome 数、独立批次、资产覆盖、Brier Skill、ECE 和逐批稳定率做固定可靠性收缩。至少两个周期同向且边际达到 5 个百分点才形成正向/负向共识，长短周期相反时明确冲突并弃权。
+- 同一资产出现在多个同模型族项目时只保留一份规范证据，不能通过复制项目提高权重；重复项目方向不一致会升级为冲突。路由按投资政策期限构建核心/卫星袖套，单候选模型权重不超过 20%，候选不足或袖套缺失时保留现金，不强制满仓。
+- 新增正向候选、负向/冲突否决、核心/卫星/现金比例、模型漂移、不可变历史和证据摘要工作台。冻结前必须勾选“仅研究、非订单”；证据在确认期间变化返回 `409`。`abstained` 现金/否决路线也可冻结，用于阻止已有机会策略对负向资产新增，但不创建空头。
+- 全组合资金引擎升级为 `whole_portfolio_next_best_action.v5`：已冻结 Alpha 路线自身最多占组合价值 2%，仍受全局 5% 研究上限、投资政策、已有仓位行动、可信估值、穿透暴露、单品/权益/行业容量和四类压力情景二次约束。Alpha 与机会策略同时支持同一资产时取较大研究需求而不相加；负向或冲突 Alpha 可以否决新增。
+- 基金只允许“已持有 + 当前穿透暴露完整”进入追加复核；新基金固定为尽调清单，暴露过期时金额为 0。全链仍不连接券商、不计算股数、不自动下单、不做空、不加杠杆，也不保证盈利。
+- 新增 4 个受认证操作、1 张租户/用户隔离不可变表、证据/结果双 SHA-256、状态/Schema/引擎/政策四重绑定、内容寻址幂等、`alpha-capital-router.v1` 迁移和 `alpha_capital_schema` readiness。`ECE=0` 会保留为完美校准而不是误判为缺失，`blocked/collecting` 也不能绕过页面直接冻结。后端全量 `656 passed`、`13 subtests passed`，Alpha/资本/API 定向回归 `37 passed`；OpenAPI 为 `199 paths / 230 operations`，前端构建转换 `1862` 个模块，生产依赖审计为 `0 vulnerabilities`。
+- 同行调研、固定收缩公式、核心/卫星比例、资金合并规则、基金边界、数据模型和验收记录见 [`docs/updates/2026-07-27-001-multi-horizon-alpha-capital-router.md`](docs/updates/2026-07-27-001-multi-horizon-alpha-capital-router.md)。
+
 ### 2026-07-26：多周期 Alpha 概率实验室与模型放行治理
 
 - “研究中心”新增独立“概率实验室”，支持 A 股、港股、美股的 5/20/60 交易日基准超额概率，以及基金的 20/60/120 个确认净值观察正收益概率。计划创建时冻结资产池、目标、基准、成本、运行频率、模型家族和数据规则，不允许运行后挑周期或自动搜索参数。
@@ -907,6 +918,8 @@ backend/
   alpha_forecast_engine.py 多周期滚动样本外、概率校准、固定门槛与共识引擎
   alpha_forecast_service.py 股票/基金数据、计划、运行、结算与前向放行编排
   alpha_forecast_repository.py 租户隔离计划、Run、预测、Outcome 与哈希事件持久化
+  alpha_capital_router.py 概率可靠性收缩、核心/卫星/现金与全组合资金桥
+  alpha_capital_repository.py 租户隔离的不可变 Alpha 资本指令与双哈希校验
   availability_service.py    组件探针、能力门禁、内部 SLO 与安全降级
   availability_repository.py 不可变探针、事故状态机与哈希事件链
   runtime_identity.py         API 副本与内容寻址 release 身份
@@ -939,6 +952,7 @@ frontend/
   src/features/portfolio/CapitalLearningHub.jsx 资金兑现、偏差复核与决策学习中枢
   src/features/portfolio/QuantPortfolioLab.jsx  滚动样本外量化组合工作台
   src/features/research/AlphaForecastLab.jsx 股票/基金多周期概率与放行治理工作台
+  src/features/research/AlphaCapitalRouter.jsx 核心/卫星/现金、否决、漂移与冻结工作台
   src/api/                 按领域拆分的 API 客户端
   src/api/availability.js  用户与管理员可用性控制面客户端
 deploy/                    双 API systemd 模板、Nginx 上游、原子滚动发布与灾备脚本

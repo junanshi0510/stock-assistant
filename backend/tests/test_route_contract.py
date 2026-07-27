@@ -172,6 +172,9 @@ EXPECTED_OPERATIONS = {
     "/api/v1/alpha-forecasts/programs/{program_id}/settle": {"POST"},
     "/api/v1/alpha-forecasts/runs/{run_id}": {"GET"},
     "/api/v1/alpha-forecasts/maintenance": {"POST"},
+    "/api/v1/alpha-capital": {"GET"},
+    "/api/v1/alpha-capital/mandates": {"GET", "POST"},
+    "/api/v1/alpha-capital/mandates/{mandate_id}": {"GET"},
     "/api/funds/hot": {"GET"},
     "/api/funds/categories": {"GET"},
     "/api/funds/opportunities": {"GET"},
@@ -224,6 +227,16 @@ class RouteContractTests(unittest.TestCase):
             if path.startswith("/api/")
         }
         self.assertEqual(actual, EXPECTED_OPERATIONS)
+
+    def test_alpha_capital_freeze_requires_evidence_and_research_boundary(self):
+        schemas = app.openapi()["components"]["schemas"]
+        required = set(
+            schemas["FreezeAlphaCapitalRequest"]["required"]
+        )
+        self.assertEqual(
+            required,
+            {"evidence_sha256", "research_only_acknowledged"},
+        )
 
     def test_fund_switch_cashflow_and_execution_bindings_are_required(self):
         schemas = app.openapi()["components"]["schemas"]

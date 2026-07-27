@@ -10,7 +10,8 @@
 - 量化组合实验室：只对运行开始时冻结的当前直接股票持仓做风险再分配研究，用严格滚动样本外窗口比较当前权重、等权、逆波动、风险平价和最小方差，并扣除显式换手成本。它不是全市场选股回测，不用历史收益预测未来收益，也不拥有股数、订单、券商连接或交易权限。
 - 量化选股实验室：使用历史时点可投资股票池、信号日可见的横截面因子、后续交易日开盘撮合、成交容量、非重叠样本外窗口和 Rank IC 研究选股组合。没有专业历史成员序列、专业复权/未复权双价格、成本压力与稳定性证据时只能 `research_only`；不拥有股数、订单、券商连接或交易权限。
 - A 股时点因子仓库：把供应商采集与研究运行解耦，按交易日沉淀全市场估值、按公告日沉淀财务质量，并通过不可变观察、冲突排除、哈希链、额度调度和仓库快照让历史研究可重复。仓库是共享市场事实，不含用户投资数据，也不拥有预测、资金或交易权限。
-- 多周期 Alpha 概率实验室：对创建时冻结的 A/H/美股或基金池，分别研究 5/20/60 交易日基准超额概率或 20/60/120 个确认净值观察的成本后正收益概率。训练、校准、最终历史评价和真实前向放行严格分离；任一固定门槛失败必须弃权。它只产生 shadow 研究证据，不拥有金额、仓位、订单、券商连接或交易权限。
+- 多周期 Alpha 概率实验室：对创建时冻结的 A/H/美股或基金池，分别研究 5/20/60 交易日基准超额概率或 20/60/120 个确认净值观察的成本后正收益概率。训练、校准、最终历史评价和真实前向放行严格分离；任一固定门槛失败必须弃权。历史通过只产生 shadow 证据，只有真实前向门槛通过后的当前周期才可标记为 `decision_eligible`；实验室本身不拥有金额、仓位、订单、券商连接或交易权限。
+- 多周期 Alpha 资本路由：只读取当前、完整且前向放行的 Alpha 周期，按冻结基准率计算校准 Edge，以可靠性收缩、重复模型去重、多周期共识、核心/卫星袖套、广度上限和现金保留形成不可变人工研究授权。负向或冲突证据只能否决新增资本，不能生成做空；新基金只能进入尽调，已有基金加仓还必须绑定当前估值和完整穿透快照。路由硬上限为组合市值 2%，最终仍受组合资金引擎的 5% 全局上限、持仓风险和压力门禁约束；不生成股数、订单、杠杆或交易授权。
 - 投资指挥台：读取当前组合事实、已有仓位行动和冻结后的前瞻收益证据，生成组合级下一步行动、受限人工研究金额、现金保留与计划前后压力对照。已有仓位风险优先于新候选，不读取回测点收益直接放行，也不拥有现金、股数、订单或券商执行能力。
 - 资本计划兑现与决策学习：只把冻结计划绑定到用户账本中已经发生的真实股票买入，确认人民币实际结算、对账执行偏差并观察精确 5/20/60 交易日结果。它可以收紧下一份计划和扣减月度预算，但不能创建订单、修改交易事实或承诺收益。
 - 投资 Agent：持久化单基金 Run 与多基金 Batch、版本化只读工具、受控并发、确定性风险门禁、证据约束的模型合成和审计；不拥有交易权限。
@@ -24,7 +25,7 @@
 
 `backend/main.py` 只创建 FastAPI 应用、配置 CORS 和统一认证边界、装配路由、健康检查与指标。生产模式不在 API 进程启动数据抓取、Agent 或定时监控线程。HTTP 路由位于
 `backend/routers/auth.py`、`backend/routers/market.py`、`backend/routers/funds.py`、
-`backend/routers/portfolio.py`、`backend/routers/opportunities.py`、`backend/routers/quant_selection.py`、`backend/routers/quant_factors.py`、`backend/routers/alpha_forecasts.py`、`backend/routers/availability.py` 和 `backend/routers/agent.py`。
+`backend/routers/portfolio.py`、`backend/routers/opportunities.py`、`backend/routers/quant_selection.py`、`backend/routers/quant_factors.py`、`backend/routers/alpha_forecasts.py`、`backend/routers/alpha_capital.py`、`backend/routers/availability.py` 和 `backend/routers/agent.py`。
 数据抓取和分析仍位于同名领域服务模块；生产路由通过 `market_data_gateway.py` 创建 PostgreSQL 持久任务并等待 `market-data` Worker 结果，路由层只负责请求校验、错误映射和服务编排。Redis 或 Worker 不可用时明确失败，不允许回到 API 进程执行外部抓取。
 
 `backend/auth.py` 是身份边界：密码哈希、受限流的普通用户自助注册、服务端 Session、CSRF、RBAC 和认证审计均在此实现。公开注册不能接受角色字段，管理员授权只存在于受保护的管理接口。
@@ -44,7 +45,7 @@ Claim 与追加式 Audit，`worker.py` 执行已领取 Run。生产由 Redis/Cel
 
 `backend/opportunity_committee_service.py` 是合格策略之间的组合构建边界。输入只能来自当前不可变收益记分卡和当前冻结纸面组合；最近三个独立前瞻批次连续不跑赢基准时停用，近期均值或胜率衰减时降权。策略冗余取候选权重重叠与非负前瞻超额相关性的较大值，但相关性必须至少有四个共同月份，否则保持缺失。委员会以等权为锚，按保守证据和 `1-平均冗余` 的独立贡献做有限倾斜，最多启用三个策略、单策略最高 50%；单策略和高冗余组合必须提高现金。候选模型由袖套权重乘冻结组合内权重合成，单候选最高 25%；与上一不可变指令的候选单边换手不到 10% 且没有策略进出时不要求再平衡。`opportunity_committee_repository.py` 保存用户隔离的 Evidence/Result 双哈希指令，相同证据幂等，历史拒绝 UPDATE/DELETE。
 
-`backend/portfolio_capital_decision.py` 是组合级资金决策边界。它只接受当前且完整性通过的投资政策、可信估值、持仓行动报告、组合穿透快照和收益记分卡；先让 `data_required/reduce_review/risk_review/thesis_review` 抢占全部新资金，再读取策略投资委员会的袖套权重、候选上限和主动现金。全局金额取月度预算、当前组合市值乘允许试运行比例和硬上限 5% 的最小值，并继续受允许市场、单品、权益、保守行业容量及四组 `portfolio_decision_twin` 说明性情景约束。候选股票缺少专业行业分类时，新增金额统一进入同一最坏行业桶；情景越界时只能确定性缩减，不能让委员会权重或高分覆盖风险门禁。`portfolio_capital_repository.py` 按租户/用户保存 Evidence 与 Result 双哈希及全部来源绑定，并新增委员会 Evidence SHA-256；相同证据幂等、历史拒绝 UPDATE/DELETE。所有输出只允许 `limited_manual_pilot/observe/hold/review` 语义，执行授权恒为 false。
+`backend/portfolio_capital_decision.py` 是组合级资金决策边界，当前契约为 `whole_portfolio_next_best_action.v5`。它只接受当前且完整性通过的投资政策、可信估值、持仓行动报告、组合穿透快照、收益记分卡和不可变 Alpha 资本授权；先让 `data_required/reduce_review/risk_review/thesis_review` 抢占全部新资金，再合并策略投资委员会与 Alpha 袖套。Alpha 授权只有 `paper_ready` 才能贡献正向金额，`abstained` 仍可保留当前否决；同一标的同时来自机会策略和 Alpha 时取较大的期望金额而不是相加。全局金额取月度预算、当前组合市值乘允许试运行比例和硬上限 5% 的最小值，并继续受允许市场、单品、权益、保守行业容量及四组 `portfolio_decision_twin` 说明性情景约束；Alpha 自身还受组合市值 2% 的硬上限。新基金不得进入金额计划，已有基金加仓必须同时通过当前估值、穿透完整性和基金状态门禁。候选股票缺少专业行业分类时，新增金额统一进入同一最坏行业桶；情景越界时只能确定性缩减，不能让委员会权重、Alpha Edge 或高分覆盖风险门禁。`portfolio_capital_repository.py` 按租户/用户保存 Evidence 与 Result 双哈希及全部来源绑定，并保存委员会与 Alpha 授权 Evidence SHA-256；相同证据幂等、历史拒绝 UPDATE/DELETE。所有输出只允许 `limited_manual_pilot/observe/hold/review` 语义，执行授权恒为 false。
 
 `backend/portfolio_capital_learning_service.py` 是冻结计划之后的执行事实与学习边界。它只接受当前用户交易账本中计划日后 45 天内的真实股票买入；一笔流水通过 `portfolio_capital_transaction_bindings` 只能归属一个计划。每次确认只能在上一事件基础上追加流水，不能移除或改写既有交易和人民币结算金额；读取时还会重新计算当前交易快照 SHA-256，流水变化只会使完整性失败，不会释放已经占用的预算。对账分别报告计划覆盖、候选偏差、计划外买入和执行延迟；偏差复核必须追加新事件，不能原地修改历史。`portfolio_capital_learning_repository.py` 保存事件前序哈希、Evidence/Result/Event 三层哈希、交易唯一绑定和结果快照，生产表由 `portfolio-capital-learning.v1` 建立并拒绝 UPDATE/DELETE。
 
@@ -67,6 +68,8 @@ Claim 与追加式 Audit，`worker.py` 执行已领取 Run。生产由 Redis/Cel
 `backend/alpha_forecast_engine.py` 是概率研究的纯计算边界。模型家族、特征和全部阈值固定，不执行参数搜索；同一信号日期必须整体切分，训练标签结束日严格早于测试起点。较早 walk-forward 预测只拟合 sigmoid 校准器，较晚未参与校准的预测只做最终历史评价。每周期必须同时通过样本、日期、资产覆盖、Brier Skill、Log Loss、AUC、ECE、成本后高低组收益差和跨折稳定性十项统计门槛，否则发布概率为 `null`。
 
 `backend/alpha_forecast_service.py` 负责冻结计划、股票真实价格/基准与基金确认净值加载、Run 编排、真实 outcome 结算、前向 scorecard 和多周期共识。十项统计门槛之外还要求冻结池 100% 覆盖且来源至少为 `research_grade`；公共网页降级或未知源必须弃权。股票未来进入决策层还要求资产与基准均为 `professional`，A 股 BaoStock 只能标为研究级；基金确认净值至少为研究级。历史通过只允许 `shadow_calibrated_probability`，至少 30 个真实结果、6 个独立运行日和 4 个资产同时通过概率与经济性前向门槛后，后续运行的对应周期才可 `decision_eligible`。`alpha_forecast_repository.py` 保存租户/用户隔离的计划、Run、预测、Outcome 与两条前序哈希事件链；完成结果、预测和 outcome 不得改写。生产研究与手动结算都进入 `market-data` 队列，消息只含持久 Run ID 或 Program ID；每 6 小时维护负责结算成熟结果与派发到期计划，API 进程不直接抓取外部行情。
+
+`backend/alpha_capital_router.py` 是 Alpha 证据进入资金研究的独立确定性边界，契约为 `multi_horizon_alpha_capital_router@1.0.0`。它只选择每个计划最新完成、未过期、完整性通过且具有当前 `decision_eligible` 周期的 Run；股票使用 5/20/60，基金使用 20/60/120，并以预测的冻结基准率而不是固定 50% 计算 Edge。固定可靠性收缩同时约束真实结果数、独立日期数、资产广度、Brier Skill、ECE 和跨运行稳定性；相同资产与模型家族只保留一票，正负周期并存时进入冲突而不是相互抵消。两票以上同向才形成支持或防守共识，核心/卫星权重继续受证据广度、单候选 20%、Alpha 袖套 2% 和现金保留约束。`backend/alpha_capital_repository.py` 按租户/用户保存 Evidence/Result 双 SHA-256、投资政策绑定和不可变授权；冻结必须提交当前 Evidence SHA 并确认研究边界，历史拒绝 UPDATE/DELETE。`paper_ready` 仅代表可进入下一层人工复核，`abstained` 只保留否决信息，执行授权恒为 false。
 
 `backend/hot_stocks.py` 是热门榜与专业行情路由边界。每个市场维护有序专业路线：A 股/港股为富途 OpenD → Tushare Pro，美股为富途 OpenD → Massive 全市场日终 → Alpha Vantage 官方三榜。东方财富/Yahoo 只能作为带 `public_fallback` 和 `degraded=true` 的 best-effort 降级源，新浪不在任何读取路由中。一次市场级 bundle 同时返回所需榜单、来源等级、截止时间、时效、质量摘要、方法和逐供应商尝试，机会工厂与市场日报不得再按榜单种类重复请求。供应商缓存和熔断按 provider ID 隔离；一个源失败后可以接力下一专业源。`backend/provider_transport.py` 统一约束 Massive/Alpha Vantage 请求速率；生产 POSIX 主机通过文件锁让 API/Worker 进程共享请求槽位，`429` 遵循 `Retry-After` 重试，Massive Key 只放 Bearer Header 而不进入异常 URL。Massive 日榜用相邻两份 grouped daily 全市场快照本地计算，7/30 日榜用 SPY 真实交易日序列定位基准，不能用自然日冒充交易日；美东 18:00 前不把当日快照当成完整 EOD，未配置 Key 时保持零网络请求。`GET /api/market/providers` 是零额度状态读取；`POST /api/market/providers/probe` 是用户显式触发、30 秒防重复且禁止公开降级的真实验证。所有异常在写入状态、日志或响应前必须脱敏。
 
@@ -94,7 +97,7 @@ Claim 与追加式 Audit，`worker.py` 执行已领取 Run。生产由 Redis/Cel
 - Nginx 将动态请求分配到 `api-8001/api-8002` 两个 systemd 模板实例，使用最少连接和被动失败摘除。两个副本必须无状态并共享 PostgreSQL/Redis/OSS；响应携带脱敏 replica/release 身份。Nginx 不启用 `non_idempotent` 上游重放，写请求仍由事务、CSRF、唯一约束和业务幂等键保证。
 - 公网负载均衡健康契约只有拓扑脱敏的 `/health/edge`；包含数据库目标、对象存储、Worker 和队列明细的 `/health/ready`、`/health/full` 只能经 loopback 访问，Prometheus 指标仍由 `/internal/metrics` 的回环 ACL 保护。
 - API 使用 root 持有、应用用户只读的内容寻址 release 目录。固定槽位符号链接和前端 current 链接原子切换；滚动发布通过独立 upstream include 先主动排空目标副本，再逐副本验证目标身份与 readiness，失败时按反向顺序恢复 upstream、旧槽位和静态 release。数据库迁移必须 expand/contract 并同时兼容回退 release。
-- PostgreSQL 是生产唯一事实源，保存用户、持仓、交易、不可变市场观察与组合估值、A 股时点因子观察/回填计划/同步事件、量化组合运行/事件/纸面指令、历史时点量化选股运行/事件/shadow mandate、多周期 Alpha 计划/Run/预测/Outcome、Agent、机会策略/运行/纸面观察、收益政策与记分卡、组合资金计划、组合数字孪生运行、Evidence、任务载荷、租约、结果哈希和审计事件。应用启动不得自动运行 SQLite DDL；缺少迁移表时拒绝启动。
+- PostgreSQL 是生产唯一事实源，保存用户、持仓、交易、不可变市场观察与组合估值、A 股时点因子观察/回填计划/同步事件、量化组合运行/事件/纸面指令、历史时点量化选股运行/事件/shadow mandate、多周期 Alpha 计划/Run/预测/Outcome、不可变 Alpha 资本授权、Agent、机会策略/运行/纸面观察、收益政策与记分卡、组合资金计划、组合数字孪生运行、Evidence、任务载荷、租约、结果哈希和审计事件。应用启动不得自动运行 SQLite DDL；缺少迁移表时拒绝启动。
 - `database.py` 提供 PostgreSQL 连接池和现有 Repository 的兼容接口。SQLite 只用于开发、测试和首次迁移输入，生产连接失败不得回退。
 - Redis 只承担 Celery 传输；消息只含 Run ID 或 Job ID。Redis 设置 AOF 和 `noeviction`，丢失后由 PostgreSQL 中的 queued/running 租约恢复。
 - `background_jobs.py` 是数据、LLM、OCR 的统一持久任务信封，输入/结果都有 SHA-256，状态变化进入不可变事件链；旧 Worker 在租约失效后不能提交结果。
@@ -132,7 +135,7 @@ Claim 与追加式 Audit，`worker.py` 执行已领取 Run。生产由 Redis/Cel
 资本计划兑现与学习位于 `frontend/src/features/portfolio/CapitalLearningHub.jsx`，只能从“我的资产 → 决策学习”或投资指挥台入口进入。页面必须区分冻结计划、真实成交、偏差复核和结果学习四个阶段；`blocked/watch` 计划显示“无需执行”，不得出现虚构成交表单。港股/美股必须要求用户确认人民币实际结算金额；已绑定流水必须锁定。后台观察超出短轮询窗口后必须解除页面忙碌并保留任务提示，不能让供应商延迟冻结整个工作区。
 量化组合实验室位于 `frontend/src/features/portfolio/QuantPortfolioLab.jsx`，只能从“我的资产 → 量化组合”进入。页面必须同时展示冻结股票池边界、用户明确选择的方法、训练/测试窗口、成本与换手参数、五模型成本后对照、风险贡献、人民币目标、逐 fold 结果、来源时效、全部准入门禁和哈希谱系。`null` 指标不得渲染为 0，PSR 不得显示为赚钱概率，目标金额不得显示为订单；只有全部门禁通过、用户确认纸面边界且 Result SHA 未变化时才能启用冻结按钮。
 量化选股实验室位于 `frontend/src/features/research/QuantSelectionLab.jsx`，只能从“研究中心 → 量化选股”进入。页面必须展示股票池时点口径、固定因子、组合约束、成交容量、策略/基准曲线、最新目标篮子、非重叠样本外窗口、Rank IC、成本压力、全部晋级门槛和 Input/Result/Event 哈希。冻结当前名单必须持续显示幸存者偏差，未知预设元数据不得进入严格请求，结构化 API 错误不得退化为对象字符串；只有全部门槛通过且用户确认前向纸面边界时才能冻结 shadow mandate。
-概率实验室位于 `frontend/src/features/research/AlphaForecastLab.jsx`，只能从“研究中心 → 概率实验室”进入。页面必须展示股票/基金目标差异、冻结资产池、基准、成本、历史窗口、运行频率、逐周期历史门槛、可靠性指标、真实前向 scorecard、多周期方向和完整审计。历史门槛失败时不得显示发布概率，历史通过但前向未放行时必须标成 shadow；`decision_eligible` 也不得渲染成订单或盈利承诺。概率宽表只在自身容器滚动，移动端不得形成页面级横向溢出。
+概率实验室位于 `frontend/src/features/research/AlphaForecastLab.jsx`，只能从“研究中心 → 概率实验室”进入。页面必须展示股票/基金目标差异、冻结资产池、基准、成本、历史窗口、运行频率、逐周期历史门槛、可靠性指标、真实前向 scorecard、多周期方向和完整审计。历史门槛失败时不得显示发布概率，历史通过但前向未放行时必须标成 shadow；`decision_eligible` 也不得渲染成订单或盈利承诺。`frontend/src/features/research/AlphaCapitalRouter.jsx` 在同一工作区承载多周期资本路由，必须展示证据截止时间、可靠性收缩、同向/冲突票、核心/卫星目标、现金保留、否决项、基金尽调限制、漂移和不可变授权历史；只有当前 `paper_ready` 路由且 Evidence SHA 未改变时才能冻结，冻结仍不得显示为订单。概率和路由宽表只在自身容器滚动，移动端不得形成页面级横向溢出。
 组合数字孪生位于 `frontend/src/features/portfolio/PortfolioDecisionTwin.jsx`，只能从“我的资产”进入。页面必须同时展示说明性情景边界、当前/WHAT-IF 同口径对照、反向压力前提、最小降险最优性范围、证据门禁和未建模事项；不得把预设情景描述成历史校准、把降险草案描述成订单，或在混合方向损益非单调时显示单一破线倍数。
 可信估值位于 `frontend/src/features/portfolio/PortfolioValuationPanel.jsx`，必须展示基准币种、覆盖率、自动/手工方法、价格/NAV、汇率、来源日期、有效期和阻断原因。`null` 金额不得渲染为 0，手工金额不得渲染为自动估值，`trade_amount_eligible` 不得渲染为交易授权。
 Agent 工作台位于 `frontend/src/tabs/AgentTab.jsx`，只通过 `/api/v1/agent/...` 读取 Batch、
