@@ -268,4 +268,9 @@
 
 ## 16. 生产发布
 
-生产迁移、GitHub 提交、双副本 release、RBAC、公网浏览器、备份和隔离恢复结果将在本次滚动发布完成后写回本节。
+- 功能提交 `1b5323671b12e1c35bb4fa076b93134577e6ff3d` 已推送 GitHub `main`，并滚动发布到 `http://8.148.67.79/`。`alpha-capital-router.v1` 已在生产 PostgreSQL 应用；数据库为 `93` 张表、`18` 个迁移标记，`alpha_capital_mandates` 初始记录数为 `0`，PostgreSQL 不可变触发器已生效。
+- `8001/8002` 两个 API 副本均返回 `ready=true`、`full_service_ready=true`、`alpha_capital_schema=true`，OpenAPI 均为 `199 paths / 230 operations`。两个 API、Agent/行情/LLM/OCR/调度 Worker 与 Celery Beat 共 `8` 个应用服务全部 active，systemd 失败单元为 `0`；Redis、Nginx、私有 OSS 和后台队列均就绪，发布窗口未发现应用 error 日志。
+- 四个新操作匿名访问均返回 `401`。生产普通用户完成注册和登录后，`GET /api/v1/alpha-capital` 返回 `alpha_capital_route.v1`、`multi_horizon_alpha_capital_router@1.0.0`；由于该测试用户没有有效投资政策，结果正确为 `blocked`、模型投入 `0%`、现金 `100%`，而不是生成假候选。指令列表返回空集，读取不存在或不可见的指令返回 `404`；未调用冻结 POST，也未写入合成 Alpha 数据。
+- 一次性验收账户退出后原会话立即失效，随后通过管理服务禁用；最终为 `0` 持仓、`0` Agent Run、`0` 活跃会话。认证审计链共 `161` 条事件，前序哈希和事件哈希完整通过验证。浏览器刷新确认已回到登录页。
+- 公网浏览器成功覆盖注册、登录、恢复边界和会话撤销。内置验收浏览器的慢速代理链路曾报告 `DashboardTab` 动态导入失败，但 Nginx 对该文件及其依赖全部返回 `200/304`，云端与本地分包 SHA-256 完全一致；页面进入已实现的隔离错误边界并提供重新加载入口，没有伪造服务端事实。资本路由完整桌面交互和 `390px` 响应式布局已由同一生产构建在本地浏览器通过，控制台错误与页面级横向溢出均为 `0`。
+- 发布后最终数据库快照已上传到私有阿里云 OSS，服务端加密为 `AES256`：对象 `backups/postgresql/2026/07/stock-assistant-iZn4ai1fm0tr284w21h4kmZ-20260727T133050Z.dump`，`3,559,194` 字节，SHA-256 为 `64a5c879668f805a4a9fd298ae8aa34aa19da052d1e1cce933b4fc4132d2e86b`。该快照已恢复到一次性隔离数据库并核对 `93` 张表、`18` 个迁移标记，隔离库随后自动删除。

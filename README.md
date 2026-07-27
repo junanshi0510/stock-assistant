@@ -17,6 +17,7 @@
 - 全组合资金引擎升级为 `whole_portfolio_next_best_action.v5`：已冻结 Alpha 路线自身最多占组合价值 2%，仍受全局 5% 研究上限、投资政策、已有仓位行动、可信估值、穿透暴露、单品/权益/行业容量和四类压力情景二次约束。Alpha 与机会策略同时支持同一资产时取较大研究需求而不相加；负向或冲突 Alpha 可以否决新增。
 - 基金只允许“已持有 + 当前穿透暴露完整”进入追加复核；新基金固定为尽调清单，暴露过期时金额为 0。全链仍不连接券商、不计算股数、不自动下单、不做空、不加杠杆，也不保证盈利。
 - 新增 4 个受认证操作、1 张租户/用户隔离不可变表、证据/结果双 SHA-256、状态/Schema/引擎/政策四重绑定、内容寻址幂等、`alpha-capital-router.v1` 迁移和 `alpha_capital_schema` readiness。`ECE=0` 会保留为完美校准而不是误判为缺失，`blocked/collecting` 也不能绕过页面直接冻结。后端全量 `656 passed`、`13 subtests passed`，Alpha/资本/API 定向回归 `37 passed`；OpenAPI 为 `199 paths / 230 operations`，前端构建转换 `1862` 个模块，生产依赖审计为 `0 vulnerabilities`。
+- 功能提交 `1b53236` 已推送并完成生产迁移与双副本发布：生产为 `93` 张表/`18` 个迁移标记，两个 API 与 6 个 Worker/Beat 全部就绪。普通用户实测在缺少有效投资政策时返回 `blocked`、`0%` 模型投入和 `100%` 现金，指令隔离返回 `404`；验收账户已禁用且活跃会话清零，认证审计链完整。发布后私有 OSS AES256 备份 SHA-256 为 `64a5c879668f805a4a9fd298ae8aa34aa19da052d1e1cce933b4fc4132d2e86b`，已隔离恢复核对 `93` 张表/`18` 个迁移标记。
 - 同行调研、固定收缩公式、核心/卫星比例、资金合并规则、基金边界、数据模型和验收记录见 [`docs/updates/2026-07-27-001-multi-horizon-alpha-capital-router.md`](docs/updates/2026-07-27-001-multi-horizon-alpha-capital-router.md)。
 
 ### 2026-07-26：多周期 Alpha 概率实验室与模型放行治理
